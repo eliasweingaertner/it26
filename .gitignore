@@ -1,0 +1,13 @@
+# build output
+/build/
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+
+# editor debug dumps
+screen_dump.txt
+
+# editor-generated WAV renders
+*.wav
