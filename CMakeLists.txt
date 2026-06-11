@@ -19,9 +19,23 @@ set(ENGINE_SOURCES
 )
 
 add_executable(itplay ${ENGINE_SOURCES} src/main.c)
-add_executable(ited   ${ENGINE_SOURCES} src/it_screen.c src/it_editor.c)
 
-foreach(tgt itplay ited)
+set(EDITOR_SOURCES
+    src/it_screen.c
+    src/it_vgadata.c
+    src/it_editor.c
+)
+if(WIN32)
+    list(APPEND EDITOR_SOURCES src/it_screen_win32.c)
+endif()
+add_executable(ited ${ENGINE_SOURCES} ${EDITOR_SOURCES})
+if(WIN32)
+    target_link_libraries(ited user32 gdi32)
+endif()
+
+add_executable(test_pattern ${ENGINE_SOURCES} tests/test_pattern.c)
+
+foreach(tgt itplay ited test_pattern)
     if(MSVC)
         target_compile_options(${tgt} PRIVATE /W3 /D_CRT_SECURE_NO_WARNINGS)
     else()
