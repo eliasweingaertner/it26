@@ -464,7 +464,7 @@ static int Term_Key(void)
 }
 
 static const screen_backend_t Screen_BackendTerm = {
-    Term_Init, Term_UnInit, Term_Present, Term_Key
+    Term_Init, Term_UnInit, Term_Present, Term_Key, NULL
 };
 
 /* ---- public init/update/key dispatch --------------------------------- */
@@ -504,4 +504,11 @@ void Screen_Update(void)
 int Key_Get(void)
 {
     return Backend ? Backend->key() : ITK_NONE;
+}
+
+void Screen_GetMouse(it_mouse_t *m)
+{
+    memset(m, 0, sizeof(*m));
+    if (Backend && Backend->mouse)
+        Backend->mouse(m);
 }

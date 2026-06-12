@@ -82,12 +82,38 @@ transliteration) layered on top of the real engine.
   - F3 sample list, F12 song variables, F9 load requester: object
     coordinates **verbatim from `IT_OBJ1.ASM`** (boxes, labels, thumbbars
     — `F_DrawThumbBar` ported 1:1 incl. the fractional glyph thumbs),
-    F11 order+panning per the PanBox/`F_ShowChannels` data. F4 instrument
-    page and the ESC main menu are approximated from reference
+    F11 order+panning per the PanBox/`F_ShowChannels` data. The F4
+    instrument-page right pane is still approximated from reference
     screenshots in `..\screenshots\`.
-  - F9 is a real file requester now (file/dir/drive boxes, .IT song
-    names read from headers, dir navigation) replacing the one-line
-    prompt.
+  - F9 is a real file requester (file/dir/drive boxes with independent
+    scrolling + Tab focus, .IT song names read from headers, dir/drive
+    navigation, editable filename field).
+- **Interactive object/widget system (2026-06-12, second pass)** — C
+  equivalent of the IT_F.ASM object handlers in `it_editor.c`: every
+  screen builds a widget table (buttons, radio buttons, thumbbars,
+  On/Off toggles, string inputs, lists) each frame. Tab/Shift-Tab and
+  geometric Up/Down/Left/Right move focus; Left/Right adjust the focused
+  thumbbar (Home/End = min/max); Space/Enter press buttons/toggles.
+  Focus indication is the original's: button text 23h, white thumb 03h,
+  toggle word hilighted 30h, text-input cursor cell 30h. F12 (song
+  name, tempo/speed, volumes, all flag buttons, directories, Save all
+  Preferences -> `ited.cfg`), F3 (all sample params incl. vibrato
+  waveform), F4 (NNA/DCT/DCA), F11 (order list + both pan columns:
+  arrows, L/M/R/S, Space = mute) are fully operable.
+- **Menus are now the real object lists from `IT_OBJ1.ASM`**
+  (`O1_MainMenu`/`O1_FileMenu`/`O1_PlayBackMenu`/`O1_SampleMenu`/
+  `O1_InstrumentMenu`): exact coordinates, box styles (3/1 + inner 0,
+  items style 28), item texts. File menu: Load/New/Save(stub)/Quit;
+  Playback menu: play song/pattern/from order/from cursor, stop, reinit
+  soundcard (stubs flash a status message on the info line). Menus draw
+  the screen beneath + overlay and present **once** per frame (the old
+  double present flickered).
+- **Mouse** (pixel backend): click focuses + activates widgets, drags
+  thumbbars pixel-precisely (1 px = 1 unit on classic bars, as the
+  original 8010h events), clicks select/activate list rows and menu
+  items (click outside a menu closes it), clicking the pattern grid
+  moves the cell cursor. `Screen_GetMouse` + `ITK_MOUSE` in the
+  backend vtable; the terminal backend reports no mouse.
 - Screens: pattern editor (F2), sample list (F3), instrument list (F4),
   order list (F11), song variables (F12), help (F1), main menu (ESC),
   load module (F9). IT piano note entry, octave/edit-step, row
@@ -98,13 +124,15 @@ transliteration) layered on top of the real engine.
 - Visual verification: `ITED_SHOT=<f.bmp>` renders any screen to a
   640x400 BMP offline (no window needed); side-by-side compared against
   the original 2.14 screenshots — header, pattern grid, F3 and F12 are
-  near-pixel matches. End-to-end window capture verified on Win11.
+  near-pixel matches. End-to-end window capture verified on Win11,
+  including posted-keystroke/-click interaction tests.
 
 **Not done yet** (see §6): the full IT sample/instrument *editors*
 (envelopes, waveform draw), info page (F5), message editor, save (F10),
-mouse, SDL backend for POSIX pixel output. The F4 right-hand pane and
-ESC menu are eyeballed, not object-table ports. Header FreeMem/FreeEMS
-show host free RAM / 0.
+SDL backend for POSIX pixel output, terminal-backend mouse. The F4
+right-hand pane layout is eyeballed (its buttons work); the F4
+Volume/Panning/Pitch tabs are stubs. Header FreeMem/FreeEMS show host
+free RAM / 0.
 
 ---
 
@@ -214,13 +242,17 @@ itplay/
     it_screen.c            80x50 cell buffer, Screen_DrawStringCtl (S_DrawString codes),
                            S_DrawBox 1:1, rasterizer (cells->640x400 RGB), BMP writer,
                            DumpPlain, truecolor VT backend + backend dispatch
-    it_screen.h            Screen_* API, ITK_* key enum, screen_backend_t vtable
-    it_screen_win32.c      Win32 pixel backend: GDI window, 2x StretchDIBits, VK->ITK
+    it_screen.h            Screen_* API, ITK_* key enum, it_mouse_t/Screen_GetMouse,
+                           screen_backend_t vtable
+    it_screen_win32.c      Win32 pixel backend: GDI window, 2x StretchDIBits, VK->ITK,
+                           mouse capture (cell + logical-pixel coords)
     it_pattern.c (209)     unpacked grid <-> packed format; exact inverse of player decoder
     it_pattern.h (72)      editcell_t (explicit mask: CM_NOTE/INS/VOL/CMD), Pattern_* API,
                            Engine_Lock/Unlock hooks
-    it_editor.c  (~1300)   screens in the original IT layouts (see §2), key handling,
-                           file requester, main menu, ITED_SELFTEST/ITED_DUMP/ITED_SHOT
+    it_editor.c  (~2100)   screens in the original IT layouts (see §2), widget/object
+                           framework (focus, thumbbars, toggles, text, lists, mouse),
+                           real menus from IT_OBJ1.ASM, scrolling file requester,
+                           ited.cfg prefs, ITED_SELFTEST/ITED_DUMP/ITED_SHOT
     main.c       (218)     player CLI
   tools/
     gen_vgadata.py         IT_S.ASM + romfont.bin -> src/it_vgadata.c
@@ -260,41 +292,58 @@ itplay/
   9 thin panel, 25 sunken+tan, 27 thick sunken+black fill, 15 list pane.
 - Thumbbar: groove = char 0 attr 03h, width (max-min+15)>>3, thumb =
   chars 155..167 (6px bar with 1px sub-positions), value 3-digit attr 21h.
+- **Focus indication (object pre-functions in IT_F.ASM)**: buttons draw
+  the label attr **23h** instead of 20h (`F_PreButtonObject`); thumbbars
+  draw the thumb attr **03h** instead of 02h (`F_PreThumbBar`); toggles
+  hilight the On/Off word in 30h (`F_PreToggle`); string inputs put a
+  30h cursor cell after the text (`F_PreStringInput`). Pressed buttons =
+  box style+1; the label attr does NOT change with pressed state.
+- String inputs and toggles draw their value in attr **02h** (not 05h).
+- Menu geometry (IT_OBJ1.ASM): Main (6,14)-(38,46) style 3 + inner 0,
+  title (12,16) 23h, items (8,18+3i)-(36,20+3i) style 28 (28=up, 29=down
+  menu-item bevel); File (25,16)-(54,39) style 1, items x27..52 from
+  y20; Playback (25,16)-(59,48); Sample (25,23)-(57,37) items y27;
+  Instrument (20,23)-(56,34) items from (22,27). Item text at (x0+1,y0+1).
+- Thumbbar mouse mapping (8010h events): classic bars are
+  pixel-precise, value = min + (mouse_px - (barx*8+4)); scalable bars
+  compress the range over dw*8 pixels with rounding.
 
 ---
 
 ## 6. Next phase
 
-Stage-4 status: the "make it the real IT UI" milestone **landed
-2026-06-12** (pixel backend + original layouts, see §2). Remaining
-roadmap, rough priority order:
+Stage-4 status: the "make it the real IT UI" milestone landed
+2026-06-12, and a second pass the same day made it **operable**: widget
+focus system, working sliders/buttons/toggles/text on F3/F4/F11/F12,
+the real IT_OBJ1.ASM menu trees, a scrolling multi-pane file requester,
+mouse support, menu flicker fix, `ited.cfg` prefs. Remaining roadmap,
+rough priority order:
 
 1. **SDL backend for POSIX** — the pixel rasterizer
    (`Screen_Rasterize`) is already backend-neutral; an SDL backend is
    ~the same ~150 lines as `it_screen_win32.c` against the
-   `screen_backend_t` vtable. Terminal stays the no-deps fallback.
-2. **Finish object-exact F4 + main menu** — port the instrument-page
-   and menu object tables from `IT_OBJ1.ASM`/`IT_M.ASM` (current F4
-   right pane + ESC menu are screenshot-eyeballed). Volume/Panning/
-   Pitch tabs of F4 are not implemented at all.
+   `screen_backend_t` vtable (incl. the `mouse` member). Terminal stays
+   the no-deps fallback.
+2. **Object-exact F4 right pane + the F4 Volume/Panning/Pitch tabs**
+   (current layout is screenshot-eyeballed; tabs are stubs; NNA/DCT/DCA
+   buttons and the list work).
 3. **Info page (F5), message editor, save module (F10)** — F10 needs
    the `IT_DISK.ASM` save path ported (the engine only loads today).
+   The menu entries exist and flash "not ported yet".
 4. **Editing depth**: block ops (Alt-keys), edit masks, more of
-   `PE_TRANS.INC` behaviour; sample/instrument value *editing* on
-   F3/F4 (display + selection work today, edits don't).
-5. **Mouse** — port `IT_MOUSE.ASM` event model (pixel backends first).
-6. **In-depth sample & instrument editors** (`IT_I.ASM`) — envelopes,
+   `PE_TRANS.INC` behaviour; numeric entry on thumbbars (typed digits).
+5. **In-depth sample & instrument editors** (`IT_I.ASM`) — envelopes,
    sample draw/loop/zoom ops.
-7. **Config persistence** — IT wrote config into the driver/EXE;
-   replace with a config file.
+6. **Terminal-backend mouse** (xterm SGR mouse reporting) if wanted;
+   the editor side is backend-agnostic already.
 
 ### Working agreements when continuing
 - Engine code stays 1:1; if you must touch it, re-run the §4 regression and
   confirm all four modules remain `IDENTICAL`.
 - Editor code is a faithful UI/behaviour port — reference the ASM for layout
   and behaviour, but idiomatic C is fine. **Layout/colors come from the
-  ASM data tables, not from eyeballing** (the only current exceptions:
-  F4 right pane, ESC menu).
+  ASM data tables, not from eyeballing** (the only current exception:
+  the F4 right pane).
 - New backends go **behind the `screen_backend_t` vtable** in
   `it_screen.h`; the cell buffer, control-code renderer, box drawing and
   the rasterizer are backend-independent and shared.

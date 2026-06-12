@@ -82,8 +82,20 @@ enum {
     ITK_F7, ITK_F8, ITK_F9, ITK_F10, ITK_F11, ITK_F12,
     ITK_ESC, ITK_ENTER, ITK_BACKSPACE, ITK_TAB, ITK_SHIFT_TAB,
     ITK_QUIT,               /* window closed (pixel backend) */
+    ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };
 int Key_Get(void);          /* non-blocking, K_GetKey-style             */
+
+/* ---- mouse (pixel backend; terminal backend reports no mouse) ----
+ * x,y are cell coordinates (0..79, 0..49); px,py logical pixels
+ * (0..639, 0..399) for the thumbbars' pixel-precise positioning, as in
+ * the original's 8010h mouse events; b is bit 0 = left button held. */
+typedef struct it_mouse_t {
+    int x, y;
+    int px, py;
+    int b;
+} it_mouse_t;
+void Screen_GetMouse(it_mouse_t *m);
 
 /* ---- internal: backend interface (it_screen.c / it_screen_win32.c) ---- */
 
@@ -98,6 +110,7 @@ typedef struct screen_backend_t {
     /* present the full cell buffer; backend does its own damage tracking */
     void (*present)(const screen_cell_t *cells);
     int  (*key)(void);
+    void (*mouse)(it_mouse_t *m);   /* NULL = no mouse support */
 } screen_backend_t;
 
 #ifdef _WIN32

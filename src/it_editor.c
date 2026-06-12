@@ -75,6 +75,7 @@ static int       ListSel = 0;             /* sample/instrument/order index */
 static int       Running = 1;
 static char      FileNameDisp[20] = "";   /* header File Name field */
 static time_t    StartTime;
+static char      DirModule[256], DirSample[256], DirInstr[256];
 
 static ma_device Device;
 static ma_mutex  Mutex;
@@ -119,18 +120,28 @@ static void draw_itname(int x, int y, const char *name, int w, uint8_t attr)
     }
 }
 
-/* F_DrawButtonObject look: raised style-8 box, swapped bevel when
- * pressed/selected (style 9), label drawn from the box's left edge. */
+/* F_DrawButtonObject look: base style box, +1 (swapped bevel) when
+ * pressed/down; label attr 20h, or 23h when the button has keyboard
+ * focus (F_PreButtonObject). */
+static void draw_button_style(int x0, int y0, int x1, int y1, int style,
+                              const char *text, int pressed, int focused)
+{
+    Screen_DrawBox(x0, y0, x1, y1, style + (pressed ? 1 : 0));
+    Screen_DrawString(x0 + 1, (y0 + y1) / 2, text, focused ? 0x23 : 0x20);
+}
+
 static void draw_button(int x0, int y0, int x1, int y1,
                         const char *text, int pressed)
 {
-    Screen_DrawBox(x0, y0, x1, y1, pressed ? 9 : 8);
-    Screen_DrawString(x0 + 1, (y0 + y1) / 2, text, pressed ? 0x23 : 0x20);
+    draw_button_style(x0, y0, x1, y1, 8, text, pressed, 0);
 }
 
 /* F_DrawThumbBar, ported 1:1: black groove, 6px thumb built from the
- * fractional-bar glyphs 155..167, 3-digit value in attr 21h after. */
-static void draw_thumbbar(int x, int y, int min, int max, int val)
+ * fractional-bar glyphs 155..167, 3-digit value in attr 21h after.
+ * `tattr` is 02h normally, 03h (white thumb) when the bar has focus --
+ * exactly F_DrawThumbBar vs F_PreThumbBar. */
+static void draw_thumbbar(int x, int y, int min, int max, int val,
+                          uint8_t tattr)
 {
     int width = (max - min + 15) >> 3;
     int i, v, cell, sub;
@@ -144,9 +155,9 @@ static void draw_thumbbar(int x, int y, int min, int max, int val)
     v = val - min + 1;
     cell = v >> 3;
     sub = v & 7;
-    Screen_PutChar(x + cell, y, (uint8_t)(155 + sub), 0x02);
+    Screen_PutChar(x + cell, y, (uint8_t)(155 + sub), tattr);
     if (155 + sub > 157)
-        Screen_PutChar(x + cell + 1, y, (uint8_t)(155 + sub + 5), 0x02);
+        Screen_PutChar(x + cell + 1, y, (uint8_t)(155 + sub + 5), tattr);
 
     draw3num(x + width + 1, y, val, 0x21);
 }
@@ -154,7 +165,7 @@ static void draw_thumbbar(int x, int y, int min, int max, int val)
 /* scalable thumbbar (F_DrawScalableThumbBar approximation): fixed cell
  * width, value range compressed onto it. */
 static void draw_thumbbar_scaled(int x, int y, int min, int max, int val,
-                                 int width)
+                                 int width, uint8_t tattr)
 {
     int i, v, cell, sub;
 
@@ -167,14 +178,426 @@ static void draw_thumbbar_scaled(int x, int y, int min, int max, int val,
     v = (val - min) * (width * 8 - 2) / (max - min) + 1;
     cell = v >> 3;
     sub = v & 7;
-    Screen_PutChar(x + cell, y, (uint8_t)(155 + sub), 0x02);
+    Screen_PutChar(x + cell, y, (uint8_t)(155 + sub), tattr);
     if (155 + sub > 157)
-        Screen_PutChar(x + cell + 1, y, (uint8_t)(155 + sub + 5), 0x02);
+        Screen_PutChar(x + cell + 1, y, (uint8_t)(155 + sub + 5), tattr);
 
     draw3num(x + width + 1, y, val, 0x21);
 }
 
 static const char NoteNameChars[] = "C-C#D-D#E-F-F#G-G#A-A#B-";
+
+/* ===================================================================
+ * Transient status message on the info line (row 9), like the
+ * original's "Saved.", "Function not implemented" etc. messages.
+ * =================================================================== */
+static char   StatusMsg[64];
+static time_t StatusUntil;
+
+static void status(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(StatusMsg, sizeof(StatusMsg), fmt, ap);
+    va_end(ap);
+    StatusUntil = time(NULL) + 2;
+}
+
+/* ===================================================================
+ * Object/widget framework -- C equivalent of the IT_F.ASM object
+ * handlers. Focus indication follows the original exactly:
+ *   buttons   F_PreButtonObject:  label attr 23h instead of 20h
+ *   thumbbars F_PreThumbBar:      thumb attr 03h instead of 02h
+ *   toggles   F_PreToggle:        On/Off word hilighted in 30h
+ *   text      F_PreStringInput:   30h cursor cell after the text
+ * Every interactive screen rebuilds its widget table each frame (the
+ * value pointers track the current list selection); a per-screen focus
+ * index survives across frames and screen switches.
+ * =================================================================== */
+enum { WT_BUTTON = 1, WT_THUMB, WT_TOGGLE, WT_TEXT, WT_LIST };
+
+typedef struct widget_t {
+    uint8_t type;
+    int x0, y0, x1, y1;            /* hit box, inclusive cell coords */
+    /* button */
+    const char *label;
+    int style;                     /* box style up; down = style+1 */
+    /* value binding: byte radio/thumb value, or 16-bit flag word */
+    uint8_t  *v8;
+    uint8_t   vmask, vval;         /* radio: down when (*v8&vmask)==vval */
+    uint16_t *v16;
+    uint16_t  bit;                 /* flag bit (toggle / flag-button)  */
+    uint8_t   neg;                 /* flag-button: down when bit clear */
+    void    (*action)(void);       /* press / value-change hook */
+    /* thumbbar (value lives in *v8, masked by vmask if nonzero) */
+    int barx, bary, min, max, dw;  /* dw = scaled display width, 0 = classic */
+    /* string input */
+    char *text;
+    int   tmax;                    /* max characters excl. terminator */
+    /* list (selection/scrolling handled by the screen) */
+    int (*lkey)(int key);          /* returns nonzero if consumed */
+    void (*lclick)(int row, int mx, int mpx);
+    int  listy0;                   /* screen row of the first list line */
+} widget_t;
+
+#define MAX_WIDGETS 48
+static widget_t W[MAX_WIDGETS];
+static int      NW;
+static int      FocusIdx[6];
+static int      DragIdx = -1;      /* thumbbar being mouse-dragged */
+
+static widget_t *wadd(int type, int x0, int y0, int x1, int y1)
+{
+    widget_t *w = &W[NW];
+    memset(w, 0, sizeof(*w));
+    w->type = type;
+    w->x0 = x0; w->y0 = y0; w->x1 = x1; w->y1 = y1;
+    if (NW < MAX_WIDGETS - 1)
+        NW++;
+    return w;
+}
+
+static widget_t *wbutton(int x0, int y0, int x1, int y1, const char *label,
+                         void (*action)(void))
+{
+    widget_t *w = wadd(WT_BUTTON, x0, y0, x1, y1);
+    w->label = label;
+    w->style = 8;
+    w->action = action;
+    return w;
+}
+
+/* radio button over a byte field: down when (*v&mask)==val, pressing
+ * stores val (the ButtonEffectType-5 "set variable" buttons) */
+static widget_t *wradio8(int x0, int y0, int x1, int y1, const char *label,
+                         uint8_t *v, uint8_t mask, uint8_t val)
+{
+    widget_t *w = wbutton(x0, y0, x1, y1, label, NULL);
+    w->v8 = v; w->vmask = mask; w->vval = val;
+    return w;
+}
+
+/* radio button over a song-flags bit: `neg` button clears the bit */
+static widget_t *wradiof(int x0, int y0, int x1, int y1, const char *label,
+                         uint16_t *flags, uint16_t bit, uint8_t neg)
+{
+    widget_t *w = wbutton(x0, y0, x1, y1, label, NULL);
+    w->v16 = flags; w->bit = bit; w->neg = neg;
+    return w;
+}
+
+static widget_t *wthumb(int x, int y, int min, int max, uint8_t *v,
+                        uint8_t vmask, int dw)
+{
+    int width = dw ? dw : ((max - min + 15) >> 3);
+    widget_t *w = wadd(WT_THUMB, x, y, x + width - 1, y);
+    w->barx = x; w->bary = y;
+    w->min = min; w->max = max; w->dw = dw;
+    w->v8 = v; w->vmask = vmask;
+    return w;
+}
+
+static widget_t *wtoggle8(int x, int y, uint8_t *v, uint8_t bit)
+{
+    widget_t *w = wadd(WT_TOGGLE, x, y, x + 2, y);
+    w->v8 = v; w->bit = bit;
+    return w;
+}
+
+static widget_t *wtogglef(int x, int y, uint16_t *flags, uint16_t bit)
+{
+    widget_t *w = wadd(WT_TOGGLE, x, y, x + 2, y);
+    w->v16 = flags; w->bit = bit;
+    return w;
+}
+
+static widget_t *wtext(int x, int y, char *text, int tmax)
+{
+    widget_t *w = wadd(WT_TEXT, x, y, x + tmax, y);
+    w->text = text; w->tmax = tmax;
+    return w;
+}
+
+static widget_t *wlist(int x0, int y0, int x1, int y1, int listy0,
+                       int (*lkey)(int),
+                       void (*lclick)(int, int, int))
+{
+    widget_t *w = wadd(WT_LIST, x0, y0, x1, y1);
+    w->lkey = lkey; w->lclick = lclick; w->listy0 = listy0;
+    return w;
+}
+
+static int thumb_get(const widget_t *w)
+{
+    return w->vmask ? (*w->v8 & w->vmask) : *w->v8;
+}
+
+static void thumb_set(widget_t *w, int v)
+{
+    if (v < w->min) v = w->min;
+    if (v > w->max) v = w->max;
+    ed_lock();
+    if (w->vmask)
+        *w->v8 = (uint8_t)((*w->v8 & ~w->vmask) | v);
+    else
+        *w->v8 = (uint8_t)v;
+    ed_unlock();
+    if (w->action)
+        w->action();
+}
+
+/* mouse -> value, pixel-precise as the original 8010h mouse events:
+ * classic bars map 1 pixel = 1 unit from barx*8+4; scalable bars
+ * compress the range onto dw*8 pixels with rounding. */
+static void thumb_from_px(widget_t *w, int mpx)
+{
+    int rel = mpx - (w->barx * 8 + 4);
+    int v;
+
+    if (rel < 0)
+        rel = 0;
+    if (w->dw) {
+        int np = w->dw * 8;
+        if (rel > np)
+            rel = np;
+        v = w->min + ((w->max - w->min) * rel + np / 2) / np;
+    } else {
+        v = w->min + rel;
+    }
+    thumb_set(w, v);
+}
+
+static int toggle_get(const widget_t *w)
+{
+    if (w->v8)
+        return (*w->v8 & (uint8_t)w->bit) != 0;
+    return (*w->v16 & w->bit) != 0;
+}
+
+static void toggle_flip(widget_t *w)
+{
+    ed_lock();
+    if (w->v8)
+        *w->v8 ^= (uint8_t)w->bit;
+    else
+        *w->v16 ^= w->bit;
+    ed_unlock();
+    if (w->action)
+        w->action();
+}
+
+static int button_down(const widget_t *w)
+{
+    if (w->v8)
+        return (*w->v8 & w->vmask) == w->vval;
+    if (w->v16)
+        return ((((*w->v16 & w->bit) != 0) ? 1 : 0) ^ w->neg) & 1;
+    return 0;
+}
+
+static void button_press(widget_t *w)
+{
+    if (w->v8) {
+        ed_lock();
+        *w->v8 = (uint8_t)((*w->v8 & ~w->vmask) | w->vval);
+        ed_unlock();
+    } else if (w->v16) {
+        ed_lock();
+        if (w->neg)
+            *w->v16 &= (uint16_t)~w->bit;
+        else
+            *w->v16 |= w->bit;
+        ed_unlock();
+    }
+    if (w->action)
+        w->action();
+}
+
+static void widget_draw(const widget_t *w, int focused)
+{
+    switch (w->type) {
+    case WT_BUTTON:
+        draw_button_style(w->x0, w->y0, w->x1, w->y1, w->style,
+                          w->label, button_down(w), focused);
+        break;
+    case WT_THUMB:
+        if (w->dw)
+            draw_thumbbar_scaled(w->barx, w->bary, w->min, w->max,
+                                 thumb_get(w), w->dw,
+                                 focused ? 0x03 : 0x02);
+        else
+            draw_thumbbar(w->barx, w->bary, w->min, w->max,
+                          thumb_get(w), focused ? 0x03 : 0x02);
+        break;
+    case WT_TOGGLE:
+        Screen_DrawString(w->x0, w->y0, toggle_get(w) ? "On " : "Off",
+                          focused ? 0x30 : 0x02);
+        break;
+    case WT_TEXT: {
+        int i, len = 0;
+        while (len < w->tmax && w->text[len])
+            len++;
+        for (i = 0; i < w->tmax; i++) {
+            uint8_t c = (i < len) ? (uint8_t)w->text[i] : ' ';
+            if (c < 32)
+                c = ' ';
+            Screen_PutChar(w->x0 + i, w->y0, c, 0x02);
+        }
+        if (focused) {
+            int cx = (len < w->tmax) ? len : w->tmax - 1;
+            uint8_t c = (cx < len) ? (uint8_t)w->text[cx] : ' ';
+            if (c < 32)
+                c = ' ';
+            Screen_PutChar(w->x0 + cx, w->y0, c, 0x30);
+        }
+        break; }
+    case WT_LIST:
+        break;                     /* the screen draws its own lists */
+    }
+}
+
+static void widgets_draw(void)
+{
+    int i;
+    if (FocusIdx[Screen] >= NW)
+        FocusIdx[Screen] = 0;
+    for (i = 0; i < NW; i++)
+        widget_draw(&W[i], i == FocusIdx[Screen]);
+}
+
+/* directional focus movement; approximates the original per-object
+ * Up/Down/Left/Right association links geometrically */
+static void nav_move(int dir)              /* 0=up 1=down 2=left 3=right */
+{
+    const widget_t *c = &W[FocusIdx[Screen]];
+    int cx = (c->x0 + c->x1) / 2, cy = (c->y0 + c->y1) / 2;
+    int best = -1, bestscore = 0x7FFFFFFF, i;
+
+    for (i = 0; i < NW; i++) {
+        int x, y, dx, dy, score;
+        if (i == FocusIdx[Screen])
+            continue;
+        x = (W[i].x0 + W[i].x1) / 2;
+        y = (W[i].y0 + W[i].y1) / 2;
+        dx = x - cx; dy = y - cy;
+        switch (dir) {
+        case 0: if (dy >= 0) continue; score = -dy + abs(dx) * 4; break;
+        case 1: if (dy <= 0) continue; score =  dy + abs(dx) * 4; break;
+        case 2: if (dx >= 0) continue; score = -dx + abs(dy) * 4; break;
+        default:if (dx <= 0) continue; score =  dx + abs(dy) * 4; break;
+        }
+        if (score < bestscore) {
+            bestscore = score;
+            best = i;
+        }
+    }
+    if (best >= 0)
+        FocusIdx[Screen] = best;
+}
+
+static int widgets_key(int key)
+{
+    widget_t *w;
+    int f = FocusIdx[Screen];
+
+    if (NW == 0)
+        return 0;
+    if (f >= NW)
+        f = FocusIdx[Screen] = 0;
+    w = &W[f];
+
+    if (w->type == WT_LIST && w->lkey && w->lkey(key))
+        return 1;
+
+    switch (key) {
+    case ITK_TAB:       FocusIdx[Screen] = (f + 1) % NW;      return 1;
+    case ITK_SHIFT_TAB: FocusIdx[Screen] = (f + NW - 1) % NW; return 1;
+    case ITK_UP:        nav_move(0); return 1;
+    case ITK_DOWN:      nav_move(1); return 1;
+    default: break;
+    }
+
+    if (w->type == WT_THUMB) {
+        switch (key) {
+        case ITK_LEFT:  thumb_set(w, thumb_get(w) - 1); return 1;
+        case ITK_RIGHT: thumb_set(w, thumb_get(w) + 1); return 1;
+        case ITK_HOME:  thumb_set(w, w->min);           return 1;
+        case ITK_END:   thumb_set(w, w->max);           return 1;
+        default: break;
+        }
+    } else {
+        if (key == ITK_LEFT)  { nav_move(2); return 1; }
+        if (key == ITK_RIGHT) { nav_move(3); return 1; }
+    }
+
+    if (w->type == WT_TEXT) {
+        int len = 0;
+        while (len < w->tmax && w->text[len])
+            len++;
+        if (key == ITK_BACKSPACE) {
+            if (len > 0)
+                w->text[len - 1] = 0;
+            return 1;
+        }
+        if (key >= 32 && key < 127) {
+            if (len < w->tmax) {
+                w->text[len] = (char)key;
+                if (len + 1 <= w->tmax)
+                    w->text[len + 1] = 0;
+            }
+            return 1;
+        }
+    }
+
+    if (key == ITK_ENTER || key == ' ') {
+        if (w->type == WT_BUTTON) { button_press(w); return 1; }
+        if (w->type == WT_TOGGLE) { toggle_flip(w);  return 1; }
+    }
+    return 0;
+}
+
+static void widgets_mouse(void)
+{
+    it_mouse_t m;
+    int i;
+
+    Screen_GetMouse(&m);
+    for (i = 0; i < NW; i++) {
+        widget_t *w = &W[i];
+        if (m.x < w->x0 || m.x > w->x1 || m.y < w->y0 || m.y > w->y1)
+            continue;
+        FocusIdx[Screen] = i;
+        switch (w->type) {
+        case WT_BUTTON: button_press(w); break;
+        case WT_TOGGLE: toggle_flip(w); break;
+        case WT_THUMB:  thumb_from_px(w, m.px); DragIdx = i; break;
+        case WT_LIST:
+            if (w->lclick)
+                w->lclick(m.y - w->listy0, m.x, m.px);
+            break;
+        default: break;
+        }
+        return;
+    }
+}
+
+/* per-screen list handlers (definitions follow the key-handling code) */
+static int  sample_list_lkey(int key);
+static int  instr_list_lkey(int key);
+static int  order_list_lkey(int key);
+static int  pan_left_lkey(int key);
+static int  pan_right_lkey(int key);
+static void sample_list_lclick(int row, int mx, int mpx);
+static void instr_list_lclick(int row, int mx, int mpx);
+static void order_list_lclick(int row, int mx, int mpx);
+static void pan_left_lclick(int row, int mx, int mpx);
+static void pan_right_lclick(int row, int mx, int mpx);
+static void act_stereo_changed(void);
+static void act_tempo_changed(void);
+static void act_speed_changed(void);
+static void act_help_done(void);
+static void act_tab_not_ported(void);
+static void act_save_prefs(void);
 
 /* ===================================================================
  * Common chrome: header (HeaderMsg1-4 from IT_F.ASM), info line,
@@ -311,6 +734,8 @@ static void draw_chrome(const char *title)
         Screen_DrawStringCtl(2, 9, PatternPlayMsg, 0x20, nums9);
     }
     ed_unlock();
+    if (time(NULL) < StatusUntil)
+        drawf(2, 9, 0x23, "%-59.59s", StatusMsg);
     {
         long secs = (long)(time(NULL) - StartTime);
         drawf(62, 9, 0x20, " Time    %ld:%02ld:%02ld",
@@ -512,6 +937,9 @@ static const uint8_t InstParamText[] =
     "\377\010 \376\041\222\376\003\377\015\232\376\040\015"
     " Quality\015  Length";
 
+static int SmpListTop, InsListTop, OrdListTop;
+static int PanSel;                              /* selected pan channel */
+
 static void draw_samples(void)
 {
     int i, n = Song.Header.SmpNum ? Song.Header.SmpNum : 1;
@@ -523,6 +951,7 @@ static void draw_samples(void)
     top = ListSel - rows / 2;
     if (top > n - rows) top = n - rows;
     if (top < 0) top = 0;
+    SmpListTop = top;
 
     Screen_DrawBox(4, 12, 35, 48, 27);          /* SampleListBox */
     for (i = 0; i < rows; i++) {
@@ -536,54 +965,47 @@ static void draw_samples(void)
 
     s = &Song.Smp[ListSel];
 
+    NW = 0;
+    wlist(5, 13, 34, 47, 13, sample_list_lkey, sample_list_lclick);
+
     Screen_DrawBox(36, 12, 53, 18, 9);          /* Default Volume */
     Screen_DrawString(38, 14, "Default Volume", 0x20);
     Screen_DrawBox(37, 15, 47, 17, 9);
-    draw_thumbbar(38, 16, 0, 64, s->Vol);
+    wthumb(38, 16, 0, 64, &s->Vol, 0, 0);
 
     Screen_DrawBox(36, 19, 53, 25, 9);          /* Global Volume */
     Screen_DrawString(38, 21, "Global Volume", 0x20);
     Screen_DrawBox(37, 22, 47, 24, 9);
-    draw_thumbbar(38, 23, 0, 64, s->GvL);
+    wthumb(38, 23, 0, 64, &s->GvL, 0, 0);
 
     Screen_DrawBox(36, 26, 53, 33, 9);          /* Default Pan */
     Screen_DrawString(39, 28, "Default Pan", 0x20);
     Screen_DrawBox(37, 29, 47, 32, 25);
-    Screen_DrawString(38, 30, (s->DfP & 0x80) ? "On " : "Off", 0x20);
-    draw_thumbbar(38, 31, 0, 64, s->DfP & 0x7F);
+    wtoggle8(38, 30, &s->DfP, 0x80);
+    wthumb(38, 31, 0, 64, &s->DfP, 0x7F, 0);
 
     Screen_DrawBox(36, 35, 53, 41, 9);          /* Vibrato Speed */
     Screen_DrawString(38, 37, "Vibrato Speed", 0x20);
     Screen_DrawBox(37, 38, 47, 40, 9);
-    draw_thumbbar(38, 39, 0, 64, s->ViS);
+    wthumb(38, 39, 0, 64, &s->ViS, 0, 0);
 
     Screen_DrawBox(36, 42, 53, 48, 9);          /* Vibrato Depth */
     Screen_DrawString(38, 44, "Vibrato Depth", 0x20);
     Screen_DrawBox(37, 45, 47, 47, 9);
-    draw_thumbbar_scaled(38, 46, 0, 32, s->ViD, 8);
+    wthumb(38, 46, 0, 32, &s->ViD, 0, 8);
 
     Screen_DrawBox(54, 42, 77, 48, 9);          /* Vibrato Rate */
     Screen_DrawString(60, 44, "Vibrato Rate", 0x20);
     Screen_DrawBox(55, 45, 72, 47, 9);
-    draw_thumbbar_scaled(56, 46, 0, 255, s->ViR, 15);
+    wthumb(56, 46, 0, 255, &s->ViR, 0, 15);
 
     Screen_DrawBox(54, 25, 77, 30, 9);          /* waveform display */
     Screen_DrawBox(54, 31, 77, 41, 9);          /* Vibrato Waveform */
     Screen_DrawString(58, 33, "Vibrato Waveform", 0x20);
-    {
-        static const uint8_t sine[]   = { ' ',' ',' ',185,186,0 };
-        static const uint8_t ramp[]   = { ' ',' ',' ',189,190,0 };
-        static const uint8_t square[] = { ' ',' ',' ',187,188,0 };
-        int vt = s->ViT & 3;
-        Screen_DrawBox(56, 35, 65, 37, vt == 0 ? 9 : 8);
-        Screen_DrawStringCtl(57, 36, sine,   vt == 0 ? 0x23 : 0x20, NULL);
-        Screen_DrawBox(66, 35, 75, 37, vt == 1 ? 9 : 8);
-        Screen_DrawStringCtl(67, 36, ramp,   vt == 1 ? 0x23 : 0x20, NULL);
-        Screen_DrawBox(56, 38, 65, 40, vt == 2 ? 9 : 8);
-        Screen_DrawStringCtl(57, 39, square, vt == 2 ? 0x23 : 0x20, NULL);
-        Screen_DrawBox(66, 38, 75, 40, vt == 3 ? 9 : 8);
-        Screen_DrawString(67, 39, " Random", vt == 3 ? 0x23 : 0x20);
-    }
+    wradio8(56, 35, 65, 37, "   \271\272", &s->ViT, 3, 0);    /* sine   */
+    wradio8(66, 35, 75, 37, "   \275\276", &s->ViT, 3, 1);    /* ramp   */
+    wradio8(56, 38, 65, 40, "   \273\274", &s->ViT, 3, 2);    /* square */
+    wradio8(66, 38, 75, 40, " Random",     &s->ViT, 3, 3);
 
     Screen_DrawBox(63, 12, 77, 24, 27);         /* InstParamBox */
     Screen_DrawStringCtl(55, 13, InstParamText, 0x20, NULL);
@@ -597,6 +1019,8 @@ static void draw_samples(void)
     drawf(64, 20, 0x03, "%6u", s->SusLoopEnd);
     drawf(64, 22, 0x03, "%d bits", (s->Flags & 2) ? 16 : 8);
     drawf(64, 23, 0x03, "%u", s->Length);
+
+    widgets_draw();
 }
 
 /* ===================================================================
@@ -619,6 +1043,7 @@ static void draw_instruments(void)
     top = ListSel - rows / 2;
     if (top > n - rows) top = n - rows;
     if (top < 0) top = 0;
+    InsListTop = top;
 
     Screen_DrawBox(4, 12, 35, 48, 27);
     for (i = 0; i < rows; i++) {
@@ -632,28 +1057,33 @@ static void draw_instruments(void)
 
     ins = &Song.Ins[ListSel];
 
+    NW = 0;
+    wlist(5, 13, 34, 47, 13, instr_list_lkey, instr_list_lclick);
+
     draw_button(37, 12, 46, 14, " General", 1);
-    draw_button(47, 12, 56, 14, " Volume", 0);
-    draw_button(57, 12, 67, 14, " Panning", 0);
-    draw_button(68, 12, 76, 14, " Pitch", 0);
+    wbutton(47, 12, 56, 14, " Volume",  act_tab_not_ported);
+    wbutton(57, 12, 67, 14, " Panning", act_tab_not_ported);
+    wbutton(68, 12, 76, 14, " Pitch",   act_tab_not_ported);
 
     Screen_DrawString(53, 17, "New Note Action", 0x20);
     for (i = 0; i < 4; i++)
-        draw_button(50, 19 + i*3, 67, 21 + i*3, NNANames[i],
-                    (ins->NNA & 3) == i);
+        wradio8(50, 19 + i*3, 67, 21 + i*3, NNANames[i],
+                &ins->NNA, 3, (uint8_t)i);
 
     Screen_DrawString(46, 32, "Duplicate Check Type & Action", 0x20);
     for (i = 0; i < 4; i++)
-        draw_button(40, 34 + i*3, 56, 36 + i*3, DCTNames[i],
-                    (ins->DCT & 3) == i);
+        wradio8(40, 34 + i*3, 56, 36 + i*3, DCTNames[i],
+                &ins->DCT, 3, (uint8_t)i);
     for (i = 0; i < 3; i++)
-        draw_button(58, 34 + i*3, 74, 36 + i*3, DCANames[i],
-                    (ins->DCA & 3) == i && (ins->DCT & 3) != 0);
+        wradio8(58, 34 + i*3, 74, 36 + i*3, DCANames[i],
+                &ins->DCA, 3, (uint8_t)i);
 
     Screen_DrawString(45, 46, "Filename", 0x20);
     Screen_PutChar(54, 46, 132, 0x21);
     drawf(55, 46, 0x05, "%-12.12s", ins->DOSFileName);
     Screen_PutChar(67, 46, 131, 0x23);
+
+    widgets_draw();
 }
 
 /* ===================================================================
@@ -666,16 +1096,25 @@ static const uint8_t PanHeaderText[] =
 static void draw_order(void)
 {
     int i, n = Song.Header.OrdNum;
+    int focusw = FocusIdx[SCR_ORDER];
 
     if (n <= 0) n = 1;
     if (ListSel < 0) ListSel = 0;
     if (ListSel >= n) ListSel = n - 1;
+    if (PanSel < 0) PanSel = 0;
+    if (PanSel > 63) PanSel = 63;
+
+    NW = 0;
+    wlist(6, 15, 9, 46, 15, order_list_lkey, order_list_lclick);
+    wlist(20, 15, 39, 46, 15, pan_left_lkey, pan_left_lclick);
+    wlist(54, 15, 73, 46, 15, pan_right_lkey, pan_right_lclick);
 
     /* order list, type-12 object at (2,15), 32 entries */
     {
         int top = ListSel - 16;
         if (top > n - 32) top = n - 32;
         if (top < 0) top = 0;
+        OrdListTop = top;
 
         Screen_DrawBox(5, 14, 10, 47, 27);
         for (i = 0; i < 32; i++) {
@@ -701,29 +1140,29 @@ static void draw_order(void)
     Screen_DrawStringCtl(64, 14, PanHeaderText, 0x23, NULL);
 
     for (i = 0; i < 32; i++) {
-        int x = (i < 32) ? 20 : 54;
-        int bx = 31;
-        int c = i;
-        uint8_t pan;
-
-        drawf(20, 15 + i, 0x20, "Channel %02d", i + 1);
-        drawf(54, 15 + i, 0x20, "Channel %02d", i + 33);
+        int c;
 
         for (c = 0; c < 2; c++) {
             int chan = i + c * 32;
-            pan = Song.Header.ChnlPan[chan];
-            bx = c ? 65 : 31;
-            x = bx;
+            int sel = (PanSel == chan) && (focusw == 1 + c);
+            int bx = c ? 65 : 31;
+            uint8_t pan = Song.Header.ChnlPan[chan];
+            uint8_t a = sel ? 0x03 : 0x02;
+
+            drawf(bx - 11, 15 + i, sel ? 0x30 : 0x20,
+                  "Channel %02d", chan + 1);
             if (pan & 0x80) {
-                Screen_DrawString(x + 1, 15 + i, "Muted", 0x02);
+                Screen_DrawString(bx + 1, 15 + i, "Muted", a);
             } else if ((pan & 0x7F) == 100) {
-                Screen_DrawString(x, 15 + i, "Surround", 0x02);
+                Screen_DrawString(bx, 15 + i, "Surround", a);
             } else {
                 int pos = (pan & 0x7F) * 8 / 64;
-                Screen_PutChar(x + pos, 15 + i, 254, 0x02);
+                Screen_PutChar(bx + pos, 15 + i, 254, a);
             }
         }
     }
+
+    widgets_draw();
 }
 
 /* ===================================================================
@@ -743,45 +1182,52 @@ static const uint8_t DirLabels[] =
 
 static void draw_vars(void)
 {
-    int f = Song.Header.Flags;
-
     Screen_DrawString(33, 13, "Song Variables", 0x23);
     Screen_DrawBox(16, 15, 43, 17, 25);             /* SongNameBox */
     Screen_DrawBox(16, 18, 50, 21, 9);              /* InitialSpeedBox */
     Screen_DrawBox(16, 22, 34, 28, 25);             /* VolumeBox */
     Screen_DrawStringCtl(2, 16, SongVarLabels, 0x20, NULL);
 
-    draw_itname(17, 16, Song.Header.SongName, 26, 0x05);
+    NW = 0;
+    wtext(17, 16, Song.Header.SongName, 25);
 
-    draw_thumbbar_scaled(17, 19, 31, 255, Song.Header.IT, 28);
-    draw_thumbbar_scaled(17, 20, 1, 255, Song.Header.IS, 28);
+    {
+        widget_t *w;
+        w = wthumb(17, 19, 31, 255, &Song.Header.IT, 0, 28);
+        w->action = act_tempo_changed;
+        w = wthumb(17, 20, 1, 255, &Song.Header.IS, 0, 28);
+        w->action = act_speed_changed;
+    }
+    wthumb(17, 23, 0, 128, &Song.Header.GV, 0, 0);
+    wthumb(17, 24, 0, 128, &Song.Header.MV, 0, 0);
+    wthumb(17, 25, 0, 128, &Song.Header.Sep, 0, 0);
+    wtogglef(17, 26, &Song.Header.Flags, ITF_OLD_EFFECTS);
+    wtogglef(17, 27, &Song.Header.Flags, ITF_LINK_G_TO_EF);
 
-    draw_thumbbar(17, 23, 0, 128, Song.Header.GV);
-    draw_thumbbar(17, 24, 0, 128, Song.Header.MV);
-    draw_thumbbar(17, 25, 0, 128, Song.Header.Sep);
-    Screen_DrawString(17, 26, (f & ITF_OLD_EFFECTS) ? "On " : "Off", 0x05);
-    Screen_DrawString(17, 27, (f & ITF_LINK_G_TO_EF) ? "On " : "Off", 0x05);
-
-    draw_button(16, 29, 30, 31, " Instruments",  (f & ITF_INSTRUMENTS) != 0);
-    draw_button(31, 29, 45, 31, " Samples",     !(f & ITF_INSTRUMENTS));
-    draw_button(16, 32, 30, 34, " Stereo",       (f & ITF_STEREO) != 0);
-    draw_button(31, 32, 45, 34, " Mono",        !(f & ITF_STEREO));
-    draw_button(16, 35, 30, 37, " Linear",       (f & ITF_LINEAR_SLIDES) != 0);
-    draw_button(31, 35, 45, 37, " Amiga",       !(f & ITF_LINEAR_SLIDES));
+    wradiof(16, 29, 30, 31, " Instruments", &Song.Header.Flags,
+            ITF_INSTRUMENTS, 0);
+    wradiof(31, 29, 45, 31, " Samples", &Song.Header.Flags,
+            ITF_INSTRUMENTS, 1);
+    wradiof(16, 32, 30, 34, " Stereo", &Song.Header.Flags,
+            ITF_STEREO, 0)->action = act_stereo_changed;
+    wradiof(31, 32, 45, 34, " Mono", &Song.Header.Flags,
+            ITF_STEREO, 1)->action = act_stereo_changed;
+    wradiof(16, 35, 30, 37, " Linear", &Song.Header.Flags,
+            ITF_LINEAR_SLIDES, 0);
+    wradiof(31, 35, 45, 37, " Amiga", &Song.Header.Flags,
+            ITF_LINEAR_SLIDES, 1);
 
     Screen_DrawStringCtl(1, 39, (const uint8_t *)"\377\116\201", 0x21, NULL);
     Screen_DrawString(34, 40, "Directories", 0x23);
     Screen_DrawBox(12, 41, 78, 45, 27);             /* DirectoryInputBox */
     Screen_DrawStringCtl(2, 42, DirLabels, 0x20, NULL);
-    {
-        char cwd[256] = "";
-        if (getcwd(cwd, sizeof(cwd)))
-            ;
-        drawf(13, 42, 0x05, "%-64.64s", cwd);
-        drawf(13, 43, 0x05, "%-64.64s", cwd);
-        drawf(13, 44, 0x05, "%-64.64s", cwd);
-    }
-    draw_button(27, 46, 52, 48, "  Save all Preferences", 0);
+    wtext(13, 42, DirModule, 64);
+    wtext(13, 43, DirSample, 64);
+    wtext(13, 44, DirInstr, 64);
+
+    wbutton(27, 46, 52, 48, "  Save all Preferences", act_save_prefs);
+
+    widgets_draw();
 }
 
 /* ===================================================================
@@ -821,13 +1267,18 @@ static void draw_help(void)
     Screen_DrawBox(1, 12, 78, 48, 27);
     for (i = 0; i < (int)(sizeof(lines)/sizeof(lines[0])); i++)
         Screen_DrawString(3, 13 + i, lines[i], 0x06);
-    draw_button(36, 46, 44, 48, "  Done", 0);
+    NW = 0;
+    wbutton(36, 46, 44, 48, "  Done", act_help_done);
+    widgets_draw();
 }
 
 /* ===================================================================
- * Rendering dispatch
+ * Rendering dispatch. draw_screen fills the cell buffer (and rebuilds
+ * the active screen's widget table); redraw additionally presents it.
+ * Modal overlays (menus) call draw_screen, draw on top, then present
+ * once -- presenting twice per frame is what flickered.
  * =================================================================== */
-static void redraw(void)
+static void draw_screen(void)
 {
     static const char *titles[] = {
         "Help (F1)", "Pattern Editor (F2)", "Sample List (F3)",
@@ -838,13 +1289,18 @@ static void redraw(void)
     Screen_Clear(0x20);
     draw_chrome(titles[Screen]);
     switch (Screen) {
-    case SCR_PATTERN:     draw_pattern(); break;
+    case SCR_PATTERN:     NW = 0; draw_pattern(); break;
     case SCR_SAMPLES:     draw_samples(); break;
     case SCR_INSTRUMENTS: draw_instruments(); break;
     case SCR_ORDER:       draw_order(); break;
     case SCR_VARS:        draw_vars(); break;
     case SCR_HELP:        draw_help(); break;
     }
+}
+
+static void redraw(void)
+{
+    draw_screen();
     Screen_Update();
 }
 
@@ -1057,18 +1513,17 @@ static void handle_pattern_key(int key)
 }
 
 /* ===================================================================
- * List screens key handling
+ * List widgets: key/click handlers and widget action callbacks
  * =================================================================== */
-static void handle_list_key(int key, int instruments)
+static int generic_list_lkey(int key, int n)
 {
-    int n = instruments ? Song.Header.InsNum : Song.Header.SmpNum;
     switch (key) {
-    case ITK_UP:   if (ListSel > 0) ListSel--; return;
-    case ITK_DOWN: if (ListSel < n - 1) ListSel++; return;
-    case ITK_PGUP: ListSel -= 16; if (ListSel < 0) ListSel = 0; return;
-    case ITK_PGDN: ListSel += 16; if (ListSel >= n) ListSel = n-1; return;
-    case ITK_HOME: ListSel = 0; return;
-    case ITK_END:  ListSel = n - 1; return;
+    case ITK_UP:   if (ListSel > 0) ListSel--; return 1;
+    case ITK_DOWN: if (ListSel < n - 1) ListSel++; return 1;
+    case ITK_PGUP: ListSel -= 16; if (ListSel < 0) ListSel = 0; return 1;
+    case ITK_PGDN: ListSel += 16; if (ListSel >= n) ListSel = n-1; return 1;
+    case ITK_HOME: ListSel = 0; return 1;
+    case ITK_END:  ListSel = n - 1; return 1;
     default: break;
     }
     {
@@ -1076,56 +1531,235 @@ static void handle_list_key(int key, int instruments)
         if (gn > 0) {
             CurInstr = ListSel + 1;
             jam_note(gn, 40);
+            return 1;
         }
     }
+    return 0;
 }
 
-static void handle_order_key(int key)
+static int sample_list_lkey(int key)
 {
-    int n = Song.Header.OrdNum;
+    return generic_list_lkey(key, Song.Header.SmpNum
+                                  ? Song.Header.SmpNum : 1);
+}
+
+static int instr_list_lkey(int key)
+{
+    return generic_list_lkey(key, Song.Header.InsNum
+                                  ? Song.Header.InsNum : 1);
+}
+
+static void sample_list_lclick(int row, int mx, int mpx)
+{
+    int n = Song.Header.SmpNum ? Song.Header.SmpNum : 1;
+    (void)mx; (void)mpx;
+    if (row >= 0 && SmpListTop + row < n)
+        ListSel = SmpListTop + row;
+}
+
+static void instr_list_lclick(int row, int mx, int mpx)
+{
+    int n = Song.Header.InsNum ? Song.Header.InsNum : 1;
+    (void)mx; (void)mpx;
+    if (row >= 0 && InsListTop + row < n)
+        ListSel = InsListTop + row;
+}
+
+static int order_list_lkey(int key)
+{
+    int n = Song.Header.OrdNum ? Song.Header.OrdNum : 1;
     switch (key) {
-    case ITK_UP:   if (ListSel > 0) ListSel--; return;
-    case ITK_DOWN: if (ListSel < n - 1) ListSel++; return;
+    case ITK_UP:   if (ListSel > 0) ListSel--; return 1;
+    case ITK_DOWN: if (ListSel < n - 1) ListSel++; return 1;
+    case ITK_PGUP: ListSel -= 16; if (ListSel < 0) ListSel = 0; return 1;
+    case ITK_PGDN: ListSel += 16; if (ListSel >= n) ListSel = n-1; return 1;
+    case ITK_HOME: ListSel = 0; return 1;
+    case ITK_END:  ListSel = n - 1; return 1;
     case '=': case '+':
         ed_lock();
         if (Song.Orders[ListSel] < 199) Song.Orders[ListSel]++;
-        ed_unlock(); return;
+        ed_unlock(); return 1;
     case '-':
         ed_lock();
         if (Song.Orders[ListSel] > 0 && Song.Orders[ListSel] < 200)
             Song.Orders[ListSel]--;
-        ed_unlock(); return;
+        ed_unlock(); return 1;
     case ITK_ENTER:
         if (Song.Orders[ListSel] < 200) {
             commit_current_pattern();
             load_pattern(Song.Orders[ListSel]);
             Screen = SCR_PATTERN;
         }
-        return;
+        return 1;
     default: break;
     }
+    return 0;
+}
+
+static void order_list_lclick(int row, int mx, int mpx)
+{
+    int n = Song.Header.OrdNum ? Song.Header.OrdNum : 1;
+    (void)mx; (void)mpx;
+    if (row >= 0 && OrdListTop + row < n)
+        ListSel = OrdListTop + row;
+}
+
+/* F11 pan columns: Up/Down select channel, Left/Right slide the pan,
+ * L/M/R hard positions, S surround, Space mute toggle (the original's
+ * pan thumbbar keys) */
+static void pan_adjust(int chan, int delta)
+{
+    uint8_t pan = Song.Header.ChnlPan[chan];
+    int p = pan & 0x7F;
+
+    if (p > 64)                     /* leaving surround: re-centre */
+        p = 32;
+    p += delta;
+    if (p < 0) p = 0;
+    if (p > 64) p = 64;
+    ed_lock();
+    Song.Header.ChnlPan[chan] = (uint8_t)((pan & 0x80) | p);
+    ed_unlock();
+}
+
+static void pan_set(int chan, int p)
+{
+    ed_lock();
+    Song.Header.ChnlPan[chan] =
+        (uint8_t)((Song.Header.ChnlPan[chan] & 0x80) | p);
+    ed_unlock();
+}
+
+static int pan_col_lkey(int key, int base)
+{
+    if (PanSel < base || PanSel >= base + 32)
+        PanSel = base;
+
+    switch (key) {
+    case ITK_UP:   if (PanSel > base) PanSel--; return 1;
+    case ITK_DOWN: if (PanSel < base + 31) PanSel++; return 1;
+    case ITK_PGUP: PanSel -= 8; if (PanSel < base) PanSel = base; return 1;
+    case ITK_PGDN: PanSel += 8; if (PanSel > base + 31)
+                       PanSel = base + 31; return 1;
+    case ITK_HOME: PanSel = base; return 1;
+    case ITK_END:  PanSel = base + 31; return 1;
+    case ITK_LEFT:  pan_adjust(PanSel, -1); return 1;
+    case ITK_RIGHT: pan_adjust(PanSel,  1); return 1;
+    case 'l': case 'L': pan_set(PanSel, 0);   return 1;
+    case 'm': case 'M': pan_set(PanSel, 32);  return 1;
+    case 'r': case 'R': pan_set(PanSel, 64);  return 1;
+    case 's': case 'S': pan_set(PanSel, 100); return 1;
+    case ' ':
+        ed_lock();
+        Song.Header.ChnlPan[PanSel] ^= 0x80;
+        ed_unlock();
+        return 1;
+    default: break;
+    }
+    return 0;
+}
+
+static int pan_left_lkey(int key)  { return pan_col_lkey(key, 0); }
+static int pan_right_lkey(int key) { return pan_col_lkey(key, 32); }
+
+static void pan_col_lclick(int row, int mx, int mpx, int base, int bx)
+{
+    if (row < 0 || row > 31)
+        return;
+    PanSel = base + row;
+    if (mx >= bx && mx <= bx + 8) {         /* inside the slider */
+        int p = (mpx - bx * 8) * 65 / 72;
+        if (p < 0) p = 0;
+        if (p > 64) p = 64;
+        pan_set(PanSel, p);
+    }
+}
+
+static void pan_left_lclick(int row, int mx, int mpx)
+{
+    pan_col_lclick(row, mx, mpx, 0, 31);
+}
+
+static void pan_right_lclick(int row, int mx, int mpx)
+{
+    pan_col_lclick(row, mx, mpx, 32, 65);
+}
+
+/* ---- widget action callbacks ---- */
+static void act_stereo_changed(void)
+{
+    ed_lock();
+    Music_InitStereo();
+    ed_unlock();
+}
+
+static void act_tempo_changed(void)
+{
+    ed_lock();
+    Music_InitTempo();
+    ed_unlock();
+}
+
+static void act_speed_changed(void)
+{
+    ed_lock();
+    if (PlayMode == 0)
+        CurrentSpeed = Song.Header.IS;
+    ed_unlock();
+}
+
+static void act_help_done(void)
+{
+    Screen = SCR_PATTERN;
+}
+
+static void act_tab_not_ported(void)
+{
+    status("Not ported yet -- see the docs/HANDOFF.md roadmap.");
+}
+
+static void act_save_prefs(void)
+{
+    FILE *fp = fopen("ited.cfg", "w");
+    if (!fp) {
+        status("Can't write ited.cfg here.");
+        return;
+    }
+    fprintf(fp, "moduledir=%s\nsampledir=%s\ninstrdir=%s\n"
+            "octave=%d\nstep=%d\n",
+            DirModule, DirSample, DirInstr, BaseOctave, EditStep);
+    fclose(fp);
+    status("Preferences saved to ited.cfg.");
 }
 
 /* ===================================================================
  * File requester (F9) -- IT_F.ASM "Load Module (F9)" screen layout
  * =================================================================== */
-#define REQ_MAXFILES 512
+#define REQ_MAXFILES 1024
+#define REQ_MAXDIRS  256
 typedef struct reqfile_t {
     char name[64];
     char songname[27];
     long size;
-    int  isdir;
 } reqfile_t;
 
 static reqfile_t ReqFiles[REQ_MAXFILES];
-static int ReqNumFiles, ReqNumDirs;
+static char      ReqDirs[REQ_MAXDIRS][64];
+static char      ReqDrives[26];
+static int       ReqNF, ReqND, ReqNDrv;
+static int       ReqFocus;          /* 0 files, 1 dirs, 2 drives, 3 name */
+static int       FSel, FTop, DSel, DTop, VSel;
+static char      ReqName[26] = "*.IT";
 
-static int req_name_cmp(const void *a, const void *b)
+static int req_file_cmp(const void *a, const void *b)
 {
-    const reqfile_t *fa = a, *fb = b;
-    if (fa->isdir != fb->isdir)
-        return fb->isdir - fa->isdir;
-    return strcmp(fa->name, fb->name);
+    return strcmp(((const reqfile_t *)a)->name,
+                  ((const reqfile_t *)b)->name);
+}
+
+static int req_dir_cmp(const void *a, const void *b)
+{
+    return strcmp((const char *)a, (const char *)b);
 }
 
 static int has_it_ext(const char *name)
@@ -1153,7 +1787,7 @@ static void req_read_songname(reqfile_t *f)
 
 static void req_scan(void)
 {
-    ReqNumFiles = ReqNumDirs = 0;
+    ReqNF = ReqND = ReqNDrv = 0;
 
 #ifdef _WIN32
     {
@@ -1161,19 +1795,16 @@ static void req_scan(void)
         HANDLE h = FindFirstFileA("*", &fd);
         if (h != INVALID_HANDLE_VALUE) {
             do {
-                reqfile_t *f;
-                if (ReqNumFiles >= REQ_MAXFILES)
-                    break;
                 if (!strcmp(fd.cFileName, "."))
                     continue;
                 if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                    f = &ReqFiles[ReqNumFiles++];
+                    if (ReqND < REQ_MAXDIRS)
+                        snprintf(ReqDirs[ReqND++], sizeof(ReqDirs[0]),
+                                 "%s", fd.cFileName);
+                } else if (has_it_ext(fd.cFileName) &&
+                           ReqNF < REQ_MAXFILES) {
+                    reqfile_t *f = &ReqFiles[ReqNF++];
                     snprintf(f->name, sizeof(f->name), "%s", fd.cFileName);
-                    f->isdir = 1; f->size = 0; f->songname[0] = 0;
-                } else if (has_it_ext(fd.cFileName)) {
-                    f = &ReqFiles[ReqNumFiles++];
-                    snprintf(f->name, sizeof(f->name), "%s", fd.cFileName);
-                    f->isdir = 0;
                     f->size = (long)fd.nFileSizeLow;
                     req_read_songname(f);
                 }
@@ -1181,25 +1812,32 @@ static void req_scan(void)
             FindClose(h);
         }
     }
+    {
+        DWORD drives = GetLogicalDrives();
+        int i;
+        for (i = 0; i < 26; i++)
+            if (drives & (1u << i))
+                ReqDrives[ReqNDrv++] = (char)('A' + i);
+    }
 #else
     {
         DIR *d = opendir(".");
         struct dirent *e;
         if (d) {
-            while ((e = readdir(d)) && ReqNumFiles < REQ_MAXFILES) {
+            while ((e = readdir(d))) {
                 struct stat st;
                 if (!strcmp(e->d_name, "."))
                     continue;
                 if (stat(e->d_name, &st))
                     continue;
                 if (S_ISDIR(st.st_mode)) {
-                    reqfile_t *f = &ReqFiles[ReqNumFiles++];
+                    if (ReqND < REQ_MAXDIRS)
+                        snprintf(ReqDirs[ReqND++], sizeof(ReqDirs[0]),
+                                 "%s", e->d_name);
+                } else if (has_it_ext(e->d_name) && ReqNF < REQ_MAXFILES) {
+                    reqfile_t *f = &ReqFiles[ReqNF++];
                     snprintf(f->name, sizeof(f->name), "%s", e->d_name);
-                    f->isdir = 1; f->size = 0; f->songname[0] = 0;
-                } else if (has_it_ext(e->d_name)) {
-                    reqfile_t *f = &ReqFiles[ReqNumFiles++];
-                    snprintf(f->name, sizeof(f->name), "%s", e->d_name);
-                    f->isdir = 0; f->size = (long)st.st_size;
+                    f->size = (long)st.st_size;
                     req_read_songname(f);
                 }
             }
@@ -1208,14 +1846,9 @@ static void req_scan(void)
     }
 #endif
 
-    qsort(ReqFiles, (size_t)ReqNumFiles, sizeof(ReqFiles[0]), req_name_cmp);
-    {
-        int i;
-        ReqNumDirs = 0;
-        for (i = 0; i < ReqNumFiles; i++)
-            if (ReqFiles[i].isdir)
-                ReqNumDirs++;
-    }
+    qsort(ReqFiles, (size_t)ReqNF, sizeof(ReqFiles[0]), req_file_cmp);
+    qsort(ReqDirs, (size_t)ReqND, sizeof(ReqDirs[0]), req_dir_cmp);
+    FSel = FTop = DSel = DTop = 0;
 }
 
 static const uint8_t SearchText[] =
@@ -1224,130 +1857,213 @@ static const uint8_t FileText[] = " Filename\015Directory";
 
 static int do_load_named(const char *path);
 
-static void draw_file_requester(int sel, int *ptop)
+static void draw_file_requester(void)
 {
     int i;
-    int top = *ptop;
-    int nfileonly = ReqNumFiles - ReqNumDirs;
 
     Screen_Clear(0x20);
     draw_chrome("Load Module (F9)");
 
-        Screen_DrawBox(2, 12, 41, 44, 27);          /* FileBox */
-        Screen_DrawBox(43, 12, 56, 34, 27);         /* DirBox */
-        Screen_DrawBox(58, 12, 67, 34, 27);         /* DriveBox */
-        Screen_DrawBox(50, 36, 77, 38, 27);         /* SearchBox */
-        Screen_DrawBox(50, 39, 77, 44, 27);         /* FileInfoBox */
-        Screen_DrawBox(12, 45, 77, 48, 27);         /* FileNameBox */
-        Screen_DrawStringCtl(44, 37, SearchText, 0x20, NULL);
-        Screen_DrawStringCtl(3, 46, FileText, 0x20, NULL);
+    Screen_DrawBox(2, 12, 41, 44, 27);          /* FileBox */
+    Screen_DrawBox(43, 12, 56, 34, 27);         /* DirBox */
+    Screen_DrawBox(58, 12, 67, 34, 27);         /* DriveBox */
+    Screen_DrawBox(50, 36, 77, 38, 27);         /* SearchBox */
+    Screen_DrawBox(50, 39, 77, 44, 27);         /* FileInfoBox */
+    Screen_DrawBox(12, 45, 77, 48, 27);         /* FileNameBox */
+    Screen_DrawStringCtl(44, 37, SearchText, 0x20, NULL);
+    Screen_DrawStringCtl(3, 46, FileText, 0x20, NULL);
 
-        if (sel < top) top = sel;
-        if (sel >= top + 31) top = sel - 30;
-        if (top < 0) top = 0;
+    /* files (left box, 31 rows): name + song name columns */
+    if (FSel < FTop) FTop = FSel;
+    if (FSel >= FTop + 31) FTop = FSel - 30;
+    if (FTop < 0) FTop = 0;
+    for (i = 0; i < 31 && FTop + i < ReqNF; i++) {
+        int idx = FTop + i;
+        uint8_t a = (idx == FSel) ? (ReqFocus == 0 ? 0x30 : 0x20) : 0x03;
+        drawf(3, 13 + i, a, "%-13.13s ", ReqFiles[idx].name);
+        drawf(17, 13 + i, a, "%-23.23s", ReqFiles[idx].songname);
+    }
+    if (ReqNF == 0)
+        Screen_DrawString(3, 13, "(no .it modules here)", 0x03);
 
-        /* files (left box): name + song name columns */
-        {
-            int row = 0;
-            for (i = 0; i < ReqNumFiles && row < 31; i++) {
-                uint8_t a;
-                if (ReqFiles[i].isdir)
-                    continue;
-                if (i < top) { continue; }
-                if (ReqFiles[i].isdir == 0 && i >= top && row < 31) {
-                    a = (i == sel) ? 0x30 : 0x03;
-                    drawf(3, 13 + row, a, "%-13.13s ", ReqFiles[i].name);
-                    drawf(17, 13 + row, a, "%-23.23s",
-                          ReqFiles[i].songname);
-                    row++;
-                }
-            }
-            if (nfileonly == 0)
-                Screen_DrawString(3, 13, "(no .it modules here)", 0x03);
-        }
+    /* directories (middle box, 21 rows) */
+    if (DSel < DTop) DTop = DSel;
+    if (DSel >= DTop + 21) DTop = DSel - 20;
+    if (DTop < 0) DTop = 0;
+    for (i = 0; i < 21 && DTop + i < ReqND; i++) {
+        int idx = DTop + i;
+        uint8_t a = (idx == DSel) ? (ReqFocus == 1 ? 0x30 : 0x20) : 0x03;
+        drawf(44, 13 + i, a, "%-12.12s", ReqDirs[idx]);
+    }
 
-        /* directories (middle box) */
-        {
-            int row = 0;
-            for (i = 0; i < ReqNumFiles && row < 21; i++) {
-                if (!ReqFiles[i].isdir)
-                    continue;
-                drawf(44, 13 + row, (i == sel) ? 0x30 : 0x03,
-                      "%-12.12s", ReqFiles[i].name);
-                row++;
-            }
-        }
+    /* drives (right box) */
+    if (VSel >= ReqNDrv) VSel = ReqNDrv ? ReqNDrv - 1 : 0;
+    for (i = 0; i < 21 && i < ReqNDrv; i++) {
+        uint8_t a = (i == VSel) ? (ReqFocus == 2 ? 0x30 : 0x20) : 0x05;
+        drawf(59, 13 + i, a, "Drive %c:", ReqDrives[i]);
+    }
 
-#ifdef _WIN32
-        {
-            DWORD drives = GetLogicalDrives();
-            int row = 0;
-            for (i = 0; i < 26 && row < 21; i++)
-                if (drives & (1u << i))
-                    drawf(59, 13 + row++, 0x05, "Drive %c:", 'A' + i);
-        }
-#endif
+    /* file info */
+    if (ReqNF && FSel < ReqNF) {
+        drawf(58, 40, 0x05, "Impulse Tracker");
+        drawf(58, 41, 0x05, "%09ld", ReqFiles[FSel].size);
+    }
 
-        /* file info */
-        if (sel < ReqNumFiles && !ReqFiles[sel].isdir) {
-            drawf(58, 40, 0x05, "Impulse Tracker");
-            drawf(58, 41, 0x05, "%09ld", ReqFiles[sel].size);
-        }
-
-    drawf(13, 46, 0x05, "%-25.25s", "*.IT");
+    /* filename input + current directory */
+    {
+        int len = (int)strlen(ReqName);
+        drawf(13, 46, 0x02, "%-25.25s", ReqName);
+        if (ReqFocus == 3)
+            Screen_PutChar(13 + (len < 25 ? len : 24), 46,
+                           (uint8_t)(len < 25 ? ' ' : ReqName[24]), 0x30);
+    }
     {
         char cwd[256] = "";
         if (getcwd(cwd, sizeof(cwd)))
             ;
         drawf(13, 47, 0x05, "%-64.64s", cwd);
     }
-    *ptop = top;
+}
+
+static void req_activate_file(int *done)
+{
+    if (ReqNF && FSel < ReqNF) {
+        if (do_load_named(ReqFiles[FSel].name))
+            *done = 1;
+        else
+            status("Can't load %s.", ReqFiles[FSel].name);
+    }
+}
+
+static void req_enter_dir(const char *name)
+{
+    if (!chdir(name))
+        req_scan();
+    else
+        status("Can't change to %s.", name);
 }
 
 static void file_requester(void)
 {
-    int sel = 0, top = 0;
     int done = 0;
 
     req_scan();
+    ReqFocus = 0;
 
     while (!done && Running) {
         int key;
 
-        draw_file_requester(sel, &top);
+        draw_file_requester();
         Screen_Update();
 
         key = Key_Get();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
 
         switch (key) {
-        case ITK_QUIT: Running = 0; done = 1; break;
-        case ITK_ESC:  done = 1; break;
-        case ITK_UP:   if (sel > 0) sel--; break;
-        case ITK_DOWN: if (sel < ReqNumFiles - 1) sel++; break;
-        case ITK_PGUP: sel -= 16; if (sel < 0) sel = 0; break;
-        case ITK_PGDN: sel += 16; if (sel >= ReqNumFiles)
-                           sel = ReqNumFiles ? ReqNumFiles - 1 : 0; break;
-        case ITK_ENTER:
-            if (sel < ReqNumFiles) {
-                if (ReqFiles[sel].isdir) {
-                    if (!chdir(ReqFiles[sel].name)) {
-                        req_scan();
-                        sel = top = 0;
-                    }
-                } else {
-                    if (do_load_named(ReqFiles[sel].name))
-                        done = 1;
+        case ITK_QUIT: Running = 0; done = 1; continue;
+        case ITK_ESC:  done = 1; continue;
+        case ITK_TAB:       ReqFocus = (ReqFocus + 1) % 4; continue;
+        case ITK_SHIFT_TAB: ReqFocus = (ReqFocus + 3) % 4; continue;
+        case ITK_MOUSE: {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (m.x >= 3 && m.x <= 40 && m.y >= 13 && m.y <= 43) {
+                int idx = FTop + (m.y - 13);
+                ReqFocus = 0;
+                if (idx < ReqNF) {
+                    if (idx == FSel)
+                        req_activate_file(&done);
+                    else
+                        FSel = idx;
                 }
+            } else if (m.x >= 44 && m.x <= 55 && m.y >= 13 && m.y <= 33) {
+                int idx = DTop + (m.y - 13);
+                ReqFocus = 1;
+                if (idx < ReqND) {
+                    if (idx == DSel)
+                        req_enter_dir(ReqDirs[DSel]);
+                    else
+                        DSel = idx;
+                }
+            } else if (m.x >= 59 && m.x <= 66 && m.y >= 13 && m.y <= 33) {
+                int idx = m.y - 13;
+                ReqFocus = 2;
+                if (idx < ReqNDrv) {
+                    if (idx == VSel) {
+                        char d[4] = "A:\\";
+                        d[0] = ReqDrives[VSel];
+                        req_enter_dir(d);
+                    } else {
+                        VSel = idx;
+                    }
+                }
+            } else if (m.y == 46 && m.x >= 13 && m.x <= 38) {
+                ReqFocus = 3;
             }
-            break;
-        case ITK_BACKSPACE:
-            if (!chdir("..")) {
-                req_scan();
-                sel = top = 0;
-            }
-            break;
+            continue; }
         default: break;
+        }
+
+        if (ReqFocus == 0) {
+            switch (key) {
+            case ITK_UP:   if (FSel > 0) FSel--; break;
+            case ITK_DOWN: if (FSel < ReqNF - 1) FSel++; break;
+            case ITK_PGUP: FSel -= 30; if (FSel < 0) FSel = 0; break;
+            case ITK_PGDN: FSel += 30; if (FSel >= ReqNF)
+                               FSel = ReqNF ? ReqNF - 1 : 0; break;
+            case ITK_HOME: FSel = 0; break;
+            case ITK_END:  FSel = ReqNF ? ReqNF - 1 : 0; break;
+            case ITK_ENTER: req_activate_file(&done); break;
+            case ITK_BACKSPACE: req_enter_dir(".."); break;
+            default: break;
+            }
+        } else if (ReqFocus == 1) {
+            switch (key) {
+            case ITK_UP:   if (DSel > 0) DSel--; break;
+            case ITK_DOWN: if (DSel < ReqND - 1) DSel++; break;
+            case ITK_PGUP: DSel -= 20; if (DSel < 0) DSel = 0; break;
+            case ITK_PGDN: DSel += 20; if (DSel >= ReqND)
+                               DSel = ReqND ? ReqND - 1 : 0; break;
+            case ITK_HOME: DSel = 0; break;
+            case ITK_END:  DSel = ReqND ? ReqND - 1 : 0; break;
+            case ITK_ENTER:
+                if (ReqND)
+                    req_enter_dir(ReqDirs[DSel]);
+                break;
+            case ITK_BACKSPACE: req_enter_dir(".."); break;
+            default: break;
+            }
+        } else if (ReqFocus == 2) {
+            switch (key) {
+            case ITK_UP:   if (VSel > 0) VSel--; break;
+            case ITK_DOWN: if (VSel < ReqNDrv - 1) VSel++; break;
+            case ITK_ENTER:
+                if (ReqNDrv) {
+                    char d[4] = "A:\\";
+                    d[0] = ReqDrives[VSel];
+                    req_enter_dir(d);
+                }
+                break;
+            case ITK_BACKSPACE: req_enter_dir(".."); break;
+            default: break;
+            }
+        } else {                            /* filename input */
+            int len = (int)strlen(ReqName);
+            if (key == ITK_BACKSPACE) {
+                if (len > 0)
+                    ReqName[len - 1] = 0;
+            } else if (key == ITK_ENTER) {
+                if (strchr(ReqName, '*') || strchr(ReqName, '?')) {
+                    req_scan();
+                } else if (do_load_named(ReqName)) {
+                    done = 1;
+                } else {
+                    status("Can't load %s.", ReqName);
+                }
+            } else if (key >= 32 && key < 127 && len < 25) {
+                ReqName[len] = (char)key;
+                ReqName[len + 1] = 0;
+            }
         }
     }
 }
@@ -1380,73 +2096,332 @@ static int do_load_named(const char *path)
     return 0;
 }
 
-/* ===================================================================
- * Main menu (ESC) -- IT 2.14 main menu look
- * =================================================================== */
-static const struct { const char *text; int key; } MenuItems[] = {
-    { " File Menu...",            0 },
-    { " Playback Menu...",        0 },
-    { " View Patterns      (F2)", ITK_F2 },
-    { " Sample Menu...",          ITK_F3 },
-    { " Instrument Menu...",      ITK_F4 },
-    { " View Orders/Panning(F11)",ITK_F11 },
-    { " View Variables    (F12)", ITK_F12 },
-    { " Message Editor(Shift-F9)",0 },
-    { " Help!              (F1)", ITK_F1 },
-};
-enum { MENU_NITEMS = sizeof(MenuItems) / sizeof(MenuItems[0]) };
-
-static void draw_main_menu(int sel)
+/* default (empty) song header, as IT's F_FileNew sets up */
+static void song_defaults(void)
 {
     int i;
 
-    redraw();                           /* current screen behind the menu */
-    Screen_DrawBox(22, 11, 58, 12 + MENU_NITEMS*3 + 2, 1);
-    Screen_DrawString(25, 12, "Main Menu", 0x23);
-    for (i = 0; i < MENU_NITEMS; i++)
-        draw_button(24, 13 + i*3, 56, 15 + i*3, MenuItems[i].text, i == sel);
+    memset(&Song, 0, sizeof(Song));
+    Song.Header.ID = 0x4D504D49u;
+    Song.Header.OrdNum = 1;
+    Song.Header.PatNum = 1;
+    Song.Header.IS = 6;
+    Song.Header.IT = 125;
+    Song.Header.GV = 128;
+    Song.Header.MV = 48;
+    Song.Header.Sep = 128;
+    Song.Header.Flags = ITF_STEREO | ITF_INSTRUMENTS;
+    memset(Song.Orders, 255, sizeof(Song.Orders));
+    Song.Orders[0] = 0;
+    for (i = 0; i < 64; i++) {
+        Song.Header.ChnlPan[i] = (i & 1) ? 48 : 16;
+        Song.Header.ChnlVol[i] = 64;
+    }
 }
 
-static void main_menu(void)
+static void new_song(void)
 {
-    int sel = 2;
-    int done = 0;
+    stop_song();
+    ed_lock();
+    Music_FreeIT();
+    song_defaults();
+    Music_InitMusic();
+    Music_InitStereo();
+    Music_InitMixTable();
+    Music_InitTempo();
+    ed_unlock();
+    CurPattern = 0;
+    CurRow = CurChan = CurCol = 0;
+    ListSel = 0;
+    CurInstr = 1;
+    load_pattern(0);
+    FileNameDisp[0] = 0;
+}
 
-    while (!done && Running) {
-        int key;
+/* ited.cfg: directories + octave/edit step, written by the F12 "Save
+ * all Preferences" button */
+static void load_prefs(void)
+{
+    FILE *fp = fopen("ited.cfg", "r");
+    char line[320];
 
-        draw_main_menu(sel);
+    if (!fp)
+        return;
+    while (fgets(line, sizeof(line), fp)) {
+        char *nl = strchr(line, '\n');
+        if (nl)
+            *nl = 0;
+        if (!strncmp(line, "moduledir=", 10))
+            snprintf(DirModule, sizeof(DirModule), "%s", line + 10);
+        else if (!strncmp(line, "sampledir=", 10))
+            snprintf(DirSample, sizeof(DirSample), "%s", line + 10);
+        else if (!strncmp(line, "instrdir=", 9))
+            snprintf(DirInstr, sizeof(DirInstr), "%s", line + 9);
+        else if (!strncmp(line, "octave=", 7))
+            BaseOctave = atoi(line + 7);
+        else if (!strncmp(line, "step=", 5))
+            EditStep = atoi(line + 5);
+    }
+    fclose(fp);
+    if (BaseOctave < 0) BaseOctave = 0;
+    if (BaseOctave > 8) BaseOctave = 8;
+    if (EditStep < 0)  EditStep = 0;
+    if (EditStep > 16) EditStep = 16;
+}
+
+/* ===================================================================
+ * Menus (ESC) -- ported from the IT_OBJ1.ASM object lists
+ * (O1_MainMenu, O1_FileMenu, O1_PlayBackMenu, O1_SampleMenu,
+ * O1_InstrumentMenu): exact box coordinates, box styles (outer 3/1 +
+ * inner 0, items style 28) and item texts. The focused item draws its
+ * label in attr 23h (F_PreButtonObject); a frame draws the underlying
+ * screen, the menu chain, then presents ONCE (the old draw presented
+ * the bare screen and then the menu, which flickered).
+ * =================================================================== */
+typedef struct menuitem_t {
+    const char *text;
+    int (*act)(void);          /* returns 1 to close the whole chain */
+} menuitem_t;
+
+typedef struct menudef_t {
+    int x0, y0, x1, y1, style; /* outer box; inner box inset, style 0 */
+    int tx, ty;
+    const char *title;
+    int ix0, ix1, iy;          /* items at (ix0,iy+3i)-(ix1,iy+2+3i) */
+    const menuitem_t *items;
+    int n;
+} menudef_t;
+
+static void menu_draw(const menudef_t *d, int sel)
+{
+    int i;
+
+    Screen_DrawBox(d->x0, d->y0, d->x1, d->y1, d->style);
+    Screen_DrawBox(d->x0 + 1, d->y0 + 1, d->x1 - 1, d->y1 - 1, 0);
+    Screen_DrawString(d->tx, d->ty, d->title, 0x23);
+    for (i = 0; i < d->n; i++)
+        draw_button_style(d->ix0, d->iy + 3*i, d->ix1, d->iy + 2 + 3*i,
+                          28, d->items[i].text, 0, i == sel);
+}
+
+static int run_menu(const menudef_t *d, void (*under)(void), int *psel)
+{
+    int sel = psel ? *psel : 0;
+
+    for (;;) {
+        int key, res;
+
+        if (!Running)
+            return 1;
+        if (psel)
+            *psel = sel;
+        under();
+        menu_draw(d, sel);
         Screen_Update();
 
         key = Key_Get();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
 
         switch (key) {
-        case ITK_QUIT: Running = 0; done = 1; break;
-        case ITK_ESC:  done = 1; break;
-        case ITK_UP:   sel = (sel + MENU_NITEMS - 1) % MENU_NITEMS; break;
-        case ITK_DOWN: sel = (sel + 1) % MENU_NITEMS; break;
+        case ITK_QUIT: Running = 0; return 1;
+        case ITK_ESC:  return 0;
+        case ITK_UP:   sel = (sel + d->n - 1) % d->n; break;
+        case ITK_DOWN: case ITK_TAB:
+                       sel = (sel + 1) % d->n; break;
         case ITK_ENTER:
-            if (MenuItems[sel].key) {
-                switch (MenuItems[sel].key) {
-                case ITK_F1:  Screen = SCR_HELP; break;
-                case ITK_F2:  Screen = SCR_PATTERN; break;
-                case ITK_F3:  Screen = SCR_SAMPLES; break;
-                case ITK_F4:  Screen = SCR_INSTRUMENTS; break;
-                case ITK_F11: Screen = SCR_ORDER; break;
-                case ITK_F12: Screen = SCR_VARS; break;
-                }
-                done = 1;
-            }
+            if (psel) *psel = sel;
+            res = d->items[sel].act();
+            if (res) return res;
             break;
+        case ITK_MOUSE: {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (m.x < d->x0 || m.x > d->x1 || m.y < d->y0 || m.y > d->y1)
+                return 0;               /* click outside closes the menu */
+            if (m.x >= d->ix0 && m.x <= d->ix1 && m.y >= d->iy) {
+                int i = (m.y - d->iy) / 3;
+                if (i >= 0 && i < d->n) {
+                    sel = i;
+                    if (psel) *psel = sel;
+                    res = d->items[i].act();
+                    if (res) return res;
+                }
+            }
+            break; }
         default: break;
         }
     }
 }
 
+static int  MainMenuSel = 2;            /* defaults to View Patterns */
+static void menu_under_screen(void) { draw_screen(); }
+static void menu_under_main(void);
+
+/* ---- menu item actions ---- */
+static int act_view_patterns(void) { Screen = SCR_PATTERN; return 1; }
+static int act_view_orders(void)   { Screen = SCR_ORDER;   return 1; }
+static int act_view_vars(void)     { Screen = SCR_VARS;    return 1; }
+static int act_help(void)          { Screen = SCR_HELP;    return 1; }
+static int act_message_editor(void)
+{ status("Message editor not ported yet."); return 1; }
+
+static int act_file_load(void)  { file_requester(); return 1; }
+static int act_file_new(void)   { new_song(); status("New song."); return 1; }
+static int act_file_save(void)
+{ status("Saving is not ported yet (HANDOFF roadmap)."); return 1; }
+static int act_file_shell(void) { status("No DOS to shell to."); return 1; }
+static int act_file_quit(void)  { Running = 0; return 1; }
+
+static int act_pb_info(void)
+{ status("Info page not ported yet."); return 1; }
+static int act_pb_song(void)
+{ commit_current_pattern(); play_song(); return 1; }
+static int act_pb_pattern(void)
+{ commit_current_pattern(); play_pattern(); return 1; }
+static int act_pb_order(void)
+{
+    commit_current_pattern();
+    ed_lock();
+    Music_PlaySong((uint16_t)((Screen == SCR_ORDER && ListSel > 0)
+                              ? ListSel : 0));
+    ed_unlock();
+    return 1;
+}
+static int act_pb_mark(void)
+{
+    commit_current_pattern();
+    ed_lock();
+    Music_PlayPattern(CurPattern, CurRows, (uint16_t)CurRow);
+    ed_unlock();
+    return 1;
+}
+static int act_pb_stop(void) { stop_song(); return 1; }
+static int act_pb_reinit(void)
+{
+    ed_lock();
+    Driver->InitSound();
+    ed_unlock();
+    status("Sound driver reinitialised.");
+    return 1;
+}
+static int act_pb_driver(void)
+{ status("Driver screen not ported yet."); return 1; }
+static int act_pb_length(void)
+{ status("Calculate Length not ported yet."); return 1; }
+
+static int act_smp_list(void)
+{ Screen = SCR_SAMPLES; ListSel = CurInstr - 1; return 1; }
+static int act_smp_lib(void)
+{ status("Sample library not ported yet."); return 1; }
+static int act_ins_list(void)
+{ Screen = SCR_INSTRUMENTS; ListSel = CurInstr - 1; return 1; }
+static int act_ins_lib(void)
+{ status("Instrument library not ported yet."); return 1; }
+
+/* ---- submenus (coordinates/texts verbatim from IT_OBJ1.ASM) ---- */
+static const menuitem_t FileItems[] = {
+    { " Load...           (F9)", act_file_load },
+    { " New...        (Ctrl-N)", act_file_new },
+    { " Save Current  (Ctrl-S)", act_file_save },
+    { " Save As...       (F10)", act_file_save },
+    { " Shell to DOS  (Ctrl-D)", act_file_shell },
+    { " Quit          (Ctrl-Q)", act_file_quit },
+};
+static const menudef_t FileMenuDef = {
+    25, 16, 54, 39, 1, 30, 18, "File Menu", 27, 52, 20, FileItems, 6
+};
+
+static const menuitem_t PlayBackItems[] = {
+    { " Show Infopage          (F5)", act_pb_info },
+    { " Play Song         (Ctrl-F5)", act_pb_song },
+    { " Play Pattern           (F6)", act_pb_pattern },
+    { " Play from Order  (Shift-F6)", act_pb_order },
+    { " Play from Mark/Cursor  (F7)", act_pb_mark },
+    { " Stop                   (F8)", act_pb_stop },
+    { " Reinit Soundcard   (Ctrl-I)", act_pb_reinit },
+    { " Driver Screen    (Shift-F5)", act_pb_driver },
+    { " Calculate Length   (Ctrl-P)", act_pb_length },
+};
+static const menudef_t PlayBackMenuDef = {
+    25, 16, 59, 48, 1, 31, 18, "Playback Menu", 27, 57, 20,
+    PlayBackItems, 9
+};
+
+static const menuitem_t SampleItems[] = {
+    { " Sample List          (F3)", act_smp_list },
+    { " Sample Library  (Ctrl-F3)", act_smp_lib },
+    { " Reload Soundcard (Ctrl-G)", act_pb_reinit },
+};
+static const menudef_t SampleMenuDef = {
+    25, 23, 57, 37, 1, 30, 25, "Sample Menu", 27, 55, 27, SampleItems, 3
+};
+
+static const menuitem_t InstrumentItems[] = {
+    { " Instrument List          (F4)", act_ins_list },
+    { " Instrument Library  (Ctrl-F4)", act_ins_lib },
+};
+static const menudef_t InstrumentMenuDef = {
+    20, 23, 56, 34, 1, 25, 25, "Instrument Menu", 22, 54, 27,
+    InstrumentItems, 2
+};
+
+static int act_file_menu(void)
+{ return run_menu(&FileMenuDef, menu_under_main, NULL); }
+static int act_playback_menu(void)
+{ return run_menu(&PlayBackMenuDef, menu_under_main, NULL); }
+static int act_sample_menu(void)
+{ return run_menu(&SampleMenuDef, menu_under_main, NULL); }
+static int act_instrument_menu(void)
+{ return run_menu(&InstrumentMenuDef, menu_under_main, NULL); }
+
+static const menuitem_t MainItems[] = {
+    { " File Menu...",               act_file_menu },
+    { " Playback Menu...",           act_playback_menu },
+    { " View Patterns        (F2)",  act_view_patterns },
+    { " Sample Menu...",             act_sample_menu },
+    { " Instrument Menu...",         act_instrument_menu },
+    { " View Orders/Panning (F11)",  act_view_orders },
+    { " View Variables      (F12)",  act_view_vars },
+    { " Message Editor (Shift-F9)",  act_message_editor },
+    { " Help!                (F1)",  act_help },
+};
+static const menudef_t MainMenuDef = {
+    6, 14, 38, 46, 3, 12, 16, "Main Menu", 8, 36, 18, MainItems, 9
+};
+
+static void menu_under_main(void)
+{
+    draw_screen();
+    menu_draw(&MainMenuDef, MainMenuSel);
+}
+
+static void main_menu(void)
+{
+    run_menu(&MainMenuDef, menu_under_screen, &MainMenuSel);
+}
+
 /* ===================================================================
  * Global key dispatch
  * =================================================================== */
+static void pattern_click(void)
+{
+    it_mouse_t m;
+
+    Screen_GetMouse(&m);
+    if (m.y >= 15 && m.y <= 46 && m.x >= 5 &&
+        m.x < 5 + 14 * PE_CHANNELS) {
+        int row = TopRow + (m.y - 15);
+        int ch  = LeftChan + (m.x - 5) / 14;
+        int off = (m.x - 5) % 14;
+
+        if (row < (int)CurRows && ch < 64) {
+            CurRow = row;
+            CurChan = ch;
+            CurCol = (off <= 3) ? 0 : (off <= 6) ? 1 : (off <= 9) ? 2 : 3;
+        }
+    }
+}
+
 static void handle_global(int key)
 {
     switch (key) {
@@ -1463,18 +2438,19 @@ static void handle_global(int key)
     case ITK_F7:  commit_current_pattern(); play_pattern(); return;
     case ITK_F8:  stop_song(); return;
     case ITK_F9:  file_requester(); return;
+    case ITK_MOUSE:
+        if (Screen == SCR_PATTERN)
+            pattern_click();
+        else
+            widgets_mouse();
+        return;
     default: break;
     }
 
-    switch (Screen) {
-    case SCR_PATTERN:     handle_pattern_key(key); break;
-    case SCR_SAMPLES:     handle_list_key(key, 0); break;
-    case SCR_INSTRUMENTS: handle_list_key(key, 1); break;
-    case SCR_ORDER:       handle_order_key(key); break;
-    case SCR_HELP: case SCR_VARS:
-        if (key == 'q' || key == 'Q') Running = 0;
-        break;
-    }
+    if (Screen == SCR_PATTERN)
+        handle_pattern_key(key);
+    else
+        widgets_key(key);
 }
 
 /* ===================================================================
@@ -1503,6 +2479,18 @@ int main(int argc, char **argv)
     }
 
     StartTime = time(NULL);
+
+    /* directories default to the startup cwd; ited.cfg overrides */
+    {
+        char cwd[256] = "";
+        if (getcwd(cwd, sizeof(cwd))) {
+            snprintf(DirModule, sizeof(DirModule), "%s", cwd);
+            snprintf(DirSample, sizeof(DirSample), "%s", cwd);
+            snprintf(DirInstr, sizeof(DirInstr), "%s", cwd);
+        }
+        load_prefs();
+    }
+
     WAVDriver_SetMixSpeed(mixspeed);
     mixspeed = WAVDriver_GetMixSpeed();
     Driver = &WAVDriver;
@@ -1525,22 +2513,7 @@ int main(int argc, char **argv)
                     *q = (char)(*q - 32);
         }
     } else {
-        memset(&Song, 0, sizeof(Song));
-        Song.Header.ID = 0x4D504D49u;
-        Song.Header.OrdNum = 1;
-        Song.Header.PatNum = 1;
-        Song.Header.IS = 6;
-        Song.Header.IT = 125;
-        Song.Header.GV = 128;
-        Song.Header.MV = 48;
-        Song.Header.Sep = 128;
-        Song.Header.Flags = ITF_STEREO | ITF_INSTRUMENTS;
-        memset(Song.Orders, 255, sizeof(Song.Orders));
-        Song.Orders[0] = 0;
-        for (i = 0; i < 64; i++) {
-            Song.Header.ChnlPan[i] = (i & 1) ? 48 : 16;
-            Song.Header.ChnlVol[i] = 64;
-        }
+        song_defaults();
     }
 
     Music_InitMusic();
@@ -1570,11 +2543,11 @@ int main(int argc, char **argv)
                 Screen = scr;
             Screen_Clear(0x20);
             if (scr == 6) {                 /* main menu overlay */
-                draw_main_menu(2);
+                draw_screen();
+                menu_draw(&MainMenuDef, 2);
             } else if (scr == 7) {          /* file requester */
-                int top = 0;
                 req_scan();
-                draw_file_requester(0, &top);
+                draw_file_requester();
             } else {
                 redraw();
             }
@@ -1601,8 +2574,16 @@ int main(int argc, char **argv)
     /* Non-interactive smoke test (build regression). */
     if (getenv("ITED_SELFTEST")) {
         static const int script[] = {
-            ITK_F1, ITK_F12, ITK_F11, ITK_DOWN, ITK_DOWN, '+', '-',
-            ITK_F3, ITK_DOWN, ITK_F4, ITK_UP,
+            ITK_F1, ITK_F12,
+            /* widgets: song name text, Tab to tempo bar, adjust,
+             * navigate to speed, adjust, toggle Old Effects */
+            '!', ITK_BACKSPACE, ITK_TAB, ITK_RIGHT, ITK_RIGHT, ITK_LEFT,
+            ITK_DOWN, ITK_RIGHT, ITK_SHIFT_TAB, ITK_SHIFT_TAB,
+            ITK_F11, ITK_DOWN, ITK_DOWN, '+', '-',
+            /* pan column: Tab from the order list, move, slide, mute */
+            ITK_TAB, ITK_DOWN, ITK_RIGHT, ITK_LEFT, 'm', ' ', ' ',
+            ITK_F3, ITK_DOWN, ITK_TAB, ITK_RIGHT, ITK_LEFT,
+            ITK_F4, ITK_UP, ITK_TAB, ITK_ENTER,
             ITK_F2,
             'z','s','x','d','c', ITK_DOWN, '1', ITK_DOWN, '`',
             ITK_RIGHT, '0','5', ITK_RIGHT, '4','0',
@@ -1621,9 +2602,11 @@ int main(int argc, char **argv)
         }
         commit_current_pattern();
         fprintf(stderr, "ITED selftest: completed %zu actions, "
-                "pattern %u, %u rows, cursor r%d c%d col%d\n",
+                "pattern %u, %u rows, cursor r%d c%d col%d, "
+                "tempo %u speed %u pan[1] %02X\n",
                 sizeof(script) / sizeof(script[0]),
-                CurPattern, CurRows, CurRow, CurChan, CurCol);
+                CurPattern, CurRows, CurRow, CurChan, CurCol,
+                Song.Header.IT, Song.Header.IS, Song.Header.ChnlPan[1]);
         ma_mutex_uninit(&Mutex);
         Engine_Lock = NULL; Engine_Unlock = NULL;
         Music_FreeIT();
@@ -1654,6 +2637,16 @@ int main(int argc, char **argv)
         if (key != ITK_NONE) {
             if (key == 0x11 /* Ctrl-Q */) break;
             handle_global(key);
+        }
+        /* thumbbar mouse drag: follow the pointer while the button is
+         * held (the table is rebuilt every frame, so check the slot) */
+        if (DragIdx >= 0) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (!m.b || DragIdx >= NW || W[DragIdx].type != WT_THUMB)
+                DragIdx = -1;
+            else
+                thumb_from_px(&W[DragIdx], m.px);
         }
         redraw();
         if (key == ITK_NONE)

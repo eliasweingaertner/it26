@@ -26,6 +26,8 @@ static BITMAPINFO Bmi;
 static int       KeyQueue[64];
 static int       KeyHead, KeyTail;
 static int       WantQuit;
+static int       MousePX, MousePY;      /* logical pixels 0..639/0..399 */
+static int       MouseB;
 
 static void PushKey(int k)
 {
@@ -104,6 +106,21 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             PushKey((int)wp);
         else if (wp == 0x11)            /* Ctrl-Q */
             PushKey(0x11);
+        return 0;
+    case WM_MOUSEMOVE:
+        MousePX = (int)(short)LOWORD(lp) / SCALE;
+        MousePY = (int)(short)HIWORD(lp) / SCALE;
+        return 0;
+    case WM_LBUTTONDOWN:
+        MousePX = (int)(short)LOWORD(lp) / SCALE;
+        MousePY = (int)(short)HIWORD(lp) / SCALE;
+        MouseB = 1;
+        SetCapture(h);
+        PushKey(ITK_MOUSE);
+        return 0;
+    case WM_LBUTTONUP:
+        MouseB = 0;
+        ReleaseCapture();
         return 0;
     case WM_ERASEBKGND:
         return 1;
@@ -189,8 +206,18 @@ static int W32_Key(void)
     }
 }
 
+static void W32_Mouse(it_mouse_t *m)
+{
+    PumpMessages();
+    m->px = MousePX < 0 ? 0 : (MousePX >= PIX_W ? PIX_W - 1 : MousePX);
+    m->py = MousePY < 0 ? 0 : (MousePY >= PIX_H ? PIX_H - 1 : MousePY);
+    m->x = m->px / 8;
+    m->y = m->py / 8;
+    m->b = MouseB;
+}
+
 const screen_backend_t Screen_BackendWin32 = {
-    W32_Init, W32_UnInit, W32_Present, W32_Key
+    W32_Init, W32_UnInit, W32_Present, W32_Key, W32_Mouse
 };
 
 #endif /* _WIN32 */

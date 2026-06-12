@@ -73,7 +73,17 @@ same WAV/hiqual driver. Screens and keys follow IT 2.x:
 | F11 / F12 | Order list & panning / Song variables |
 | F5 / F6 / F8 | Play song / play current pattern / stop |
 | F9  | Load module (file requester) |
-| ESC | Main menu |
+| ESC | Main menu (the original menu tree: File, Playback, Sample, Instrument menus) |
+
+All screens are operable with IT's object model: Tab/Shift-Tab and the
+arrow keys move the focus between widgets (focused buttons show bright
+text, focused sliders a white thumb — as in the original), Left/Right
+adjust the focused thumbbar, Space/Enter presses buttons and toggles,
+text fields take typed input. The mouse works in the pixel window:
+click to focus/activate, drag thumbbars, click list rows and menu
+items, click the pattern grid to move the cursor. F12's "Save all
+Preferences" writes `ited.cfg` (directories, octave, edit step), read
+back at startup.
 
 Pattern editor: arrows / PgUp / PgDn / Home / End move the cursor, Tab
 switches channel, `[` `]` change octave, `{` `}` change edit step, `-`
@@ -100,8 +110,8 @@ present the cells: the Win32 pixel window (the authentic look) and a
 24-bit-truecolor VT terminal fallback.
 
 This is a focused editor — the in-depth IT sample/instrument *editors*
-(envelopes, waveform ops), info page, message editor, saving, mouse,
-and an SDL pixel backend for POSIX are future work (see
+(envelopes, waveform ops), info page, message editor, saving, and an
+SDL pixel backend for POSIX (with mouse) are future work (see
 `docs/HANDOFF.md` §6 and `docs/EDITOR-PORT-PLAN.md`).
 
 ## Fidelity notes (deviations from the DOS binary)
