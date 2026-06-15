@@ -595,6 +595,8 @@ static void pan_right_lclick(int row, int mx, int mpx);
 static void act_stereo_changed(void);
 static void act_tempo_changed(void);
 static void act_speed_changed(void);
+static void act_gv_changed(void);
+static void act_mv_changed(void);
 static void act_help_done(void);
 static void act_tab_not_ported(void);
 static void act_save_prefs(void);
@@ -1198,9 +1200,9 @@ static void draw_vars(void)
         w = wthumb(17, 20, 1, 255, &Song.Header.IS, 0, 28);
         w->action = act_speed_changed;
     }
-    wthumb(17, 23, 0, 128, &Song.Header.GV, 0, 0);
-    wthumb(17, 24, 0, 128, &Song.Header.MV, 0, 0);
-    wthumb(17, 25, 0, 128, &Song.Header.Sep, 0, 0);
+    wthumb(17, 23, 0, 128, &Song.Header.GV, 0, 0)->action = act_gv_changed;
+    wthumb(17, 24, 0, 128, &Song.Header.MV, 0, 0)->action = act_mv_changed;
+    wthumb(17, 25, 0, 128, &Song.Header.Sep, 0, 0)->action = act_stereo_changed;
     wtogglef(17, 26, &Song.Header.Flags, ITF_OLD_EFFECTS);
     wtogglef(17, 27, &Song.Header.Flags, ITF_LINK_G_TO_EF);
 
@@ -1693,10 +1695,17 @@ static void act_stereo_changed(void)
     ed_unlock();
 }
 
+/* "Initial Tempo" is the song's start tempo (re-seeded into the runtime
+ * Tempo by Music_Stop on every play). While stopped, mirror it into the
+ * runtime Tempo so the header display stays consistent (as for Speed);
+ * while playing, leave the live Txx-driven Tempo alone. */
 static void act_tempo_changed(void)
 {
     ed_lock();
-    Music_InitTempo();
+    if (PlayMode == 0) {
+        Tempo = (uint8_t)Song.Header.IT;
+        Music_InitTempo();
+    }
     ed_unlock();
 }
 
@@ -1705,6 +1714,24 @@ static void act_speed_changed(void)
     ed_lock();
     if (PlayMode == 0)
         CurrentSpeed = Song.Header.IS;
+    ed_unlock();
+}
+
+/* Global Volume is the live mixing scalar (GlobalVolume); push the edit
+ * straight into it so it takes effect while playing, not just on next
+ * play. Music_SetGlobalVolume also flags all channels for vol recalc. */
+static void act_gv_changed(void)
+{
+    ed_lock();
+    Music_SetGlobalVolume((uint8_t)Song.Header.GV);
+    ed_unlock();
+}
+
+/* Mixing Volume lives in the driver; re-push it (Music_Stop does not). */
+static void act_mv_changed(void)
+{
+    ed_lock();
+    Music_InitMixTable();
     ed_unlock();
 }
 
@@ -2596,17 +2623,40 @@ int main(int argc, char **argv)
             ITK_F6, ITK_F8, ITK_F5, ITK_F8,
         };
         size_t k;
+        int gv_wired = -1;
         for (k = 0; k < sizeof(script) / sizeof(script[0]); k++) {
             handle_global(script[k]);
             redraw();
         }
+
+        /* Verify the F12 Global/Mixing Volume wiring actually reaches the
+         * engine (the bug fixed here): focus each slider and nudge it, then
+         * check the runtime GlobalVolume tracks Song.Header.GV. GV defaults
+         * to 128 (= range max), so step LEFT to force a real change. */
+        {
+            int gi = -1, mi = -1, i;
+            Screen = SCR_VARS;
+            redraw();                       /* build the F12 widget table */
+            for (i = 0; i < NW; i++) {
+                if (W[i].v8 == &Song.Header.GV) gi = i;
+                if (W[i].v8 == &Song.Header.MV) mi = i;
+            }
+            if (gi >= 0) { FocusIdx[SCR_VARS] = gi; handle_global(ITK_LEFT); }
+            if (mi >= 0) { redraw(); FocusIdx[SCR_VARS] = mi;
+                           handle_global(ITK_LEFT); }
+            gv_wired = (GlobalVolume == Song.Header.GV);
+        }
+
         commit_current_pattern();
         fprintf(stderr, "ITED selftest: completed %zu actions, "
                 "pattern %u, %u rows, cursor r%d c%d col%d, "
-                "tempo %u speed %u pan[1] %02X\n",
+                "tempo %u speed %u pan[1] %02X, "
+                "GV=%u GlobalVolume=%u MV=%u [%s]\n",
                 sizeof(script) / sizeof(script[0]),
                 CurPattern, CurRows, CurRow, CurChan, CurCol,
-                Song.Header.IT, Song.Header.IS, Song.Header.ChnlPan[1]);
+                Song.Header.IT, Song.Header.IS, Song.Header.ChnlPan[1],
+                Song.Header.GV, GlobalVolume, Song.Header.MV,
+                gv_wired ? "GV WIRED OK" : "GV MISMATCH");
         ma_mutex_uninit(&Mutex);
         Engine_Lock = NULL; Engine_Unlock = NULL;
         Music_FreeIT();
