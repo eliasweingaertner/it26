@@ -127,11 +127,26 @@ transliteration) layered on top of the real engine.
   near-pixel matches. End-to-end window capture verified on Win11,
   including posted-keystroke/-click interaction tests.
 
+**Info page (F5) — first pass DONE (2026-06-15):** live per-channel view
+after `IT_DISPL.ASM` `Display_HostChannel` (the default "track" view).
+Three boxes (4-29 VU, 30-62 sample/inst+name, 63-73 panning if stereo),
+a channel-number gutter coloured per `GetChannelColour` (current 13h,
+muted 11h/16h, normal 12h), and per active host channel: `ss[/ii]:name`
+(sample, instrument in instrument mode, then the sample/instrument
+name), a final-volume VU bar where the original draws the oscilloscope,
+and a pan thumb / Left-Right-Surround. Reads `HChn[]`/`SChn[]` live under
+the audio lock (`HF_CHAN_ON` + `SCOffst < MAXSLAVECHANNELS`). F5 now
+*plays and switches to it* (matching the IT manual); the Playback menu
+"Show Infopage" switches without playing; Up/Down/PgUp/PgDn/Home/End
+scroll the channel window. **Follow-ups:** the real oscilloscope, the
+other view methods (note dots, sample dots, 5/8/.../64-channel pattern
+views, Display_Variables), split view windows, and per-channel solo.
+
 **Not done yet** (see §6): the full IT sample/instrument *editors*
-(envelopes, waveform draw), info page (F5), message editor, save (F10),
-SDL backend for POSIX pixel output, terminal-backend mouse. The F4
-right-hand pane layout is eyeballed (its buttons work); the F4
-Volume/Panning/Pitch tabs are stubs. Header FreeMem/FreeEMS show host
+(envelopes, waveform draw), message editor, save (F10), SDL backend for
+POSIX pixel output, terminal-backend mouse, and the info-page follow-ups
+above. The F4 right-hand pane layout is eyeballed (its buttons work); the
+F4 Volume/Panning/Pitch tabs are stubs. Header FreeMem/FreeEMS show host
 free RAM / 0.
 
 ---
@@ -202,7 +217,9 @@ Non-interactive editor checks (no terminal/window/audio needed):
 - `ITED_SHOT=<file.bmp> [ITED_SHOT_SCREEN=<n>] ited <mod>` — renders the
   screen **pixel-exactly** to a 640x400 24-bit BMP via the shared
   rasterizer. Screen numbers: 0 help, 1 pattern, 2 samples,
-  3 instruments, 4 orders, 5 song vars, 6 main menu, 7 load requester.
+  3 instruments, 4 orders, 5 song vars, 6 info page, 7 main menu,
+  8 load requester. (The info page is empty unless playing, since it
+  reads live channel state — capture it from a running window instead.)
   **This is the visual-iteration workflow:** render, convert to PNG
   (PowerShell `System.Drawing`), compare against `..\screenshots\`.
 
@@ -327,14 +344,18 @@ rough priority order:
 2. **Object-exact F4 right pane + the F4 Volume/Panning/Pitch tabs**
    (current layout is screenshot-eyeballed; tabs are stubs; NNA/DCT/DCA
    buttons and the list work).
-3. **Info page (F5), message editor, save module (F10)** — F10 needs
-   the `IT_DISK.ASM` save path ported (the engine only loads today).
-   The menu entries exist and flash "not ported yet".
-4. **Editing depth**: block ops (Alt-keys), edit masks, more of
+3. **Info page (F5) follow-ups** — the first-pass track view landed
+   (§2); next: the real oscilloscope, the other view methods
+   (`Display_NoteDots`/`SampleDots`/`5..64Channel`/`Variables` in
+   `IT_DISPL.ASM`), split view windows, channel solo.
+4. **Message editor, save module (F10)** — F10 needs the `IT_DISK.ASM`
+   save path ported (the engine only loads today). The menu entries
+   exist and flash "not ported yet".
+5. **Editing depth**: block ops (Alt-keys), edit masks, more of
    `PE_TRANS.INC` behaviour; numeric entry on thumbbars (typed digits).
-5. **In-depth sample & instrument editors** (`IT_I.ASM`) — envelopes,
+6. **In-depth sample & instrument editors** (`IT_I.ASM`) — envelopes,
    sample draw/loop/zoom ops.
-6. **Terminal-backend mouse** (xterm SGR mouse reporting) if wanted;
+7. **Terminal-backend mouse** (xterm SGR mouse reporting) if wanted;
    the editor side is backend-agnostic already.
 
 ### Working agreements when continuing

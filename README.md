@@ -71,7 +71,8 @@ same WAV/hiqual driver. Screens and keys follow IT 2.x:
 | F2  | Pattern editor |
 | F3 / F4 | Sample list / Instrument list (piano keys audition) |
 | F11 / F12 | Order list & panning / Song variables |
-| F5 / F6 / F8 | Play song / play current pattern / stop |
+| F5  | Play song + live info page (per-channel VU / sample / pan) |
+| F6 / F8 | Play current pattern / stop |
 | F9  | Load module (file requester) |
 | ESC | Main menu (the original menu tree: File, Playback, Sample, Instrument menus) |
 
@@ -110,9 +111,10 @@ present the cells: the Win32 pixel window (the authentic look) and a
 24-bit-truecolor VT terminal fallback.
 
 This is a focused editor — the in-depth IT sample/instrument *editors*
-(envelopes, waveform ops), info page, message editor, saving, and an
-SDL pixel backend for POSIX (with mouse) are future work (see
-`docs/HANDOFF.md` §6 and `docs/EDITOR-PORT-PLAN.md`).
+(envelopes, waveform ops), the info page's oscilloscope/other view
+modes, message editor, saving, and an SDL pixel backend for POSIX (with
+mouse) are future work (see `docs/HANDOFF.md` §6 and
+`docs/EDITOR-PORT-PLAN.md`).
 
 ## Fidelity notes (deviations from the DOS binary)
 

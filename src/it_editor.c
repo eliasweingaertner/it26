@@ -59,7 +59,7 @@ int  Music_LoadIT(const char *path);
 void Music_FreeIT(void);
 
 enum { SCR_HELP, SCR_PATTERN, SCR_SAMPLES, SCR_INSTRUMENTS,
-       SCR_ORDER, SCR_VARS };
+       SCR_ORDER, SCR_VARS, SCR_INFO, SCR_COUNT };
 
 /* ---- editor state ---- */
 static int      Screen = SCR_PATTERN;
@@ -243,7 +243,7 @@ typedef struct widget_t {
 #define MAX_WIDGETS 48
 static widget_t W[MAX_WIDGETS];
 static int      NW;
-static int      FocusIdx[6];
+static int      FocusIdx[SCR_COUNT];
 static int      DragIdx = -1;      /* thumbbar being mouse-dragged */
 
 static widget_t *wadd(int type, int x0, int y0, int x1, int y1)
@@ -1244,7 +1244,7 @@ static void draw_help(void)
       "  Screens:  F1 help, F2 pattern, F3 samples, F4 instruments,",
       "            F11 order list, F12 song variables, ESC main menu.",
       "",
-      "  Playback: F5 play song, F6 play pattern, F8 stop.",
+      "  Playback: F5 play song + info page, F6 play pattern, F8 stop.",
       "",
       "  Pattern editor:",
       "    Arrows/PgUp/PgDn/Home/End      move cursor",
@@ -1275,6 +1275,125 @@ static void draw_help(void)
 }
 
 /* ===================================================================
+ * Info page (F5) -- live per-channel view, after IT_DISPL.ASM's
+ * Display_HostChannel default ("track") view: a channel-number gutter,
+ * a sample/instrument-number + name column, and per-channel panning.
+ * Where the original scans the sample data to draw an oscilloscope,
+ * this first pass shows a final-volume VU bar (the oscilloscope and the
+ * other view modes -- note dots, multi-channel, scopes -- are the
+ * documented follow-up). Reads live host/slave channel state under the
+ * audio lock.
+ * =================================================================== */
+static int InfoTop;                 /* first channel row shown */
+#define INFO_ROWS 35
+
+/* IT pan labels are 9 chars wide, drawn at the box's left edge. */
+static const char *InfoLeftMsg = "Left     ";
+static const char *InfoRightMsg = "    Right";
+static const char *InfoSurrMsg = "Surround ";
+
+static void draw_info(void)
+{
+    int stereo   = (Song.Header.Flags & ITF_STEREO) != 0;
+    int instmode = (Song.Header.Flags & ITF_INSTRUMENTS) != 0;
+    int r;
+
+    if (InfoTop > 64 - INFO_ROWS) InfoTop = 64 - INFO_ROWS;
+    if (InfoTop < 0) InfoTop = 0;
+
+    Screen_DrawBox(4, 12, 29, 48, 27);          /* VU / scope box    */
+    Screen_DrawBox(30, 12, 62, 48, 27);         /* sample + name box */
+    if (stereo)
+        Screen_DrawBox(63, 12, 73, 48, 27);     /* panning box       */
+
+    ed_lock();
+    for (r = 0; r < INFO_ROWS; r++) {
+        int c = InfoTop + r;
+        int y = 13 + r;
+        int muted, on;
+        slavechn_t *sc;
+        uint8_t cattr, a;
+
+        if (c >= 64) break;
+
+        muted = (Song.Header.ChnlPan[c] & 0x80) != 0;
+        on    = (HChn[c].Flags & HF_CHAN_ON) &&
+                HChn[c].SCOffst < MAXSLAVECHANNELS;
+
+        /* channel number gutter, coloured as GetChannelColour for a
+         * single window (10h = the dim "other window" colour is unused):
+         * current 13h, current+muted 16h, muted 11h, otherwise 12h. */
+        if (muted)
+            cattr = (c == CurChan) ? 0x16 : 0x11;
+        else
+            cattr = (c == CurChan) ? 0x13 : 0x12;
+        drawf(1, y, cattr, "%02d", c + 1);
+
+        if (!on)
+            continue;
+        sc = &SChn[HChn[c].SCOffst];
+        if (!(sc->Flags & SF_CHAN_ON))
+            continue;
+
+        /* sample (+ instrument) number, ":" and the name (box 2).
+         * attr 6 normal, 7 when note-off, 4 when silent (FV 0). */
+        a = (sc->Flags & SF_NOTE_OFF) ? 0x07 : 0x06;
+        if (sc->FV == 0)
+            a = 0x04;
+        drawf(31, y, 0x06, "%02d", (sc->Smp + 1) % 100);
+        if (instmode && sc->Ins != 0xFF) {
+            drawf(33, y, 0x06, "/%02d", (sc->Ins + 1) % 100);
+            Screen_PutChar(36, y, ':', a);
+            if (sc->Ins < MAX_INSTRUMENTS)
+                draw_itname(37, y, Song.Ins[sc->Ins].InstrumentName, 25, a);
+        } else {
+            Screen_PutChar(33, y, ':', a);
+            if (sc->Smp < MAX_SAMPLES)
+                draw_itname(34, y, Song.Smp[sc->Smp].SampleName, 25, a);
+        }
+
+        /* final-volume VU bar (box 1, cols 5..28 = 24 cells) */
+        {
+            int w = sc->FV * 24 / 128, i;
+            for (i = 0; i < w && i < 24; i++)
+                Screen_PutChar(5 + i, y, 219, 0x06);
+        }
+
+        /* panning (box 3, stereo only): Left/Right/Surround or a thumb */
+        if (stereo) {
+            uint8_t pan = sc->Pan;
+            if (pan == 100)
+                Screen_DrawString(64, y, InfoSurrMsg, 0x02);
+            else if (pan == 0)
+                Screen_DrawString(64, y, InfoLeftMsg, 0x02);
+            else if (pan == 64)
+                Screen_DrawString(64, y, InfoRightMsg, 0x02);
+            else if (pan < 128) {
+                int v = pan + 1;
+                Screen_PutChar(64 + (v >> 3), y,
+                               (uint8_t)(155 + (v & 7)), 0x02);
+            }
+        }
+    }
+    ed_unlock();
+}
+
+static void handle_info_key(int key)
+{
+    int maxtop = 64 - INFO_ROWS;
+    switch (key) {
+    case ITK_UP:   if (InfoTop > 0) InfoTop--; break;
+    case ITK_DOWN: if (InfoTop < maxtop) InfoTop++; break;
+    case ITK_PGUP: InfoTop -= 16; if (InfoTop < 0) InfoTop = 0; break;
+    case ITK_PGDN: InfoTop += 16; if (InfoTop > maxtop) InfoTop = maxtop;
+                   break;
+    case ITK_HOME: InfoTop = 0; break;
+    case ITK_END:  InfoTop = maxtop; break;
+    default: break;
+    }
+}
+
+/* ===================================================================
  * Rendering dispatch. draw_screen fills the cell buffer (and rebuilds
  * the active screen's widget table); redraw additionally presents it.
  * Modal overlays (menus) call draw_screen, draw on top, then present
@@ -1286,6 +1405,7 @@ static void draw_screen(void)
         "Help (F1)", "Pattern Editor (F2)", "Sample List (F3)",
         "Instrument List (F4)", "Order List and Panning (F11)",
         "Song Variables & Directory Configuration (F12)",
+        "Information (F5)",
     };
 
     Screen_Clear(0x20);
@@ -1297,6 +1417,7 @@ static void draw_screen(void)
     case SCR_ORDER:       draw_order(); break;
     case SCR_VARS:        draw_vars(); break;
     case SCR_HELP:        draw_help(); break;
+    case SCR_INFO:        NW = 0; draw_info(); break;
     }
 }
 
@@ -2300,7 +2421,7 @@ static int act_file_shell(void) { status("No DOS to shell to."); return 1; }
 static int act_file_quit(void)  { Running = 0; return 1; }
 
 static int act_pb_info(void)
-{ status("Info page not ported yet."); return 1; }
+{ Screen = SCR_INFO; return 1; }
 static int act_pb_song(void)
 { commit_current_pattern(); play_song(); return 1; }
 static int act_pb_pattern(void)
@@ -2460,7 +2581,8 @@ static void handle_global(int key)
     case ITK_F4:  Screen = SCR_INSTRUMENTS; ListSel = CurInstr-1; return;
     case ITK_F11: Screen = SCR_ORDER; ListSel = 0; return;
     case ITK_F12: Screen = SCR_VARS; return;
-    case ITK_F5:  commit_current_pattern(); play_song(); return;
+    case ITK_F5:  commit_current_pattern(); play_song();
+                  Screen = SCR_INFO; return;   /* play + show info page */
     case ITK_F6:  commit_current_pattern(); play_pattern(); return;
     case ITK_F7:  commit_current_pattern(); play_pattern(); return;
     case ITK_F8:  stop_song(); return;
@@ -2476,6 +2598,8 @@ static void handle_global(int key)
 
     if (Screen == SCR_PATTERN)
         handle_pattern_key(key);
+    else if (Screen == SCR_INFO)
+        handle_info_key(key);
     else
         widgets_key(key);
 }
@@ -2566,13 +2690,13 @@ int main(int argc, char **argv)
         if (dump || shot) {
             int scr = dump ? atoi(dump) : (getenv("ITED_SHOT_SCREEN")
                             ? atoi(getenv("ITED_SHOT_SCREEN")) : SCR_PATTERN);
-            if (scr >= 0 && scr <= SCR_VARS)
+            if (scr >= 0 && scr <= SCR_INFO)
                 Screen = scr;
             Screen_Clear(0x20);
-            if (scr == 6) {                 /* main menu overlay */
+            if (scr == 7) {                 /* main menu overlay */
                 draw_screen();
                 menu_draw(&MainMenuDef, 2);
-            } else if (scr == 7) {          /* file requester */
+            } else if (scr == 8) {          /* file requester */
                 req_scan();
                 draw_file_requester();
             } else {
