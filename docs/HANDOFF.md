@@ -1,4 +1,4 @@
-# itplay — Session handoff / resume guide
+# ittrack — Session handoff / resume guide
 
 > Read this first when resuming in a fresh agent session. It is a snapshot
 > of **where the project stands**, **how to build and verify it**, **how the
@@ -33,7 +33,7 @@ transliteration) layered on top of the real engine.
   - `C:\Users\elias\fable5\impulse-tracker-jthlim` — Jeffrey Lim's own repo,
     canonical upstream. Diff vs mirror: only removed the dormant
     `WAREZWAVE` block from `WAVDRV.ASM` (never ported) + two `.BAT` fixes.
-- The port lives in `C:\Users\elias\fable5\itplay`.
+- The port lives in `C:\Users\elias\fable5\ittrack`.
 
 ---
 
@@ -138,13 +138,13 @@ free RAM / 0.
 
 ## 3. Build & run
 
-The repo lives at `C:\Users\elias\fable5\itplay` (git; `0a6470c` =
+The repo lives at `C:\Users\elias\fable5\ittrack` (git; `0a6470c` =
 initial commit, which carried the old terminal-only Camouflage
 prototype — superseded by the real IT UI landed 2026-06-12).
 
 ### CMake (preferred, all platforms)
 ```
-cd C:\Users\elias\fable5\itplay
+cd C:\Users\elias\fable5\ittrack
 cmake -B build && cmake --build build --config Release
 ```
 Produces `itplay` (player) and `ited` (editor).
@@ -214,7 +214,7 @@ Test modules live in `testdata/` (`beyond_network.it`, `itdemo.it`,
 ## 5. File map
 
 ```
-itplay/
+ittrack/
   CMakeLists.txt           two targets: itplay (engine+main), ited (engine+screen+editor)
   README.md                user-facing overview + fidelity notes
   docs/

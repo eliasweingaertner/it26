@@ -1,4 +1,4 @@
-# itplay — native cross-platform port of the Impulse Tracker 2.17 engine
+# ittrack — native cross-platform port of the Impulse Tracker 2.17 engine
 
 A 1:1 C transliteration of Jeffrey Lim's Impulse Tracker playback engine,
 ported directly from the released x86 assembly source
