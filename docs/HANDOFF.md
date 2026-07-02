@@ -87,9 +87,30 @@ transliteration) layered on top of the real engine.
   - F3 sample list, F12 song variables, F9 load requester: object
     coordinates **verbatim from `IT_OBJ1.ASM`** (boxes, labels, thumbbars
     — `F_DrawThumbBar` ported 1:1 incl. the fractional glyph thumbs),
-    F11 order+panning per the PanBox/`F_ShowChannels` data. The F4
-    instrument-page right pane is still approximated from reference
-    screenshots in `..\screenshots\`.
+    F11 order+panning per the PanBox/`F_ShowChannels` data.
+  - **F4 instrument page is object-exact (2026-07-02, spec 002):** the
+    four object lists `O1_InstrumentListGeneral/Volume/Panning/Pitch`
+    (IT_OBJ1.ASM 5629..6560) ported verbatim — instrument window
+    (numbers at x=2 attr 20h, names attr 06h, current row E6h, focus
+    30h per `I_Pre/DrawInstrumentWindow`), note-translation window
+    (`I_DrawNoteWindow` + full `NoteListKeys`/`I_PostNoteWindow`
+    editing: piano note entry, octave/sample digits, `.`/Space/Enter,
+    `<`/`>` sample select), NNA/DCT/DCA radios, filename input, and on
+    the three envelope tabs the **real envelope display**: the VGA
+    512-char canvas (`I_MapEnvelope` → `Screen_GenerateCharacters`
+    font bank B; cells attr 0Ch, chars 0..255), node markers,
+    dashed/dotted loop markers, live playback cursors, and the
+    `I_PostEnvelope` node editor (Enter grabs a node; arrows/PgUp/PgDn
+    move value, Left/Right/Tab/Home/End move ticks, Ins/Del
+    insert/delete with IT's exact bounds; mouse click/drag on nodes).
+    Toggles/loop-node fields/thumbbars bind straight to `instrument_t`
+    (env flag bits 1/2/4/8, `LpB..SLE`, `GbV/FadeOut/RV`,
+    `DfP/PPC/PPS/RP`, `IFC/IFR/MCh/MPr/MIDIBnk` — FILTERENVELOPES=1
+    layout with Default Cutoff/Resonance). Widget framework gained
+    type-13 3-digit numeric fields (`F_Draw3Num`, shared digit cursor)
+    and type-15 custom draw/key/click/drag objects. Not ported:
+    envelope presets (Alt/`0`-`9` flash "not ported yet"), Alt-based
+    list ops (delete/swap/copy), in-list instrument-name editing.
   - F9 is a real file requester (file/dir/drive boxes with independent
     scrolling + Tab focus, .IT song names read from headers, dir/drive
     navigation, editable filename field).
@@ -147,11 +168,11 @@ scroll the channel window. **Follow-ups:** the real oscilloscope, the
 other view methods (note dots, sample dots, 5/8/.../64-channel pattern
 views, Display_Variables), split view windows, and per-channel solo.
 
-**Not done yet** (see §6): the full IT sample/instrument *editors*
-(envelopes, waveform draw), message editor, save (F10),
-terminal-backend mouse, and the info-page follow-ups above. The F4 right-hand pane layout is eyeballed (its buttons work); the
-F4 Volume/Panning/Pitch tabs are stubs. Header FreeMem/FreeEMS show host
-free RAM / 0.
+**Not done yet** (see §6): the full IT sample *editor* (waveform
+draw/loop/zoom), message editor, save (F10), terminal-backend mouse,
+and the info-page follow-ups above. F4 leftovers: envelope presets,
+Alt-based instrument list ops, in-list name editing. Header
+FreeMem/FreeEMS show host free RAM / 0.
 
 ---
 
@@ -361,9 +382,10 @@ rough priority order:
      to a Windows capture because two content fields drawn by
      `it_editor.c` are platform-specific: `FreeMem` (`free_mem_k()` reports
      real RAM on Win32, hardcodes 65536k elsewhere) and the cwd path string.
-2. **Object-exact F4 right pane + the F4 Volume/Panning/Pitch tabs**
-   (current layout is screenshot-eyeballed; tabs are stubs; NNA/DCT/DCA
-   buttons and the list work).
+2. **Object-exact F4 right pane + the F4 Volume/Panning/Pitch tabs** —
+   ✅ DONE (2026-07-02, spec `specs/002-f4-instrument-editor`): see §2.
+   Leftovers folded into later items: envelope presets, Alt list ops,
+   in-list name editing.
 3. **Info page (F5) follow-ups** — the first-pass track view landed
    (§2); next: the real oscilloscope, the other view methods
    (`Display_NoteDots`/`SampleDots`/`5..64Channel`/`Variables` in
@@ -383,8 +405,8 @@ rough priority order:
   confirm all four modules remain `IDENTICAL`.
 - Editor code is a faithful UI/behaviour port — reference the ASM for layout
   and behaviour, but idiomatic C is fine. **Layout/colors come from the
-  ASM data tables, not from eyeballing** (the only current exception:
-  the F4 right pane).
+  ASM data tables, not from eyeballing** (no known exceptions since the
+  F4 rework, 2026-07-02).
 - New backends go **behind the `screen_backend_t` vtable** in
   `it_screen.h`; the cell buffer, control-code renderer, box drawing and
   the rasterizer are backend-independent and shared.

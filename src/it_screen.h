@@ -62,6 +62,18 @@ void Screen_DrawBox(int x0, int y0, int x1, int y1, int style);
 /* flush damaged cells to the active backend (S_UpdateScreen) */
 void Screen_Update(void);
 
+/* S_GenerateCharacters: the VGA 512-character trick. IT pixel-draws its
+ * envelope / waveform / oscilloscope canvases by rendering into a pixel
+ * "generation table" and regenerating font bank B from it; cells whose
+ * foreground palette index has bit 3 set (attr & 0x08) display their
+ * character from bank B instead of the normal font. `pix` is a
+ * (wchars*8) x (hchars*8) byte array, one byte per pixel (bit 0 used),
+ * row-major; characters fill left-to-right then top-to-bottom starting
+ * at `first`. Shared by the rasterizer (pixel backends, BMP shots) and
+ * approximated with quadrant blocks by the terminal backend. */
+void Screen_GenerateCharacters(int first, int wchars, int hchars,
+                               const uint8_t *pix);
+
 /* render the current cell buffer to `px` as 640x400 0x00RRGGBB pixels
  * using the real glyph bitmaps + palette (shared by the pixel backend,
  * Screen_WriteBMP and any future SDL backend). */

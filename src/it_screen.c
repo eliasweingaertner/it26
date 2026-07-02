@@ -117,6 +117,32 @@ void Screen_DrawBox(int x0, int y0, int x1, int y1, int style)
     Screen_PutChar(x1, y1, d[16], d[17]);
 }
 
+/* ---- font bank B (S_GenerateCharacters, the VGA 512-char trick) ------ */
+
+static uint8_t FontB[256][8];
+
+void Screen_GenerateCharacters(int first, int wchars, int hchars,
+                               const uint8_t *pix)
+{
+    int cy, cx, row, b;
+    int stride = wchars * 8;
+
+    for (cy = 0; cy < hchars; cy++) {
+        for (cx = 0; cx < wchars; cx++) {
+            int ch = first + cy * wchars + cx;
+            if (ch < 0 || ch > 255)
+                continue;
+            for (row = 0; row < 8; row++) {
+                const uint8_t *src = pix + (cy*8 + row)*stride + cx*8;
+                uint8_t bits = 0;
+                for (b = 0; b < 8; b++)
+                    bits = (uint8_t)((bits << 1) | (src[b] & 1));
+                FontB[ch][row] = bits;
+            }
+        }
+    }
+}
+
 /* ---- rasterizer: cells -> 640x400 RGB (the authentic output) --------- */
 
 static const uint8_t *GlyphBitmap(uint8_t ch)
@@ -133,7 +159,8 @@ void Screen_Rasterize(uint32_t *px)
     for (cy = 0; cy < SCREEN_H; cy++) {
         for (cx = 0; cx < SCREEN_W; cx++) {
             screen_cell_t c = Back[cy][cx];
-            const uint8_t *g = GlyphBitmap(c.ch);
+            const uint8_t *g = (c.attr & 0x08) ? FontB[c.ch]
+                                               : GlyphBitmap(c.ch);
             int fi = c.attr & 15, bi = (c.attr >> 4) & 15;
             uint32_t fg = ((uint32_t)PalR(fi) << 16) |
                           ((uint32_t)PalG(fi) << 8) | PalB(fi);
@@ -328,6 +355,26 @@ static const char *TermGlyph(uint8_t c)
     }
 }
 
+/* font bank B cell -> Unicode quadrant block (terminal approximation of
+ * the generated canvas glyphs; index = UL|UR<<1|LL<<2|LR<<3) */
+static const char *TermGlyphB(uint8_t ch)
+{
+    static const char *quad[16] = {
+        " ",            "\xE2\x96\x98", "\xE2\x96\x9D", "\xE2\x96\x80",
+        "\xE2\x96\x96", "\xE2\x96\x8C", "\xE2\x96\x9E", "\xE2\x96\x9B",
+        "\xE2\x96\x97", "\xE2\x96\x9A", "\xE2\x96\x90", "\xE2\x96\x9C",
+        "\xE2\x96\x84", "\xE2\x96\x99", "\xE2\x96\x9F", "\xE2\x96\x88",
+    };
+    const uint8_t *g = FontB[ch];
+    int q = 0;
+
+    if ((g[0] | g[1] | g[2] | g[3]) & 0xF0) q |= 1;
+    if ((g[0] | g[1] | g[2] | g[3]) & 0x0F) q |= 2;
+    if ((g[4] | g[5] | g[6] | g[7]) & 0xF0) q |= 4;
+    if ((g[4] | g[5] | g[6] | g[7]) & 0x0F) q |= 8;
+    return quad[q];
+}
+
 static void Term_Present(const screen_cell_t *cells)
 {
     char out[SCREEN_W * 48 + 64];
@@ -354,7 +401,8 @@ static void Term_Present(const screen_cell_t *cells)
                 lastattr = c.attr;
             }
             n += (size_t)snprintf(out + n, sizeof(out) - n, "%s",
-                                  TermGlyph(c.ch));
+                                  (c.attr & 0x08) ? TermGlyphB(c.ch)
+                                                  : TermGlyph(c.ch));
         }
         fwrite(out, 1, n, stdout);
         memcpy(TermFront[y], row, sizeof(TermFront[y]));

@@ -15,8 +15,11 @@
  *    attr 06h cells with E6h/F6h row hilights, char-168 track
  *    dividers, char-173 empty fields, cursor attr 30h);
  *  - F3/F12/F9/F11 use the object coordinates from IT_OBJ1.ASM
- *    verbatim; F4 and the main menu approximate the originals from
- *    reference screenshots.
+ *    verbatim; F4 is the object-exact port of the four instrument-page
+ *    object lists (General/Volume/Panning/Pitch, IT_OBJ1.ASM 5629..)
+ *    with the IT_I.ASM custom objects: instrument window, note
+ *    translation window, envelope display/editor (font bank B canvas,
+ *    I_MapEnvelope), pitch-pan center.
  *
  * Keys: F1 help, F2 pattern, F3 samples, F4 instruments, F5/F6 play,
  * F8 stop, F9 load (file requester), F11 orders, F12 song variables,
@@ -102,10 +105,14 @@ static void drawf(int x, int y, uint8_t attr, const char *fmt, ...)
     Screen_DrawString(x, y, buf, attr);
 }
 
-/* PE_ConvAX2Num: 3-digit zero-padded decimal */
+/* PE_ConvAX2Num: 3-digit zero-padded decimal (signed values, as the
+ * F4 Pitch-Pan Separation / MIDI Program fields need, print as %3d) */
 static void draw3num(int x, int y, int v, uint8_t attr)
 {
-    drawf(x, y, attr, "%03d", v > 999 ? 999 : (v < 0 ? 0 : v));
+    if (v < 0)
+        drawf(x, y, attr, "%3d", v < -99 ? -99 : v);
+    else
+        drawf(x, y, attr, "%03d", v > 999 ? 999 : v);
 }
 
 /* 26-char IT name field: control chars become spaces (PE_FillHeader) */
@@ -128,12 +135,6 @@ static void draw_button_style(int x0, int y0, int x1, int y1, int style,
 {
     Screen_DrawBox(x0, y0, x1, y1, style + (pressed ? 1 : 0));
     Screen_DrawString(x0 + 1, (y0 + y1) / 2, text, focused ? 0x23 : 0x20);
-}
-
-static void draw_button(int x0, int y0, int x1, int y1,
-                        const char *text, int pressed)
-{
-    draw_button_style(x0, y0, x1, y1, 8, text, pressed, 0);
 }
 
 /* F_DrawThumbBar, ported 1:1: black groove, 6px thumb built from the
@@ -214,7 +215,8 @@ static void status(const char *fmt, ...)
  * value pointers track the current list selection); a per-screen focus
  * index survives across frames and screen switches.
  * =================================================================== */
-enum { WT_BUTTON = 1, WT_THUMB, WT_TOGGLE, WT_TEXT, WT_LIST };
+enum { WT_BUTTON = 1, WT_THUMB, WT_TOGGLE, WT_TEXT, WT_LIST,
+       WT_NUM3, WT_CUSTOM };
 
 typedef struct widget_t {
     uint8_t type;
@@ -228,8 +230,9 @@ typedef struct widget_t {
     uint16_t *v16;
     uint16_t  bit;                 /* flag bit (toggle / flag-button)  */
     uint8_t   neg;                 /* flag-button: down when bit clear */
+    uint8_t   sgn;                 /* thumb/num: value byte is signed  */
     void    (*action)(void);       /* press / value-change hook */
-    /* thumbbar (value lives in *v8, masked by vmask if nonzero) */
+    /* thumbbar (value in *v8 masked by vmask, or 16-bit in *v16) */
     int barx, bary, min, max, dw;  /* dw = scaled display width, 0 = classic */
     /* string input */
     char *text;
@@ -238,6 +241,11 @@ typedef struct widget_t {
     int (*lkey)(int key);          /* returns nonzero if consumed */
     void (*lclick)(int row, int mx, int mpx);
     int  listy0;                   /* screen row of the first list line */
+    /* custom object (type-15 far-function triple: draw/pre + post) */
+    void (*cdraw)(int focused);    /* draw + pre (focus) */
+    int  (*ckey)(int key);         /* returns nonzero if consumed */
+    void (*cclick)(const it_mouse_t *m);
+    void (*cdrag)(const it_mouse_t *m); /* NULL = no drag tracking */
 } widget_t;
 
 #define MAX_WIDGETS 48
@@ -327,8 +335,31 @@ static widget_t *wlist(int x0, int y0, int x1, int y1, int listy0,
     return w;
 }
 
+/* F_Draw3Num: 3-digit numeric byte field (envelope loop node numbers) */
+static widget_t *wnum3(int x, int y, uint8_t *v, int min, int max,
+                       void (*action)(void))
+{
+    widget_t *w = wadd(WT_NUM3, x, y, x + 2, y);
+    w->v8 = v; w->min = min; w->max = max; w->action = action;
+    return w;
+}
+
+/* type-15 custom object: draw/pre + post callbacks */
+static widget_t *wcustom(int x0, int y0, int x1, int y1,
+                         void (*cdraw)(int), int (*ckey)(int),
+                         void (*cclick)(const it_mouse_t *))
+{
+    widget_t *w = wadd(WT_CUSTOM, x0, y0, x1, y1);
+    w->cdraw = cdraw; w->ckey = ckey; w->cclick = cclick;
+    return w;
+}
+
 static int thumb_get(const widget_t *w)
 {
+    if (w->v16)
+        return *w->v16;
+    if (w->sgn)
+        return (int8_t)*w->v8;
     return w->vmask ? (*w->v8 & w->vmask) : *w->v8;
 }
 
@@ -337,7 +368,9 @@ static void thumb_set(widget_t *w, int v)
     if (v < w->min) v = w->min;
     if (v > w->max) v = w->max;
     ed_lock();
-    if (w->vmask)
+    if (w->v16)
+        *w->v16 = (uint16_t)v;
+    else if (w->vmask && !w->sgn)
         *w->v8 = (uint8_t)((*w->v8 & ~w->vmask) | v);
     else
         *w->v8 = (uint8_t)v;
@@ -413,6 +446,8 @@ static void button_press(widget_t *w)
         w->action();
 }
 
+static int Num3Pos = 0;            /* TripleNumberPos: shared digit cursor */
+
 static void widget_draw(const widget_t *w, int focused)
 {
     switch (w->type) {
@@ -430,8 +465,27 @@ static void widget_draw(const widget_t *w, int focused)
                           thumb_get(w), focused ? 0x03 : 0x02);
         break;
     case WT_TOGGLE:
-        Screen_DrawString(w->x0, w->y0, toggle_get(w) ? "On " : "Off",
-                          focused ? 0x30 : 0x02);
+        /* F_DrawToggle: "On"/"Off" attr 02h; focus (F_PreToggle)
+         * hilights just the word (2 or 3 cells) in 30h */
+        Screen_DrawString(w->x0, w->y0, toggle_get(w) ? "On " : "Off", 0x02);
+        if (focused)
+            Screen_DrawString(w->x0, w->y0,
+                              toggle_get(w) ? "On" : "Off", 0x30);
+        break;
+    case WT_NUM3: {
+        int v = w->sgn ? (int8_t)*w->v8 : *w->v8;
+        draw3num(w->x0, w->y0, v, 0x02);
+        if (focused) {          /* F_Pre3Num: digit cursor cell in 30h */
+            char d[2];
+            d[0] = (char)('0' + (v / (Num3Pos == 0 ? 100 :
+                                      Num3Pos == 1 ? 10 : 1)) % 10);
+            d[1] = 0;
+            Screen_DrawString(w->x0 + Num3Pos, w->y0, d, 0x30);
+        }
+        break; }
+    case WT_CUSTOM:
+        if (w->cdraw)
+            w->cdraw(focused);
         break;
     case WT_TEXT: {
         int i, len = 0;
@@ -508,6 +562,30 @@ static int widgets_key(int key)
 
     if (w->type == WT_LIST && w->lkey && w->lkey(key))
         return 1;
+    if (w->type == WT_CUSTOM && w->ckey && w->ckey(key))
+        return 1;
+
+    if (w->type == WT_NUM3) {   /* F_Post3Num: digit cursor + entry */
+        switch (key) {
+        case ITK_LEFT: case ITK_BACKSPACE:
+            if (Num3Pos > 0) Num3Pos--;
+            return 1;
+        case ITK_RIGHT:
+            if (Num3Pos < 2) Num3Pos++;
+            return 1;
+        case '+': thumb_set(w, thumb_get(w) + 1); return 1;
+        case '-': thumb_set(w, thumb_get(w) - 1); return 1;
+        default: break;
+        }
+        if (key >= '0' && key <= '9') {
+            int v = *w->v8, dig[3];
+            dig[0] = v / 100 % 10; dig[1] = v / 10 % 10; dig[2] = v % 10;
+            dig[Num3Pos] = key - '0';
+            thumb_set(w, dig[0] * 100 + dig[1] * 10 + dig[2]);
+            if (Num3Pos < 2) Num3Pos++;
+            return 1;
+        }
+    }
 
     switch (key) {
     case ITK_TAB:       FocusIdx[Screen] = (f + 1) % NW;      return 1;
@@ -571,9 +649,16 @@ static void widgets_mouse(void)
         case WT_BUTTON: button_press(w); break;
         case WT_TOGGLE: toggle_flip(w); break;
         case WT_THUMB:  thumb_from_px(w, m.px); DragIdx = i; break;
+        case WT_NUM3:   thumb_set(w, thumb_get(w) - 1); break;
         case WT_LIST:
             if (w->lclick)
                 w->lclick(m.y - w->listy0, m.x, m.px);
+            break;
+        case WT_CUSTOM:
+            if (w->cclick)
+                w->cclick(&m);
+            if (w->cdrag)
+                DragIdx = i;
             break;
         default: break;
         }
@@ -598,7 +683,6 @@ static void act_speed_changed(void);
 static void act_gv_changed(void);
 static void act_mv_changed(void);
 static void act_help_done(void);
-static void act_tab_not_ported(void);
 static void act_save_prefs(void);
 
 /* ===================================================================
@@ -1026,64 +1110,782 @@ static void draw_samples(void)
 }
 
 /* ===================================================================
- * Instrument list (F4) -- approximated from the IT 2.14 screen
+ * Instrument list (F4) -- object-exact port of the four object lists
+ * O1_InstrumentListGeneral/Volume/Panning/Pitch (IT_OBJ1.ASM 5629..)
+ * with the custom-draw objects from IT_I.ASM: I_DrawInstrumentWindow,
+ * I_DrawNoteWindow, I_DrawEnvelope (+node editing), and
+ * I_DrawPitchPanCenter. FILTERENVELOPES=1 layout (the 2.17 build).
  * =================================================================== */
-static const char *NNANames[4] = { "Note Cut", "Continue",
-                                   "Note Off", "Note Fade" };
-static const char *DCTNames[4] = { "Disabled", "Note", "Sample",
-                                   "Instrument" };
-static const char *DCANames[3] = { "Note Cut", "Note Off", "Note Fade" };
+static int key_to_note(int key);
+static void jam_note(int gnote, int chan);
+
+static uint8_t InsTab = 0;         /* InstrumentScreen: 0=General 1=Vol
+                                    * 2=Pan 3=Pitch                     */
+static int CurrentNode = 0;        /* envelope node cursor              */
+static int NodeHeld = 0;           /* Enter "grabs" the node            */
+static int NoteWinTop = 0;         /* note-translation window scroll    */
+static int NoteWinSel = 0;         /* CurrentNote 0..119                */
+static int NotePos = 0;            /* cursor column 0..3                */
+static uint8_t NoteSampleNumber = 1; /* SampleNumber (IT_I.ASM)         */
+static int IdxTabBtn, IdxEnvOn, IdxNNACut, IdxLeftList; /* focus links  */
+
+#define ENVELOPEGRANULARITY 50
+#define MAXENVELOPETICK     9999
+
+static uint16_t EnvUpperLimit = ENVELOPEGRANULARITY;
+
+static instrument_t *cur_ins(void)
+{
+    return &Song.Ins[ListSel];
+}
+
+static env_t *cur_env(void)
+{
+    instrument_t *ins = cur_ins();
+    switch (InsTab) {
+    case 2:  return &ins->PEnvelope;
+    case 3:  return &ins->PtEnvelope;
+    default: return &ins->VEnvelope;
+    }
+}
+
+/* AmplitudeCompensate + axis row, per I_MapEnvelope: filter envelopes
+ * and the volume envelope have the axis at the bottom (row 62); pan and
+ * pitch centre it (row 31). Compensate shifts signed values to 0..64. */
+static int env_compensate(const env_t *e)
+{
+    if (e->Flags & 0x80) return 32;
+    return (InsTab == 1) ? 0 : 32;
+}
+
+static int env_axis_row(const env_t *e)
+{
+    if (e->Flags & 0x80) return 62;
+    return (InsTab == 1) ? 62 : 31;
+}
+
+/* SetInstrument3Num tail: after a loop-node edit, push each pair's end
+ * up to its begin across all three envelopes. */
+static void env_fix_loop_pairs(void)
+{
+    instrument_t *ins = cur_ins();
+    env_t *es[3];
+    int i;
+
+    es[0] = &ins->VEnvelope; es[1] = &ins->PEnvelope;
+    es[2] = &ins->PtEnvelope;
+    ed_lock();
+    for (i = 0; i < 3; i++) {
+        if (es[i]->LpB > es[i]->LpE) es[i]->LpE = es[i]->LpB;
+        if (es[i]->SLB > es[i]->SLE) es[i]->SLE = es[i]->SLB;
+    }
+    ed_unlock();
+}
+
+/* I_MapEnvelope: render the active envelope into the 256x64 pixel
+ * generation table and regenerate font bank B (chars 0..255). */
+static void env_map(void)
+{
+    static uint8_t pix[256 * 64];
+    env_t *e = cur_env();
+    int comp = env_compensate(e);
+    int num, r, x, i;
+    int lastamp = 0, lastx = 0;
+
+    memset(pix, 0, sizeof(pix));
+
+    for (r = 0; r < 64; r += 2)            /* dotted Y axis, column 3 */
+        pix[r * 256 + 3] = 1;
+    r = env_axis_row(e);                   /* dotted X axis */
+    for (x = 1; x < 256; x += 2)
+        pix[r * 256 + x] = 1;
+
+    num = e->Num;
+    if (CurrentNode >= num)
+        CurrentNode = num ? num - 1 : 0;
+
+    if (num) {
+        int lasttick = e->NodePoints[num - 1].Tick;
+        EnvUpperLimit = (uint16_t)((lasttick / ENVELOPEGRANULARITY + 1)
+                                   * ENVELOPEGRANULARITY);
+
+        for (i = 0; i < num; i++) {
+            /* amplitude in 8.8 (row = high byte), tick -> 0..249 */
+            uint8_t a8 = (uint8_t)(64 - comp - e->NodePoints[i].Magnitude);
+            int amp = a8 * 244;
+            int tick = e->NodePoints[i].Tick;
+            int row, px, py, dr;
+
+            if (tick >= EnvUpperLimit)
+                break;                     /* I_MapEnvelopeError */
+            x = tick * 250 / EnvUpperLimit;
+            row = amp >> 8;
+            px = x + 3; py = row + 1;
+
+            for (dr = -1; dr <= 1; dr++) { /* 3x3 node marker */
+                pix[(py + dr) * 256 + px - 1] = 1;
+                pix[(py + dr) * 256 + px]     = 1;
+                pix[(py + dr) * 256 + px + 1] = 1;
+                if (i == CurrentNode) {    /* wide marks at +/-3 */
+                    pix[(py + dr) * 256 + px + 2] = 0;
+                    pix[(py + dr) * 256 + px + 3] = 1;
+                    pix[(py + dr) * 256 + px - 3] = 1;
+                    pix[(py + dr) * 256 + px - 2] = 0;
+                }
+            }
+
+            if ((e->Flags & 2) && (i == e->LpB || i == e->LpE)) {
+                for (r = 0; r < 64; r++)   /* dashed loop marker */
+                    pix[r * 256 + px] = (uint8_t)(((r + 1) >> 1) & 1);
+            } else if ((e->Flags & 4) && (i == e->SLB || i == e->SLE)) {
+                for (r = 0; r < 64; r++)   /* dotted susloop marker */
+                    pix[r * 256 + px] = (uint8_t)((r & 1) ^ 1);
+            }
+
+            if (i > 0) {                   /* line segment from last node */
+                int dcols = x - lastx;
+                if (dcols == 0) {          /* vertical */
+                    int r0 = lastamp >> 8, r1 = amp >> 8;
+                    int d = (r1 >= r0) ? 1 : -1, n = (r1 - r0) * d, rr = r0;
+                    while (n--) {
+                        pix[(rr + 1) * 256 + lastx + 3] = 1;
+                        rr += d;
+                    }
+                } else if (dcols > 0) {    /* diagonal */
+                    int damp = amp - lastamp;
+                    int step = (damp >= 0) ? -1 : 1;
+                    int sd = (damp >= 0) ? damp / dcols
+                                         : -((-damp) / dcols);
+                    int acc = lastamp, col = lastx + 3, c;
+                    for (c = 0; c < dcols; c++) {
+                        int prev = acc >> 8, run, rr, k;
+                        acc += sd;
+                        run = prev - (acc >> 8);
+                        if (run < 0) run = -run;
+                        if (run == 0) run = 1;
+                        rr = acc >> 8;
+                        for (k = 0; k < run; k++) {
+                            if (rr >= 0 && rr < 63)
+                                pix[(rr + 1) * 256 + col] = 1;
+                            rr += step;
+                        }
+                        col++;
+                    }
+                }
+            }
+            lastamp = amp; lastx = x;
+        }
+
+        /* live playback cursors: a full-height line per slave channel
+         * playing this instrument with this envelope running */
+        ed_lock();
+        for (i = 0; i < MAXSLAVECHANNELS; i++) {
+            slavechn_t *sc = &SChn[i];
+            uint16_t envbit = (uint16_t)(SF_VOLENV_ON << (InsTab - 1));
+            uint16_t pos;
+
+            if (!(sc->Flags & SF_CHAN_ON) || sc->Ins != ListSel)
+                continue;
+            pos = (InsTab == 1) ? sc->VEnv.Pos :
+                  (InsTab == 2) ? sc->PEnv.Pos : sc->PtEnv.Pos;
+            if (pos == 0 && !(sc->Flags & envbit))
+                continue;
+            if (pos >= EnvUpperLimit)
+                continue;
+            x = pos * 250 / EnvUpperLimit + 3;
+            for (r = 0; r < 64; r++)
+                pix[r * 256 + x] = 1;
+        }
+        ed_unlock();
+    }
+
+    Screen_GenerateCharacters(0, 32, 8, pix);
+}
+
+/* I_EnvelopeSelected: grabbing a node turns the envelope on (and on the
+ * pitch tab defaults a fresh envelope to filter mode, FILTERENVELOPES) */
+static void env_selected(env_t *e)
+{
+    ed_lock();
+    if (InsTab == 3 && !(e->Flags & 1))
+        e->Flags |= 0x80;
+    e->Flags |= 1;
+    ed_unlock();
+}
+
+static void env_insert_node(void)          /* I_VolumeEnvelopeInsert */
+{
+    env_t *e = cur_env();
+    int cur = CurrentNode, num = e->Num, k;
+
+    if (cur + 1 == num || num >= 25 || num == 0)
+        return;
+    if (e->NodePoints[cur + 1].Tick - e->NodePoints[cur].Tick < 2)
+        return;
+
+    ed_lock();
+    e->Num++;
+    for (k = num; k > cur + 1; k--)
+        e->NodePoints[k] = e->NodePoints[k - 1];
+    e->NodePoints[cur + 1].Tick =
+        (uint16_t)((e->NodePoints[cur].Tick +
+                    e->NodePoints[cur + 2].Tick) >> 1);
+    {
+        int comp = env_compensate(e);
+        int mid = ((e->NodePoints[cur].Magnitude + comp) +
+                   (e->NodePoints[cur + 2].Magnitude + comp)) / 2 - comp;
+        e->NodePoints[cur + 1].Magnitude = (int8_t)mid;
+    }
+    if (cur < e->LpB) e->LpB++;
+    if (cur < e->LpE) e->LpE++;
+    if (cur < e->SLB) e->SLB++;
+    if (cur < e->SLE) e->SLE++;
+    ed_unlock();
+}
+
+static void env_delete_node(void)          /* I_VolumeEnvelopeDelete */
+{
+    env_t *e = cur_env();
+    int cur = CurrentNode, num = e->Num, k, last;
+
+    if (cur == 0 || num <= 2)
+        return;
+
+    ed_lock();
+    e->Num--;
+    for (k = cur; k < num - 1; k++)
+        e->NodePoints[k] = e->NodePoints[k + 1];
+    e->NodePoints[num - 1].Tick = 0;
+    e->NodePoints[num - 1].Magnitude = 0;
+    last = e->Num - 1;
+    if (cur < e->LpB) e->LpB--;
+    if (cur < e->LpE) e->LpE--;
+    if (cur < e->SLB) e->SLB--;
+    if (cur < e->SLE) e->SLE--;
+    if (last < e->LpB) e->LpB = (uint8_t)last;
+    if (last < e->LpE) e->LpE = (uint8_t)last;
+    if (last < e->SLB) e->SLB = (uint8_t)last;
+    if (last < e->SLE) e->SLE = (uint8_t)last;
+    ed_unlock();
+}
+
+/* node moves (I_VolumeEnvelopeHeld*): value clamped so value+comp stays
+ * in 0..64; ticks stay strictly between the neighbours, node 0 fixed */
+static void env_node_value(int delta)
+{
+    env_t *e = cur_env();
+    int comp = env_compensate(e);
+    int v;
+
+    if (!e->Num)
+        return;
+    v = e->NodePoints[CurrentNode].Magnitude + comp + delta;
+    if (v < 0) v = 0;
+    if (v > 64) v = 64;
+    ed_lock();
+    e->NodePoints[CurrentNode].Magnitude = (int8_t)(v - comp);
+    ed_unlock();
+}
+
+static void env_node_tick(int delta, int home_end)
+{
+    env_t *e = cur_env();
+    int cur = CurrentNode, t;
+
+    if (cur == 0 || !e->Num)
+        return;
+    t = e->NodePoints[cur].Tick;
+    if (home_end < 0)                      /* Home: prev+1 */
+        t = e->NodePoints[cur - 1].Tick + 1;
+    else if (home_end > 0)                 /* End: next-1 / max */
+        t = (cur + 1 == e->Num) ? MAXENVELOPETICK
+                                : e->NodePoints[cur + 1].Tick - 1;
+    else
+        t += delta;
+    if (t < e->NodePoints[cur - 1].Tick + 1)
+        t = e->NodePoints[cur - 1].Tick + 1;
+    if (cur + 1 < e->Num && t > e->NodePoints[cur + 1].Tick - 1)
+        t = e->NodePoints[cur + 1].Tick - 1;
+    if (t > MAXENVELOPETICK)
+        t = MAXENVELOPETICK;
+    ed_lock();
+    e->NodePoints[cur].Tick = (uint16_t)t;
+    ed_unlock();
+}
+
+static int env_ckey(int key)               /* I_PostEnvelope key model */
+{
+    env_t *e = cur_env();
+
+    if (NodeHeld) {
+        switch (key) {
+        case ITK_ENTER:     NodeHeld = 0; return 1;
+        case ITK_UP:        env_node_value(1);  return 1;
+        case ITK_DOWN:      env_node_value(-1); return 1;
+        case ITK_PGUP:      env_node_value(8);  return 1;
+        case ITK_PGDN:      env_node_value(-8); return 1;
+        case ITK_LEFT:      env_node_tick(-1, 0);  return 1;
+        case ITK_RIGHT:     env_node_tick(1, 0);   return 1;
+        case ITK_TAB:       env_node_tick(16, 0);  return 1;
+        case ITK_SHIFT_TAB: env_node_tick(-16, 0); return 1;
+        case ITK_HOME:      env_node_tick(0, -1);  return 1;
+        case ITK_END:       env_node_tick(0, 1);   return 1;
+        case ITK_INS:       env_insert_node(); return 1;
+        case ITK_DEL:       env_delete_node(); return 1;
+        default: break;
+        }
+    } else {
+        switch (key) {
+        case ITK_LEFT:
+            if (CurrentNode > 0) CurrentNode--;
+            return 1;
+        case ITK_RIGHT:
+            if (CurrentNode + 1 < e->Num) CurrentNode++;
+            return 1;
+        case ITK_ENTER:
+            NodeHeld = 1;
+            env_selected(e);
+            return 1;
+        case ITK_UP:   FocusIdx[Screen] = IdxTabBtn; return 1;
+        case ITK_DOWN: FocusIdx[Screen] = IdxEnvOn;  return 1;
+        case ITK_INS:  env_insert_node(); return 1;
+        case ITK_DEL:  env_delete_node(); return 1;
+        default: break;
+        }
+        if (key >= '0' && key <= '9') {
+            status("Envelope presets not ported yet");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* mouse on the envelope canvas: select/drag the node under the pointer
+ * (I_MouseEnvelopePress / I_MouseEnvelopeDrag, pixel-precise) */
+static int env_node_at(const it_mouse_t *m)
+{
+    env_t *e = cur_env();
+    int comp = env_compensate(e), i;
+
+    for (i = 0; i < e->Num; i++) {
+        int xp = 32*8 + e->NodePoints[i].Tick * 250 / EnvUpperLimit + 3;
+        int yp = 18*8 + 61 * (64 - comp - e->NodePoints[i].Magnitude)
+                        / 64 + 1;
+        if (m->px >= xp - 3 && m->px <= xp + 3 &&
+            m->py >= yp - 3 && m->py <= yp + 3)
+            return i;
+    }
+    return -1;
+}
+
+static void env_cdrag(const it_mouse_t *m)
+{
+    env_t *e = cur_env();
+    int comp = env_compensate(e);
+    int cur = CurrentNode, t, v;
+
+    if (!e->Num)
+        return;
+    v = 64 - comp - (m->py - 18*8 - 1) * 64 / 61;
+    if (v + comp < 0)  v = -comp;
+    if (v + comp > 64) v = 64 - comp;
+    ed_lock();
+    e->NodePoints[cur].Magnitude = (int8_t)v;
+    ed_unlock();
+    if (cur > 0) {
+        t = (m->px - 32*8 - 3) * EnvUpperLimit / 250;
+        if (t < e->NodePoints[cur - 1].Tick + 1)
+            t = e->NodePoints[cur - 1].Tick + 1;
+        if (cur + 1 < e->Num && t > e->NodePoints[cur + 1].Tick - 1)
+            t = e->NodePoints[cur + 1].Tick - 1;
+        if (t > MAXENVELOPETICK)
+            t = MAXENVELOPETICK;
+        ed_lock();
+        e->NodePoints[cur].Tick = (uint16_t)t;
+        ed_unlock();
+    }
+}
+
+static void env_cclick(const it_mouse_t *m)
+{
+    int i = env_node_at(m);
+    if (i >= 0) {
+        CurrentNode = i;
+        env_selected(cur_env());
+    }
+}
+
+static void env_cdraw(int focused)         /* I_DrawEnvelope */
+{
+    static const char *hdr[3][2] = {
+        { "Volume Envelope",    "Volume Envelope (Edit)"    },
+        { "Panning Envelope",   "Panning Envelope (Edit)"   },
+        { "Frequency Envelope", "Frequency Envelope (Edit)" },
+    };
+    env_t *e = cur_env();
+    int cx, cy, val, disp;
+
+    env_map();
+
+    drawf(33, 16, focused ? 0x23 : 0x20, "%-22s",
+          hdr[InsTab - 1][NodeHeld ? 1 : 0]);
+
+    for (cy = 0; cy < 8; cy++)             /* the canvas cell grid */
+        for (cx = 0; cx < 32; cx++)
+            Screen_PutChar(32 + cx, 18 + cy,
+                           (uint8_t)(cy * 32 + cx), 0x0C);
+
+    val = e->Num ? e->NodePoints[CurrentNode].Magnitude : 0;
+    disp = (e->Flags & 0x80) ? val + 32 : val;
+    drawf(66, 19, 0x02, "Node %d/%d", CurrentNode, e->Num);
+    drawf(66, 21, 0x02, "Tick %d",
+          e->Num ? e->NodePoints[CurrentNode].Tick : 0);
+    drawf(66, 23, 0x02, "Value %d", disp);
+}
+
+/* ---- note-translation window (I_DrawNoteWindow, IT_I.ASM 5374) ---- */
+static const int NotePosTable[4] = { 4, 6, 8, 9 };
+
+static void notewin_cdraw(int focused)
+{
+    instrument_t *ins = cur_ins();
+    int i;
+
+    if (NoteWinSel < NoteWinTop)
+        NoteWinTop = NoteWinSel;
+    if (NoteWinSel > NoteWinTop + 31)
+        NoteWinTop = NoteWinSel - 31;
+
+    for (i = 0; i < 32; i++) {
+        int note = NoteWinTop + i, y = 16 + i;
+        uint8_t nt = ins->NoteSampleTable[note * 2];
+        uint8_t sm = ins->NoteSampleTable[note * 2 + 1];
+        uint8_t a = 0x02;
+
+        if (note == NoteWinSel)
+            a |= 0xE0;                     /* row hilight (+0E0h) */
+
+        Screen_PutChar(32, y, (uint8_t)NoteNameChars[(note%12)*2],   a);
+        Screen_PutChar(33, y, (uint8_t)NoteNameChars[(note%12)*2+1], a);
+        Screen_PutChar(34, y, (uint8_t)('0' + note / 12), a);
+        Screen_PutChar(35, y, 0xA8, a);
+        Screen_PutChar(36, y, (uint8_t)NoteNameChars[(nt%12)*2],   a);
+        Screen_PutChar(37, y, (uint8_t)NoteNameChars[(nt%12)*2+1], a);
+        Screen_PutChar(38, y, (uint8_t)('0' + nt / 12), a);
+        Screen_PutChar(39, y, ' ', a);
+        if (sm == 0) {
+            Screen_PutChar(40, y, 173, a);
+            Screen_PutChar(41, y, 173, a);
+        } else {
+            Screen_PutChar(40, y, (uint8_t)('0' + sm / 10), a);
+            Screen_PutChar(41, y, (uint8_t)('0' + sm % 10), a);
+        }
+        if (focused && note == NoteWinSel) {
+            int cxp = 32 + NotePosTable[NotePos];
+            /* cursor cell attr 30h (I_PreNoteWindow) */
+            uint8_t ch;
+            switch (NotePos) {
+            case 0:  ch = (uint8_t)NoteNameChars[(nt%12)*2]; break;
+            case 1:  ch = (uint8_t)('0' + nt / 12); break;
+            case 2:  ch = sm ? (uint8_t)('0' + sm / 10) : 173; break;
+            default: ch = sm ? (uint8_t)('0' + sm % 10) : 173; break;
+            }
+            Screen_PutChar(cxp, y, ch, 0x30);
+        }
+    }
+}
+
+static void notewin_play_current(void)
+{
+    CurInstr = ListSel + 1;
+    jam_note(NoteWinSel + 1, 40);
+}
+
+static int notewin_ckey(int key)           /* NoteListKeys+PostNoteWindow */
+{
+    instrument_t *ins = cur_ins();
+    uint8_t *entry = &ins->NoteSampleTable[NoteWinSel * 2];
+
+    switch (key) {
+    case ITK_UP:
+        if (NoteWinSel > 0) NoteWinSel--;
+        else FocusIdx[Screen] = IdxTabBtn;
+        return 1;
+    case ITK_DOWN:
+        if (NoteWinSel < 119) NoteWinSel++;
+        return 1;
+    case ITK_PGUP:
+        NoteWinSel -= 12; if (NoteWinSel < 0) NoteWinSel = 0;
+        return 1;
+    case ITK_PGDN:
+        NoteWinSel += 12; if (NoteWinSel > 119) NoteWinSel = 119;
+        return 1;
+    case ITK_HOME: NoteWinSel = 0;   return 1;
+    case ITK_END:  NoteWinSel = 119; return 1;
+    case ITK_LEFT:  if (NotePos > 0) NotePos--; return 1;
+    case ITK_RIGHT: if (NotePos < 3) NotePos++; return 1;
+    case ITK_TAB:       FocusIdx[Screen] = IdxNNACut;   return 1;
+    case ITK_SHIFT_TAB: FocusIdx[Screen] = IdxLeftList; return 1;
+    case '>': case '\'':
+        if (NoteSampleNumber < 99) NoteSampleNumber++;
+        return 1;
+    case '<': case ';':
+        if (NoteSampleNumber > 0) NoteSampleNumber--;
+        return 1;
+    case ITK_ENTER:                        /* I_NoteSamplePickUp */
+        NoteSampleNumber = entry[1];
+        return 1;
+    case ' ':                              /* I_NoteSpace */
+        if (NotePos >= 2) {
+            ed_lock();
+            entry[1] = NoteSampleNumber;
+            ed_unlock();
+            if (NoteWinSel < 119) NoteWinSel++;
+            return 1;
+        }
+        return 0;
+    default:
+        break;
+    }
+
+    if (NotePos == 0) {                    /* piano keys set note+sample */
+        int gn = key_to_note(key);
+        if (gn > 0 && gn <= 120) {
+            ed_lock();
+            entry[0] = (uint8_t)(gn - 1);
+            entry[1] = NoteSampleNumber;
+            ed_unlock();
+            notewin_play_current();
+            if (NoteWinSel < 119) NoteWinSel++;
+            return 1;
+        }
+    } else if (key >= '0' && key <= '9') {
+        int d = key - '0';
+        ed_lock();
+        if (NotePos == 1) {                /* octave digit */
+            int nn = (entry[0] % 12) + d * 12;
+            if (nn <= 119)
+                entry[0] = (uint8_t)nn;
+        } else if (NotePos == 2) {         /* sample tens */
+            entry[1] = (uint8_t)(d * 10 + entry[1] % 10);
+            NoteSampleNumber = entry[1];
+        } else {                           /* sample units */
+            entry[1] = (uint8_t)((entry[1] / 10) * 10 + d);
+            NoteSampleNumber = entry[1];
+            NotePos = 2;
+        }
+        ed_unlock();
+        if (NoteWinSel < 119) NoteWinSel++;
+        return 1;
+    } else if (key == '.' && NotePos >= 2) {
+        ed_lock();
+        entry[1] = 0;
+        ed_unlock();
+        if (NoteWinSel < 119) NoteWinSel++;
+        return 1;
+    }
+    return 0;
+}
+
+static void notewin_cclick(const it_mouse_t *m)
+{
+    int note = NoteWinTop + (m->y - 16);
+    if (note < 0) note = 0;
+    if (note > 119) note = 119;
+    NoteWinSel = note;
+}
+
+/* ---- Pitch-Pan Center (I_DrawPitchPanCenter, IT_I.ASM 8799) ---- */
+static void ppc_cdraw(int focused)
+{
+    instrument_t *ins = cur_ins();
+    int n = ins->PPC % 120;
+    uint8_t a = focused ? 0x03 : 0x02;
+
+    Screen_PutChar(54, 45, (uint8_t)NoteNameChars[(n%12)*2],   a);
+    Screen_PutChar(55, 45, (uint8_t)NoteNameChars[(n%12)*2+1], a);
+    Screen_PutChar(56, 45, (uint8_t)('0' + n / 12), a);
+}
+
+static int ppc_ckey(int key)
+{
+    instrument_t *ins = cur_ins();
+
+    switch (key) {
+    case ITK_RIGHT: case '+':
+        if (ins->PPC < 119) { ed_lock(); ins->PPC++; ed_unlock(); }
+        return 1;
+    case ITK_LEFT: case '-':
+        if (ins->PPC > 0) { ed_lock(); ins->PPC--; ed_unlock(); }
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* ---- the four object lists ---- */
+static void act_ins_changed(void)
+{
+    NodeHeld = 0;                          /* selection/tab change */
+}
 
 static void draw_instruments(void)
 {
     int i, n = Song.Header.InsNum ? Song.Header.InsNum : 1;
-    int rows = 35, top;
+    int top, focusw;
     instrument_t *ins;
+    widget_t *w;
 
     if (ListSel < 0) ListSel = 0;
     if (ListSel >= n) ListSel = n - 1;
-    top = ListSel - rows / 2;
-    if (top > n - rows) top = n - rows;
+    top = InsListTop;
+    if (ListSel < top) top = ListSel;
+    if (ListSel > top + 34) top = ListSel - 34;
+    if (top > n - 35) top = n - 35;
     if (top < 0) top = 0;
     InsListTop = top;
 
-    Screen_DrawBox(4, 12, 35, 48, 27);
-    for (i = 0; i < rows; i++) {
+    ins = cur_ins();
+    NW = 0;
+    focusw = FocusIdx[Screen];
+
+    /* InstrumentNameBox + I_DrawInstrumentWindow: numbers at (2,y)
+     * attr 20h, 25-char names at (5,y) attr 06h, current row E6h,
+     * keyboard focus 30h (I_PreInstrumentWindow) */
+    IdxLeftList = NW;
+    wlist(2, 13, 29, 47, 13, instr_list_lkey, instr_list_lclick);
+    Screen_DrawBox(4, 12, 30, 48, 27);
+    for (i = 0; i < 35; i++) {
         int idx = top + i;
-        uint8_t a = (idx == ListSel) ? 0x30 : 0x06;
-        if (idx < 0 || idx >= n)
-            continue;
-        drawf(5, 13 + i, a, "%02d:", idx + 1);
-        draw_itname(8, 13 + i, Song.Ins[idx].InstrumentName, 26, a);
+        uint8_t a;
+        if (idx >= n)
+            break;
+        a = (idx == ListSel) ? ((focusw == IdxLeftList) ? 0x30 : 0xE6)
+                             : 0x06;
+        drawf(2, 13 + i, 0x20, "%02d", (idx + 1) % 100);
+        draw_itname(5, 13 + i, Song.Ins[idx].InstrumentName, 25, a);
     }
 
-    ins = &Song.Ins[ListSel];
+    /* tab buttons (G/V-InstrumentGeneral/Volume/Panning/PitchButton) */
+    IdxTabBtn = NW + InsTab;
+    wradio8(31, 12, 41, 14, " General", &InsTab, 3, 0)->action
+        = act_ins_changed;
+    wradio8(43, 12, 53, 14, " Volume",  &InsTab, 3, 1)->action
+        = act_ins_changed;
+    wradio8(55, 12, 65, 14, " Panning", &InsTab, 3, 2)->action
+        = act_ins_changed;
+    wradio8(67, 12, 77, 14, "  Pitch",  &InsTab, 3, 3)->action
+        = act_ins_changed;
 
-    NW = 0;
-    wlist(5, 13, 34, 47, 13, instr_list_lkey, instr_list_lclick);
+    if (InsTab == 0) {
+        /* ---- General (O1_InstrumentListGeneral) ---- */
+        Screen_DrawBox(31, 15, 42, 48, 27);        /* TranslateBox */
+        wcustom(32, 16, 41, 47, notewin_cdraw, notewin_ckey,
+                notewin_cclick);
 
-    draw_button(37, 12, 46, 14, " General", 1);
-    wbutton(47, 12, 56, 14, " Volume",  act_tab_not_ported);
-    wbutton(57, 12, 67, 14, " Panning", act_tab_not_ported);
-    wbutton(68, 12, 76, 14, " Pitch",   act_tab_not_ported);
+        fill(44, 15, 35, 134, 0x20);               /* NNADivision */
+        fill(44, 30, 35, 134, 0x20);               /* DCTDivision */
+        fill(44, 45, 35, 154, 0x20);               /* FileDivision */
+        Screen_DrawString(54, 17, "New Note Action", 0x20);
+        Screen_DrawString(47, 32, "Duplicate Check Type & Action", 0x20);
+        Screen_DrawString(47, 47, "Filename", 0x20);
 
-    Screen_DrawString(53, 17, "New Note Action", 0x20);
-    for (i = 0; i < 4; i++)
-        wradio8(50, 19 + i*3, 67, 21 + i*3, NNANames[i],
-                &ins->NNA, 3, (uint8_t)i);
+        IdxNNACut = NW;
+        wradio8(45, 18, 77, 20, "  Note Cut",  &ins->NNA, 3, 0);
+        wradio8(45, 21, 77, 23, "  Continue",  &ins->NNA, 3, 1);
+        wradio8(45, 24, 77, 26, "  Note Off",  &ins->NNA, 3, 2);
+        wradio8(45, 27, 77, 29, "  Note Fade", &ins->NNA, 3, 3);
 
-    Screen_DrawString(46, 32, "Duplicate Check Type & Action", 0x20);
-    for (i = 0; i < 4; i++)
-        wradio8(40, 34 + i*3, 56, 36 + i*3, DCTNames[i],
-                &ins->DCT, 3, (uint8_t)i);
-    for (i = 0; i < 3; i++)
-        wradio8(58, 34 + i*3, 74, 36 + i*3, DCANames[i],
-                &ins->DCA, 3, (uint8_t)i);
+        wradio8(45, 33, 60, 35, "  Disabled",   &ins->DCT, 3, 0);
+        wradio8(45, 36, 60, 38, "  Note",       &ins->DCT, 3, 1);
+        wradio8(45, 39, 60, 41, "  Sample",     &ins->DCT, 3, 2);
+        wradio8(45, 42, 60, 44, "  Instrument", &ins->DCT, 3, 3);
 
-    Screen_DrawString(45, 46, "Filename", 0x20);
-    Screen_PutChar(54, 46, 132, 0x21);
-    drawf(55, 46, 0x05, "%-12.12s", ins->DOSFileName);
-    Screen_PutChar(67, 46, 131, 0x23);
+        wradio8(61, 33, 77, 35, "  Note Cut",  &ins->DCA, 3, 0);
+        wradio8(61, 36, 77, 38, "  Note Off",  &ins->DCA, 3, 1);
+        wradio8(61, 39, 77, 41, "  Note Fade", &ins->DCA, 3, 2);
+
+        Screen_DrawBox(55, 46, 73, 48, 27);        /* FilenameBox */
+        wtext(56, 47, ins->DOSFileName, 12);
+    } else {
+        /* ---- shared envelope frame (Volume/Panning/Pitch tabs) ---- */
+        static const uint8_t VELText[] =
+            "Envelope Loop\015   Loop Begin\015\377\005 Loop End";
+        static const uint8_t VESLText[] =
+            " Sustain Loop\015SusLoop Begin\015  SusLoop End";
+        env_t *e = cur_env();
+        int nodemax = e->Num ? e->Num - 1 : 0;
+
+        Screen_DrawBox(31, 17, 77, 26, 27);        /* EnvelopeBox */
+        Screen_DrawBox(53, 27, 63, 30, 27);        /* VEBox */
+        Screen_DrawBox(53, 31, 63, 35, 27);        /* VELBox */
+        Screen_DrawBox(53, 36, 63, 40, 27);        /* VESLBox */
+
+        if (InsTab == 1)
+            Screen_DrawStringCtl(38, 28, (const uint8_t *)
+                "Volume Envelope\015          Carry", 0x20, NULL);
+        else if (InsTab == 2)
+            Screen_DrawStringCtl(37, 28, (const uint8_t *)
+                "Panning Envelope\015           Carry", 0x20, NULL);
+        else
+            Screen_DrawStringCtl(35, 28, (const uint8_t *)
+                "Frequency Envelope\015             Carry", 0x20, NULL);
+        Screen_DrawStringCtl(40, 32, VELText, 0x20, NULL);
+        Screen_DrawStringCtl(40, 37, VESLText, 0x20, NULL);
+
+        wcustom(32, 18, 63, 25, env_cdraw, env_ckey, env_cclick)->cdrag
+            = env_cdrag;
+
+        IdxEnvOn = NW;
+        wtoggle8(54, 28, &e->Flags, 1);            /* Envelope On/Off */
+        wtoggle8(54, 29, &e->Flags, 8);            /* Carry */
+        wtoggle8(54, 32, &e->Flags, 2);            /* Envelope Loop */
+        wnum3(54, 33, &e->LpB, 0, nodemax, env_fix_loop_pairs);
+        wnum3(54, 34, &e->LpE, 0, nodemax, env_fix_loop_pairs);
+        wtoggle8(54, 37, &e->Flags, 4);            /* Sustain Loop */
+        wnum3(54, 38, &e->SLB, 0, nodemax, env_fix_loop_pairs);
+        wnum3(54, 39, &e->SLE, 0, nodemax, env_fix_loop_pairs);
+
+        if (InsTab == 1) {
+            /* ---- Volume tab extras ---- */
+            Screen_DrawBox(53, 41, 71, 44, 27);    /* GlobalVolumeBox */
+            Screen_DrawStringCtl(39, 42, (const uint8_t *)
+                " Global Volume\015\377\007 Fadeout\015\015\015"
+                "Volume Swing %", 0x20, NULL);
+            wthumb(54, 42, 0, 128, &ins->GbV, 0, 0);
+            w = wthumb(54, 43, 0, 256, NULL, 0, 16);
+            w->v16 = &ins->FadeOut;
+            Screen_DrawBox(53, 45, 71, 47, 27);    /* RandomVolBox */
+            wthumb(54, 46, 0, 100, &ins->RV, 0, 16);
+        } else if (InsTab == 2) {
+            /* ---- Panning tab extras ---- */
+            Screen_DrawBox(53, 41, 63, 48, 27);    /* DefaultPanBox */
+            Screen_DrawStringCtl(33, 42, (const uint8_t *)
+                "\377\011 Default Pan\015\377\013 Pan Value\015\015"
+                "\377\004 Pitch-Pan Center\015Pitch-Pan Separation\015"
+                "\377\013 Pan swing", 0x20, NULL);
+            wtoggle8(54, 42, &ins->DfP, 0x80);
+            wthumb(54, 43, 0, 64, &ins->DfP, 0x7F, 0);
+            fill(54, 44, 9, 0x9A, 0x02);           /* PanBoxFiller */
+            wcustom(54, 45, 56, 45, ppc_cdraw, ppc_ckey, NULL);
+            wthumb(54, 46, -32, 32, &ins->PPS, 0, 0)->sgn = 1;
+            wthumb(54, 47, 0, 64, &ins->RP, 0, 0);
+        } else {
+            /* ---- Pitch tab extras (FILTERENVELOPES=1 layout) ---- */
+            uint8_t *bnk = (uint8_t *)&ins->MIDIBnk;
+            Screen_DrawBox(53, 41, 71, 48, 27);    /* MIDIBox1 */
+            Screen_DrawStringCtl(36, 42, (const uint8_t *)
+                "Default Cutoff\015Default Resonance\015MIDI Channel\015"
+                "MIDI Program\015MIDI Bank Low\015MIDI Bank High",
+                0x20, NULL);
+            wthumb(54, 42, 0, 127, &ins->IFC, 0, 16);
+            wthumb(54, 43, 0, 127, &ins->IFR, 0, 16);
+            wthumb(54, 44, 0, 17,  &ins->MCh, 0, 16);
+            wthumb(54, 45, -1, 127, &ins->MPr, 0, 16)->sgn = 1;
+            wthumb(54, 46, -1, 127, &bnk[0], 0, 16)->sgn = 1;
+            wthumb(54, 47, -1, 127, &bnk[1], 0, 16)->sgn = 1;
+        }
+    }
 
     widgets_draw();
 }
@@ -1859,11 +2661,6 @@ static void act_mv_changed(void)
 static void act_help_done(void)
 {
     Screen = SCR_PATTERN;
-}
-
-static void act_tab_not_ported(void)
-{
-    status("Not ported yet -- see the docs/HANDOFF.md roadmap.");
 }
 
 static void act_save_prefs(void)
@@ -2692,6 +3489,8 @@ int main(int argc, char **argv)
                             ? atoi(getenv("ITED_SHOT_SCREEN")) : SCR_PATTERN);
             if (scr >= 0 && scr <= SCR_INFO)
                 Screen = scr;
+            if (getenv("ITED_SHOT_TAB"))   /* F4 tab 0..3 for captures */
+                InsTab = (uint8_t)(atoi(getenv("ITED_SHOT_TAB")) & 3);
             Screen_Clear(0x20);
             if (scr == 7) {                 /* main menu overlay */
                 draw_screen();
@@ -2747,10 +3546,59 @@ int main(int argc, char **argv)
             ITK_F6, ITK_F8, ITK_F5, ITK_F8,
         };
         size_t k;
-        int gv_wired = -1;
+        int gv_wired = -1, f4_ok = 1;
         for (k = 0; k < sizeof(script) / sizeof(script[0]); k++) {
             handle_global(script[k]);
             redraw();
+        }
+
+        /* F4 tabs (feature 002): walk all four object lists and poke
+         * one widget of each new kind, verifying the instrument data
+         * moved (envelope flag toggle, loop node field, node edit). */
+        {
+            instrument_t *ins;
+            env_t *e;
+            uint8_t f0;
+            int i, envw;
+
+            Screen = SCR_INSTRUMENTS;
+            ListSel = 0;
+            for (i = 0; i < 4; i++) {       /* render every tab */
+                InsTab = (uint8_t)i;
+                redraw();
+            }
+            InsTab = 1;                     /* Volume tab checks */
+            redraw();
+            ins = cur_ins();
+            e = &ins->VEnvelope;
+            envw = -1;
+            for (i = 0; i < NW; i++)
+                if (W[i].type == WT_CUSTOM && W[i].ckey == env_ckey)
+                    envw = i;
+            f0 = e->Flags;
+            for (i = 0; i < NW; i++)        /* envelope On toggle */
+                if (W[i].type == WT_TOGGLE && W[i].v8 == &e->Flags &&
+                    W[i].bit == 1) {
+                    FocusIdx[SCR_INSTRUMENTS] = i;
+                    handle_global(ITK_ENTER);
+                    break;
+                }
+            if (((e->Flags ^ f0) & 1) == 0)
+                f4_ok = 0;
+            if (envw >= 0 && e->Num >= 2) { /* grab + move node 1 */
+                int t0;
+                FocusIdx[SCR_INSTRUMENTS] = envw;
+                handle_global(ITK_RIGHT);   /* node 1 */
+                t0 = e->NodePoints[CurrentNode].Tick;
+                handle_global(ITK_ENTER);   /* hold */
+                handle_global(ITK_LEFT);    /* tick-1 */
+                handle_global(ITK_ENTER);   /* release */
+                if (CurrentNode == 1 &&
+                    e->NodePoints[1].Tick != t0 - 1 &&
+                    e->NodePoints[1].Tick > 1)
+                    f4_ok = 0;
+                redraw();
+            }
         }
 
         /* Verify the F12 Global/Mixing Volume wiring actually reaches the
@@ -2775,12 +3623,13 @@ int main(int argc, char **argv)
         fprintf(stderr, "ITED selftest: completed %zu actions, "
                 "pattern %u, %u rows, cursor r%d c%d col%d, "
                 "tempo %u speed %u pan[1] %02X, "
-                "GV=%u GlobalVolume=%u MV=%u [%s]\n",
+                "GV=%u GlobalVolume=%u MV=%u [%s] [%s]\n",
                 sizeof(script) / sizeof(script[0]),
                 CurPattern, CurRows, CurRow, CurChan, CurCol,
                 Song.Header.IT, Song.Header.IS, Song.Header.ChnlPan[1],
                 Song.Header.GV, GlobalVolume, Song.Header.MV,
-                gv_wired ? "GV WIRED OK" : "GV MISMATCH");
+                gv_wired ? "GV WIRED OK" : "GV MISMATCH",
+                f4_ok ? "F4 OK" : "F4 FAIL");
         ma_mutex_uninit(&Mutex);
         Engine_Lock = NULL; Engine_Unlock = NULL;
         Music_FreeIT();
@@ -2817,10 +3666,14 @@ int main(int argc, char **argv)
         if (DragIdx >= 0) {
             it_mouse_t m;
             Screen_GetMouse(&m);
-            if (!m.b || DragIdx >= NW || W[DragIdx].type != WT_THUMB)
+            if (!m.b || DragIdx >= NW ||
+                (W[DragIdx].type != WT_THUMB &&
+                 W[DragIdx].type != WT_CUSTOM))
                 DragIdx = -1;
-            else
+            else if (W[DragIdx].type == WT_THUMB)
                 thumb_from_px(&W[DragIdx], m.px);
+            else if (W[DragIdx].cdrag)
+                W[DragIdx].cdrag(&m);
         }
         redraw();
         if (key == ITK_NONE)
