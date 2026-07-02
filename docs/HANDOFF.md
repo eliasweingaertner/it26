@@ -63,9 +63,14 @@ transliteration) layered on top of the real engine.
     pixels rendered with the real glyph bitmaps at 2x scale — the
     authentic VGA look. Default on Windows; `ITED_TERM=1` forces the
     terminal. Window close = quit.
+  - **SDL2 pixel window** (`it_screen_sdl.c`): the POSIX counterpart of
+    the Win32 backend — same 640x400 logical pixels from the shared
+    `Screen_Rasterize`, same `ITK_*` keys and cell+pixel mouse. Built
+    when `HAVE_SDL` is defined (CMake option `ITED_SDL` + a found SDL2);
+    selected on POSIX when a display is available. (Landed 2026-06-16.)
   - **VT/ANSI truecolor terminal** with damage tracking and Unicode
-    approximations of the custom glyphs (only backend on POSIX; an SDL
-    backend can slot into the same vtable later).
+    approximations of the custom glyphs (the no-deps fallback, used when
+    neither pixel backend is built or no display is available).
 - **Original screen layouts**, not approximations:
   - Chrome: `FullScreenBox` (style 4), the complete header ported as the
     *verbatim control-coded strings* `HeaderMsg1-4` from `IT_F.ASM`
@@ -143,9 +148,8 @@ other view methods (note dots, sample dots, 5/8/.../64-channel pattern
 views, Display_Variables), split view windows, and per-channel solo.
 
 **Not done yet** (see §6): the full IT sample/instrument *editors*
-(envelopes, waveform draw), message editor, save (F10), SDL backend for
-POSIX pixel output, terminal-backend mouse, and the info-page follow-ups
-above. The F4 right-hand pane layout is eyeballed (its buttons work); the
+(envelopes, waveform draw), message editor, save (F10),
+terminal-backend mouse, and the info-page follow-ups above. The F4 right-hand pane layout is eyeballed (its buttons work); the
 F4 Volume/Panning/Pitch tabs are stubs. Header FreeMem/FreeEMS show host
 free RAM / 0.
 
@@ -336,11 +340,27 @@ the real IT_OBJ1.ASM menu trees, a scrolling multi-pane file requester,
 mouse support, menu flicker fix, `ited.cfg` prefs. Remaining roadmap,
 rough priority order:
 
-1. **SDL backend for POSIX** — the pixel rasterizer
-   (`Screen_Rasterize`) is already backend-neutral; an SDL backend is
-   ~the same ~150 lines as `it_screen_win32.c` against the
-   `screen_backend_t` vtable (incl. the `mouse` member). Terminal stays
-   the no-deps fallback.
+1. **SDL backend for POSIX** — ✅ DONE (2026-06-16, `it_screen_sdl.c`);
+   ✅ VERIFIED on Linux (2026-06-17, Ubuntu 24.04 / GCC 13.3 / SDL2 2.30).
+   The pixel rasterizer (`Screen_Rasterize`) was already backend-neutral;
+   the SDL2 backend sits behind the `screen_backend_t` vtable (incl. the
+   `mouse` member), built via the optional `ITED_SDL` CMake option.
+   Terminal stays the no-deps fallback. Linux verification covered the
+   authentic window render, F1–F12/menu/close, keyboard + mouse parity,
+   `ITED_TERM`/headless/build-matrix selection, and the determinism gate
+   (4 modules IDENTICAL). *Remaining:* the same quickstart pass on macOS
+   (Cocoa) — see `specs/001-sdl-posix-backend/quickstart.md`.
+   Two findings from the Linux pass, both recorded in the spec's tasks.md:
+   - **Headless fix:** SDL ≥ 2.x ships an `offscreen` video driver, so
+     `SDL_Init(SDL_INIT_VIDEO)` *succeeds* with no display instead of
+     failing — which skipped the terminal fallback. `SDL_BInit()` now
+     rejects an `offscreen`/`dummy` `SDL_GetCurrentVideoDriver()` so a
+     headless box correctly falls back to the terminal backend.
+   - **`ITED_SHOT` parity caveat:** the rasterized pixels are byte-identical
+     across Win32/SDL, but a full-screen BMP is *not* literally `cmp`-equal
+     to a Windows capture because two content fields drawn by
+     `it_editor.c` are platform-specific: `FreeMem` (`free_mem_k()` reports
+     real RAM on Win32, hardcodes 65536k elsewhere) and the cwd path string.
 2. **Object-exact F4 right pane + the F4 Volume/Panning/Pitch tabs**
    (current layout is screenshot-eyeballed; tabs are stubs; NNA/DCT/DCA
    buttons and the list work).

@@ -472,12 +472,23 @@ static const screen_backend_t Screen_BackendTerm = {
 int Screen_Init(void)
 {
     const char *term = getenv("ITED_TERM");
+    int force_term = (term && *term && *term != '0');
 
 #ifdef _WIN32
-    Backend = (term && *term && *term != '0') ? &Screen_BackendTerm
-                                              : &Screen_BackendWin32;
+    Backend = force_term ? &Screen_BackendTerm : &Screen_BackendWin32;
 #else
-    (void)term;
+#  ifdef HAVE_SDL
+    /* POSIX: prefer the authentic SDL window when not forced to the
+     * terminal and a display is available. SDL's own init is the probe;
+     * if it fails (headless), fall back to the terminal. */
+    if (!force_term && Screen_BackendSDL.init()) {
+        Backend = &Screen_BackendSDL;       /* already initialised */
+        Inited = 1;
+        return 1;
+    }
+    if (!force_term)
+        fprintf(stderr, "ited: no display; using terminal backend\n");
+#  endif
     Backend = &Screen_BackendTerm;
 #endif
 

@@ -1,5 +1,6 @@
 # build output
 /build/
+/build-*/
 *.exe
 *.obj
 *.o
@@ -11,3 +12,10 @@ screen_dump.txt
 
 # editor-generated WAV renders
 *.wav
+
+# ITED_SHOT pixel captures
+*.bmp
+
+# OS cruft
+.DS_Store
+Thumbs.db

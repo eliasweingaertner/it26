@@ -14,12 +14,17 @@
  *   - a pixel backend (Win32 window, 640x400 logical pixels rendered
  *     with the real 8x8 glyph bitmaps, integer-scaled) -- the authentic
  *     look;
+ *   - an SDL2 pixel backend (it_screen_sdl.c) giving the same authentic
+ *     window on POSIX (Linux/macOS); compiled when the build defines
+ *     HAVE_SDL (CMake option ITED_SDL + a found SDL2);
  *   - a VT/ANSI truecolor terminal backend with damage tracking and
- *     Unicode approximations of the custom glyphs (no-deps fallback,
- *     and the only backend on POSIX until an SDL backend lands).
+ *     Unicode approximations of the custom glyphs (the no-deps fallback,
+ *     and the only backend when neither pixel backend is built/available).
  *
- * Backend selection in Screen_Init: Win32 builds open the window unless
- * ITED_TERM=1 is set; everything else uses the terminal.
+ * Backend selection in Screen_Init: Win32 builds open the Win32 window
+ * unless ITED_TERM=1. POSIX builds open the SDL window when HAVE_SDL is
+ * defined, ITED_TERM is unset, and a display is available; otherwise the
+ * terminal backend is used.
  */
 
 #ifndef IT_SCREEN_H
@@ -115,6 +120,10 @@ typedef struct screen_backend_t {
 
 #ifdef _WIN32
 extern const screen_backend_t Screen_BackendWin32;
+#endif
+
+#ifdef HAVE_SDL
+extern const screen_backend_t Screen_BackendSDL;
 #endif
 
 #endif /* IT_SCREEN_H */
