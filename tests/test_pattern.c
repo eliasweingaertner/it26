@@ -18,6 +18,7 @@
 #include <string.h>
 #include "../src/it_music.h"
 #include "../src/it_pattern.h"
+#include "../src/it_save.h"
 
 extern const sounddriver_t WAVDriver;
 void WAVDriver_Render(int16_t *dst, uint32_t frames);
@@ -109,6 +110,46 @@ int main(int argc, char **argv)
     printf("audio hash  : before=%016llx after=%016llx -> %s\n",
            (unsigned long long)h_before, (unsigned long long)h_after,
            h_before == h_after ? "IDENTICAL" : "DIFFERENT");
+
+    /* (3) optional save -> reload round-trip (feature 004): save with
+     * each SaveFormat, reload the file, re-render; every hash must
+     * equal the original's. */
+    if (argc > 2 && strcmp(argv[2], "--roundtrip") == 0) {
+        static const uint8_t formats[3] = { 3, 0, 2 };
+        const char *tmp = "rt_tmp.it";
+        char msg0[64];
+        int f, rt_fail = 0;
+
+        snprintf(msg0, sizeof(msg0), "roundtrip check %s", argv[1]);
+        strncpy(IT_MessageData, msg0, sizeof(IT_MessageData) - 1);
+
+        for (f = 0; f < 3; f++) {
+            uint64_t h_rt = 0;
+            int ok;
+
+            SaveFormat = formats[f];
+            ok = Save_ITModule(tmp);
+            if (ok) {
+                Music_FreeIT();
+                ok = Music_LoadIT(tmp);
+            }
+            if (ok) {
+                h_rt = render_hash(20);
+                if (strcmp(IT_MessageData, msg0) != 0)
+                    ok = 0;
+            }
+            printf("roundtrip   : fmt %d hash=%016llx msg=%s -> %s\n",
+                   formats[f], (unsigned long long)h_rt,
+                   ok ? "ok" : "BAD",
+                   (ok && h_rt == h_before) ? "IDENTICAL" : "DIFFERENT");
+            if (!ok || h_rt != h_before)
+                rt_fail++;
+        }
+        remove(tmp);
+        Music_FreeIT();
+        return (idem_fail == 0 && h_before == h_after && rt_fail == 0)
+               ? 0 : 1;
+    }
 
     Music_FreeIT();
 

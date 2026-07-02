@@ -168,6 +168,17 @@ Info page (F5):
 - The velocity-bar scan is bounds-clamped to the sample data (the
   original scans raw DOS memory for transient mixer offsets).
 
+Save (F10) / message editor:
+- The `.IT` writer and the IT 2.14/2.15 sample compressor are ported
+  1:1 (SaveFormat default 3 = IT215, as `SWITCH.INC`); S3M export
+  (SaveFormat 1) is not ported. Edit-history/timer blocks (Special
+  bit 1 in ITTECH terms) are not written — the port keeps no timer
+  data, which is also the original's behaviour when none exists.
+- Message editor: Alt-C (clear message) has no Alt in the key layer —
+  Ctrl-L is the stand-in. Ctrl-T toggles only the text colour (12/6);
+  the original also swaps in its hi-ASCII character set
+  (`S_DefineHIASCII`), which is not ported yet.
+
 ## What about the editor?
 
 This port deliberately preserves everything the editor builds on: the

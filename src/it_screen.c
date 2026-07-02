@@ -151,6 +151,19 @@ void Screen_OrAttr(int x, int y, uint8_t bits)
         Back[y][x].attr |= bits;
 }
 
+uint8_t Screen_GetAttr(int x, int y)
+{
+    if (x >= 0 && x < SCREEN_W && y >= 0 && y < SCREEN_H)
+        return Back[y][x].attr;
+    return 0;
+}
+
+void Screen_SetAttr(int x, int y, uint8_t attr)
+{
+    if (x >= 0 && x < SCREEN_W && y >= 0 && y < SCREEN_H)
+        Back[y][x].attr = attr;
+}
+
 /* S_DefineSmallNumbers (IT_S.ASM): build the info page's small-number
  * charsets from HexNumeralDefinitions.  Font bank B char 0xXY shows hex
  * digits X and Y in its left and right 4 pixels; font A chars 226..245

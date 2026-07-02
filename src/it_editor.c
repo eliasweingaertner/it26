@@ -47,6 +47,7 @@
 
 #include "it_music.h"
 #include "it_pattern.h"
+#include "it_save.h"
 #include "it_screen.h"
 
 #define MINIAUDIO_IMPLEMENTATION
@@ -62,7 +63,7 @@ int  Music_LoadIT(const char *path);
 void Music_FreeIT(void);
 
 enum { SCR_HELP, SCR_PATTERN, SCR_SAMPLES, SCR_INSTRUMENTS,
-       SCR_ORDER, SCR_VARS, SCR_INFO, SCR_COUNT };
+       SCR_ORDER, SCR_VARS, SCR_INFO, SCR_MESSAGE, SCR_COUNT };
 
 /* ---- editor state ---- */
 static int      Screen = SCR_PATTERN;
@@ -3259,6 +3260,328 @@ static void handle_info_key(int key)
 }
 
 /* ===================================================================
+ * Message editor (Shift-F9) -- IT_MSG.ASM ported 1:1. 8000-byte
+ * CR-separated NUL-terminated buffer (IT_MessageData, owned by
+ * it_save.c so the loader/writer see it), view + edit modes, 35
+ * visible lines at (2,13..47) inside box (1,12)-(78,48), word wrap at
+ * column 75. Ctrl-T toggles the character colour 12 <-> 6 (the
+ * original also swaps in the hi-ASCII charset via S_DefineHIASCII;
+ * only the colour is ported -- README fidelity note).
+ * =================================================================== */
+static int MsgTopLine;                  /* TopLine                     */
+static int MsgPos;                      /* CurrentPosition             */
+static int MsgEdit;                     /* Edit                        */
+static int MsgHoriz, MsgLine;           /* HorizontalPosition/Line     */
+static uint8_t MsgColour = 12;          /* CharacterColour             */
+
+static void msg_reset(void)             /* Msg_ResetMessage */
+{
+    memset(IT_MessageData, 0, IT_MESSAGELENGTH);
+    MsgEdit = 0;
+    MsgTopLine = 0;
+    MsgPos = 0;
+}
+
+static int msg_find_start(int si)       /* FindStart */
+{
+    while (--si >= 0)
+        if (IT_MessageData[si] == 13)
+            break;
+    return si + 1;
+}
+
+static int msg_insert(int si, int len)  /* InsertData; 0 = buffer full */
+{
+    if (IT_MessageData[IT_MESSAGELENGTH - 2 - len] != 0) {
+        status("Message too long!");    /* O1_LongMessageList */
+        return 0;
+    }
+    memmove(IT_MessageData + si + len, IT_MessageData + si,
+            (size_t)(IT_MESSAGELENGTH - 1 - si - len));
+    return 1;
+}
+
+static void msg_delete(int si, int len) /* DeleteData */
+{
+    if (IT_MESSAGELENGTH - si - len < 0)
+        return;
+    memmove(IT_MessageData + si, IT_MessageData + si + len,
+            (size_t)(IT_MESSAGELENGTH - si - len));
+    memset(IT_MessageData + IT_MESSAGELENGTH - len, 0, (size_t)len);
+}
+
+static void msg_wordwrap(void)          /* CheckWordWrap */
+{
+    int si = msg_find_start(MsgPos);
+    int bx = 0;
+
+    for (;;) {
+        char c = IT_MessageData[si + bx];
+        bx++;
+        if (c == 0 || c == 13)
+            break;
+    }
+    if (bx <= 75)
+        return;
+    for (bx = 75 - 1; bx > 0; bx--)     /* replace the last space */
+        if (IT_MessageData[si + bx] == 32) {
+            IT_MessageData[si + bx] = 13;
+            return;
+        }
+    if (msg_insert(si + 75, 1))         /* no space: insert a CR */
+        IT_MessageData[si + 75] = 13;
+}
+
+static void msg_left(void)
+{
+    if (MsgPos > 0)
+        MsgPos--;
+}
+
+static void msg_right(void)
+{
+    if (MsgPos < IT_MESSAGELENGTH - 2 &&
+        (IT_MessageData[MsgPos] || IT_MessageData[MsgPos + 1]))
+        MsgPos++;
+}
+
+static void msg_up(void)                /* Msg_EditMsgUp */
+{
+    int si = msg_find_start(MsgPos);
+    int cx;
+
+    if (si == 0)
+        return;
+    si = msg_find_start(si - 1);
+    for (cx = MsgHoriz; cx > 0; cx--) {
+        if (IT_MessageData[si] == 13)
+            break;
+        si++;
+    }
+    MsgPos = si;
+}
+
+static void msg_down(void)              /* Msg_EditMsgDown */
+{
+    int si = MsgPos, cx;
+
+    for (;;) {
+        char c = IT_MessageData[si];
+        si++;
+        if (c == 0)
+            return;
+        if (c == 13)
+            break;
+    }
+    for (cx = MsgHoriz; cx > 0; cx--) {
+        char c = IT_MessageData[si];
+        if (c == 0 || c == 13)
+            break;
+        si++;
+    }
+    if (si < IT_MESSAGELENGTH - 2)
+        MsgPos = si;
+}
+
+static void msg_delete_key(void)
+{
+    msg_delete(MsgPos, 1);
+    msg_wordwrap();
+}
+
+static void msg_insert_char(int ch)     /* Msg_PostMessage4 */
+{
+    if (!msg_insert(MsgPos, 1))
+        return;
+    IT_MessageData[MsgPos] = (char)ch;
+    msg_wordwrap();
+    msg_right();
+}
+
+static void draw_message(void)          /* Msg_DrawMessage + box */
+{
+    const char *m = IT_MessageData;
+    int si = 0, i, y;
+
+    Screen_DrawBox(1, 12, 78, 48, 27);
+
+    if (MsgEdit) {
+        int line = 0, col = 0;
+        for (i = 0; i < MsgPos && m[i]; i++) {
+            col++;
+            if (m[i] == 13) {
+                line++;
+                col = 0;
+            }
+        }
+        MsgLine = line;
+        MsgHoriz = col;
+        if (MsgTopLine > line)
+            MsgTopLine = line;
+        if (MsgTopLine + 34 < line)
+            MsgTopLine = line - 34;
+        if (MsgTopLine < 0)
+            MsgTopLine = 0;
+    }
+
+    for (i = MsgTopLine; i > 0; ) {     /* skip TopLine lines */
+        char c = m[si];
+        if (c == 0)
+            break;
+        si++;
+        if (c == 13)
+            i--;
+    }
+
+    for (y = 0; y < 35; y++) {
+        int x = 2;
+        for (;;) {
+            char c = m[si];
+            if (c == 0) {               /* end marker, attr + 1 */
+                Screen_PutChar(x, 13 + y,
+                               MsgEdit ? 20 : 0, MsgEdit ? 2 : 4);
+                goto done;
+            }
+            si++;
+            if (c == 13) {              /* line end marker */
+                Screen_PutChar(x, 13 + y,
+                               MsgEdit ? 20 : 0, MsgEdit ? 1 : 3);
+                break;
+            }
+            if (x <= 77) {              /* port safety: clip long lines */
+                if (c == ' ')
+                    Screen_PutChar(x, 13 + y, ' ', 3);
+                else
+                    Screen_PutChar(x, 13 + y, (uint8_t)c, MsgColour);
+            }
+            x++;
+        }
+    }
+done:
+    if (MsgEdit) {                      /* Msg_PreMessage cursor:
+                                           attr = (attr & 8) | 30h    */
+        int cy = 13 + MsgLine - MsgTopLine;
+        int cx = 2 + MsgHoriz;
+        if (cy >= 13 && cy <= 47 && cx <= 77)
+            Screen_SetAttr(cx, cy,
+                           (uint8_t)((Screen_GetAttr(cx, cy) & 8)
+                                     | 0x30));
+    }
+}
+
+static void handle_message_key(int key)
+{
+    if (!MsgEdit) {                     /* NoEditKeys */
+        switch (key) {
+        case ITK_UP:
+            if (MsgTopLine > 0) MsgTopLine--;
+            break;
+        case ITK_DOWN:
+            if (++MsgTopLine > 7970) MsgTopLine = 7970;
+            break;
+        case ITK_PGUP:
+            MsgTopLine -= 35;
+            if (MsgTopLine < 0) MsgTopLine = 0;
+            break;
+        case ITK_PGDN:
+            MsgTopLine += 35;
+            if (MsgTopLine > 7970) MsgTopLine = 7970;
+            break;
+        case ITK_ENTER:                 /* Msg_ViewMsgEdit */
+            MsgTopLine = 0;
+            MsgLine = 0;
+            MsgPos = 0;
+            MsgEdit = 1;
+            break;
+        case 0x14:                      /* Ctrl-T: colour toggle */
+            MsgColour ^= 6 ^ 12;
+            break;
+        default:
+            break;
+        }
+        return;
+    }
+    switch (key) {                      /* EditMsgKeys */
+    case ITK_HOME:
+        MsgPos = msg_find_start(MsgPos);
+        break;
+    case ITK_END: {                     /* Msg_EditMsgEnd */
+        int si = MsgPos;
+        while (IT_MessageData[si] && IT_MessageData[si] != 13)
+            si++;
+        MsgPos = si;
+        break;
+    }
+    case ITK_LEFT:  msg_left();  break;
+    case ITK_RIGHT: msg_right(); break;
+    case ITK_UP:    msg_up();    break;
+    case ITK_DOWN:  msg_down();  break;
+    case ITK_PGUP: {
+        int i;
+        for (i = 0; i < 35; i++) msg_up();
+        break;
+    }
+    case ITK_PGDN: {
+        int i;
+        for (i = 0; i < 35; i++) msg_down();
+        break;
+    }
+    case ITK_INS:                       /* insert a space */
+        if (msg_insert(MsgPos, 1)) {
+            IT_MessageData[MsgPos] = 32;
+            msg_wordwrap();
+        }
+        break;
+    case ITK_TAB: {                     /* Msg_Tab: 8 spaces */
+        int i;
+        for (i = 0; i < 8; i++)
+            msg_insert_char(32);
+        break;
+    }
+    case ITK_DEL:
+        msg_delete_key();
+        break;
+    case ITK_ESC:                       /* Msg_EditMsgView */
+        MsgEdit = 0;
+        break;
+    case ITK_BACKSPACE:
+        if (MsgPos > 0) {
+            msg_left();
+            msg_delete_key();
+        }
+        break;
+    case 0x19: {                        /* Ctrl-Y: delete line */
+        int si = msg_find_start(MsgPos);
+        int bx = 0;
+        for (;;) {
+            char c = IT_MessageData[si + bx];
+            bx++;
+            if (c == 0 || c == 13)
+                break;
+        }
+        msg_delete(si, bx);
+        MsgPos = si;
+        break;
+    }
+    case 0x0C:                          /* Ctrl-L: clear (Alt-C stand-in) */
+        msg_reset();
+        MsgEdit = 1;
+        status("Message cleared");
+        break;
+    case 0x14:                          /* Ctrl-T */
+        MsgColour ^= 6 ^ 12;
+        break;
+    case ITK_ENTER:
+        msg_insert_char(13);
+        break;
+    default:
+        if (key >= 32 && key < 256)
+            msg_insert_char(key);
+        break;
+    }
+}
+
+/* ===================================================================
  * Rendering dispatch. draw_screen fills the cell buffer (and rebuilds
  * the active screen's widget table); redraw additionally presents it.
  * Modal overlays (menus) call draw_screen, draw on top, then present
@@ -3270,7 +3593,7 @@ static void draw_screen(void)
         "Help (F1)", "Pattern Editor (F2)", "Sample List (F3)",
         "Instrument List (F4)", "Order List and Panning (F11)",
         "Song Variables & Directory Configuration (F12)",
-        "Information (F5)",
+        "Information (F5)", "Message Editor (Shift-F9)",
     };
 
     Screen_Clear(0x20);
@@ -3290,6 +3613,7 @@ static void draw_screen(void)
     case SCR_VARS:        draw_vars(); break;
     case SCR_HELP:        draw_help(); break;
     case SCR_INFO:        NW = 0; draw_info(); break;
+    case SCR_MESSAGE:     NW = 0; draw_message(); break;
     }
 }
 
@@ -3872,12 +4196,14 @@ static const uint8_t FileText[] = " Filename\015Directory";
 
 static int do_load_named(const char *path);
 
+static int ReqSave;                     /* 0 = load (F9), 1 = save (F10) */
+
 static void draw_file_requester(void)
 {
     int i;
 
     Screen_Clear(0x20);
-    draw_chrome("Load Module (F9)");
+    draw_chrome(ReqSave ? "Save Module (F10)" : "Load Module (F9)");
 
     Screen_DrawBox(2, 12, 41, 44, 27);          /* FileBox */
     Screen_DrawBox(43, 12, 56, 34, 27);         /* DirBox */
@@ -3940,13 +4266,110 @@ static void draw_file_requester(void)
     }
 }
 
+/* D_CheckOverWrite's confirm dialog (O1_ConfirmOverWriteList):
+ * "Overwrite file?" with Yes/No, default No. `bg` redraws the screen
+ * beneath the modal. */
+static int confirm_overwrite(void (*bg)(void))
+{
+    int sel = 1;                        /* 0 = Yes, 1 = No */
+
+    for (;;) {
+        int key;
+
+        bg();
+        Screen_DrawBox(24, 22, 55, 27, 27);
+        Screen_DrawString(32, 23, "Overwrite file?", 0x20);
+        draw_button_style(30, 24, 36, 26, 3, " Yes", 0, sel == 0);
+        draw_button_style(43, 24, 48, 26, 3, " No", 0, sel == 1);
+        Screen_Update();
+
+        key = Key_Get();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (key) {
+        case ITK_QUIT: Running = 0; return 0;
+        case ITK_LEFT: case ITK_RIGHT: case ITK_TAB:
+        case ITK_SHIFT_TAB:
+            sel ^= 1;
+            break;
+        case 'y': case 'Y':
+            return 1;
+        case 'n': case 'N': case ITK_ESC:
+            return 0;
+        case ITK_ENTER:
+            return sel == 0;
+        default:
+            break;
+        }
+    }
+}
+
+/* the original's save progress strings at (4,17..23), attr 5 */
+static void save_progress_draw(int stage, int param)
+{
+    switch (stage) {
+    case 0: drawf(4, 17, 5, "File Header"); break;
+    case 1: drawf(4, 18, 5, "Instrument Headers"); break;
+    case 2: drawf(4, 19, 5, "Sample Headers"); break;
+    case 3: drawf(4, 20, 5, "Pattern %d", param); break;
+    case 4: drawf(4, 21, 5, "Sample %d", param); break;
+    case 5: drawf(4, 23, 5, "Done"); break;
+    }
+    Screen_Update();
+}
+
+/* D_SaveModule tail + D_PostFileSaveWindow2: apply .IT when no '.',
+ * confirm overwrite, run the writer, report. */
+static void req_do_save(int *done)
+{
+    char name[40];
+    FILE *f;
+
+    snprintf(name, sizeof(name), "%s", ReqName);
+    if (!name[0])
+        return;
+    if (strchr(name, '*') || strchr(name, '?')) {
+        req_scan();                     /* wildcard: new file spec */
+        return;
+    }
+    if (!strchr(name, '.') && strlen(name) < sizeof(name) - 4)
+        strcat(name, ".IT");
+
+    f = fopen(name, "rb");
+    if (f) {
+        fclose(f);
+        if (!confirm_overwrite(draw_file_requester))
+            return;
+    }
+
+    commit_current_pattern();           /* PE_SaveCurrentPattern */
+    Save_Progress = save_progress_draw;
+    if (Save_ITModule(name)) {
+        char *q;
+        Save_Progress = NULL;
+        snprintf(FileNameDisp, sizeof(FileNameDisp), "%s", name);
+        for (q = FileNameDisp; *q; q++)
+            if (*q >= 'a' && *q <= 'z')
+                *q = (char)(*q - 32);
+        status("Saved.");
+        *done = 1;
+    } else {
+        Save_Progress = NULL;
+        status("Unable to save file");  /* O1_UnableToSaveList */
+    }
+}
+
 static void req_activate_file(int *done)
 {
     if (ReqNF && FSel < ReqNF) {
-        if (do_load_named(ReqFiles[FSel].name))
+        if (ReqSave) {
+            snprintf(ReqName, sizeof(ReqName), "%s",
+                     ReqFiles[FSel].name);
+            req_do_save(done);
+        } else if (do_load_named(ReqFiles[FSel].name)) {
             *done = 1;
-        else
+        } else {
             status("Can't load %s.", ReqFiles[FSel].name);
+        }
     }
 }
 
@@ -3958,12 +4381,16 @@ static void req_enter_dir(const char *name)
         status("Can't change to %s.", name);
 }
 
-static void file_requester(void)
+static void file_requester_run(int save)
 {
     int done = 0;
 
+    ReqSave = save;
     req_scan();
-    ReqFocus = 0;
+    ReqFocus = save ? 3 : 0;            /* save: filename field first */
+    if (save)
+        snprintf(ReqName, sizeof(ReqName), "%s",
+                 FileNameDisp[0] ? FileNameDisp : "UNTITLED.IT");
 
     while (!done && Running) {
         int key;
@@ -4068,7 +4495,9 @@ static void file_requester(void)
                 if (len > 0)
                     ReqName[len - 1] = 0;
             } else if (key == ITK_ENTER) {
-                if (strchr(ReqName, '*') || strchr(ReqName, '?')) {
+                if (ReqSave) {
+                    req_do_save(&done);
+                } else if (strchr(ReqName, '*') || strchr(ReqName, '?')) {
                     req_scan();
                 } else if (do_load_named(ReqName)) {
                     done = 1;
@@ -4081,6 +4510,48 @@ static void file_requester(void)
             }
         }
     }
+}
+
+static void file_requester(void)        /* F9 (load) */
+{
+    file_requester_run(0);
+}
+
+static void save_requester(void)        /* F10 (Glbl_F10 / mode 10) */
+{
+    char keep[26];
+
+    memcpy(keep, ReqName, sizeof(keep));
+    file_requester_run(1);
+    memcpy(ReqName, keep, sizeof(keep));
+    ReqSave = 0;
+}
+
+/* "Save Current" (Ctrl-S): save to the loaded filename without the
+ * requester; the original always goes through D_CheckOverWrite. */
+static void quick_save(void)
+{
+    char name[40];
+    FILE *f;
+
+    if (!FileNameDisp[0]) {
+        save_requester();
+        return;
+    }
+    snprintf(name, sizeof(name), "%s", FileNameDisp);
+    if (!strchr(name, '.') && strlen(name) < sizeof(name) - 4)
+        strcat(name, ".IT");
+    f = fopen(name, "rb");
+    if (f) {
+        fclose(f);
+        if (!confirm_overwrite(draw_screen))
+            return;
+    }
+    commit_current_pattern();
+    if (Save_ITModule(name))
+        status("Saved.");
+    else
+        status("Unable to save file");
 }
 
 static int do_load_named(const char *path)
@@ -4140,6 +4611,8 @@ static void new_song(void)
     ed_lock();
     Music_FreeIT();
     song_defaults();
+    msg_reset();                        /* Msg_ResetMessage */
+    Save_LoadTime = time(NULL);
     Music_InitMusic();
     Music_InitStereo();
     Music_InitMixTable();
@@ -4278,12 +4751,12 @@ static int act_view_orders(void)   { Screen = SCR_ORDER;   return 1; }
 static int act_view_vars(void)     { Screen = SCR_VARS;    return 1; }
 static int act_help(void)          { Screen = SCR_HELP;    return 1; }
 static int act_message_editor(void)
-{ status("Message editor not ported yet."); return 1; }
+{ Screen = SCR_MESSAGE; return 1; }
 
 static int act_file_load(void)  { file_requester(); return 1; }
 static int act_file_new(void)   { new_song(); status("New song."); return 1; }
-static int act_file_save(void)
-{ status("Saving is not ported yet (HANDOFF roadmap)."); return 1; }
+static int act_file_save(void)     { quick_save(); return 1; }
+static int act_file_save_as(void)  { save_requester(); return 1; }
 static int act_file_shell(void) { status("No DOS to shell to."); return 1; }
 static int act_file_quit(void)  { Running = 0; return 1; }
 
@@ -4338,7 +4811,7 @@ static const menuitem_t FileItems[] = {
     { " Load...           (F9)", act_file_load },
     { " New...        (Ctrl-N)", act_file_new },
     { " Save Current  (Ctrl-S)", act_file_save },
-    { " Save As...       (F10)", act_file_save },
+    { " Save As...       (F10)", act_file_save_as },
     { " Shell to DOS  (Ctrl-D)", act_file_shell },
     { " Quit          (Ctrl-Q)", act_file_quit },
 };
@@ -4441,7 +4914,14 @@ static void handle_global(int key)
 {
     switch (key) {
     case ITK_QUIT: Running = 0; return;
-    case ITK_ESC:  main_menu(); return;
+    case ITK_ESC:
+        if (Screen == SCR_MESSAGE && MsgEdit) {
+            handle_message_key(ITK_ESC);    /* edit -> view mode */
+            return;
+        }
+        main_menu();
+        return;
+    case ITK_SHIFT_F9: Screen = SCR_MESSAGE; return;
     case ITK_F1:  Screen = SCR_HELP; return;
     case ITK_F2:  if (Screen != SCR_PATTERN) Screen = SCR_PATTERN; return;
     case ITK_F3:  Screen = SCR_SAMPLES; ListSel = CurInstr-1; return;
@@ -4470,6 +4950,8 @@ static void handle_global(int key)
     case ITK_F7:  commit_current_pattern(); play_pattern(); return;
     case ITK_F8:  stop_song(); return;
     case ITK_F9:  file_requester(); return;
+    case ITK_F10: save_requester(); return;
+    case 0x13:    quick_save(); return;     /* Ctrl-S */
     case ITK_MOUSE:
         if (Screen == SCR_PATTERN)
             pattern_click();
@@ -4483,6 +4965,8 @@ static void handle_global(int key)
         handle_pattern_key(key);
     else if (Screen == SCR_INFO)
         handle_info_key(key);
+    else if (Screen == SCR_MESSAGE)
+        handle_message_key(key);
     else
         widgets_key(key);
 }
@@ -4575,6 +5059,8 @@ int main(int argc, char **argv)
                             ? atoi(getenv("ITED_SHOT_SCREEN")) : SCR_PATTERN);
             if (scr >= 0 && scr <= SCR_INFO)
                 Screen = scr;
+            else if (scr == 9)              /* message editor */
+                Screen = SCR_MESSAGE;
             if (getenv("ITED_SHOT_TAB"))   /* F4 tab 0..3 for captures */
                 InsTab = (uint8_t)(atoi(getenv("ITED_SHOT_TAB")) & 3);
             if (scr == SCR_INFO) {         /* Glbl_F5 entry side effect */
@@ -4768,6 +5254,38 @@ int main(int argc, char **argv)
             redraw();
             fprintf(stderr, "ITED selftest: [%s]\n",
                     f5_ok ? "F5 OK" : "F5 FAIL");
+        }
+
+        /* Save + message editor (feature 004): type into the message
+         * editor, save the module, reload it, verify the message and
+         * that the saved file loads at all. */
+        {
+            int save_ok = 1;
+            const char *tmp = "st_save.it";
+
+            handle_global(ITK_SHIFT_F9);    /* message editor */
+            redraw();
+            if (Screen != SCR_MESSAGE)
+                save_ok = 0;
+            handle_global(ITK_ENTER);       /* edit mode */
+            handle_global('H');
+            handle_global('i');
+            handle_global(ITK_ENTER);       /* CR */
+            handle_global('y');
+            handle_global('o');
+            redraw();
+            if (strcmp(IT_MessageData, "Hi\015yo") != 0)
+                save_ok = 0;
+            commit_current_pattern();
+            if (!Save_ITModule(tmp))
+                save_ok = 0;
+            else if (!do_load_named(tmp))
+                save_ok = 0;
+            else if (strcmp(IT_MessageData, "Hi\015yo") != 0)
+                save_ok = 0;
+            remove(tmp);
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    save_ok ? "SAVE OK" : "SAVE FAIL");
         }
 
         /* Verify the F12 Global/Mixing Volume wiring actually reaches the

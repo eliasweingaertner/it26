@@ -181,12 +181,38 @@ Capture aids: `ITED_SHOT_METHOD=<0..10>` (window 0's view) and
 `ITED_SHOT_PLAY=<secs>` (headless-mix n seconds first so captures show
 real mid-song state).
 
+**Save module (F10) + message editor — DONE (2026-07-02, spec
+`specs/004-save-module`):** the `.IT` writer ported 1:1 from
+`IT_D_WM.INC D_SaveIT` + `IT_DISK.ASM` into `src/it_save.c`: header
+fixups (backward order scan, Cwt 0x217, Cmwt per SaveFormat with the
+0x216 filter-envelope override, Special bits, the 'JTHL'/'ITRK'
+edit-time obfuscation), offset tables, MIDI config / message blocks,
+provisional sample headers rewritten with real offsets after the data
+pass, and the **IT 2.14/2.15 sample compressor** (delta passes, the
+exact bit-width LUTs from the D_SaveIT setup block, the run-minimise
+cost heuristics, LSB-first bitstream with the three width-change escape
+regimes, u16-length 32KB blocks). SaveFormat = 3 (IT215) default per
+`SWITCH.INC`; 0 (IT214) and 2 (uncompressed) also implemented.
+UI: F10 = save requester (F9 window with editable filename primed from
+the loaded name, `.IT` applied when no '.', "Overwrite file?" Yes/No
+modal defaulting to No, progress strings at rows 17..23), Ctrl-S =
+"Save Current" through the same confirm path. Message editor
+(Shift-F9, also via menu): `IT_MSG.ASM` ported — 8000-byte
+CR-separated buffer (owned by `it_save.c`, read by the loader when
+Special bit 0 is set, saved when non-empty), view/edit modes, 35 lines
+at (2,13..47) in box (1,12)-(78,48), word wrap at column 75, Ctrl-Y
+line delete, Tab = 8 spaces, Ctrl-T colour 12↔6, Ctrl-L clear (Alt-C
+stand-in), cursor attr `(a&8)|30h`. Gate: `test_pattern <mod>
+--roundtrip` saves each module with formats 3/0/2, reloads and
+re-renders — all four modules IDENTICAL to the original hashes,
+message round-trips.
+
 **Not done yet** (see §6): the full IT sample *editor* (waveform
-draw/loop/zoom), message editor, save (F10), terminal-backend mouse.
-F4 leftovers: envelope presets, Alt-based instrument list ops, in-list
-name editing. F5 leftover: Alt-F12 Fourier spectrum analyser
-(SPECTRUMANALYSER build, `IT_FOUR.ASM`). Header FreeMem/FreeEMS show
-host free RAM / 0.
+draw/loop/zoom), terminal-backend mouse. F4 leftovers: envelope
+presets, Alt-based instrument list ops, in-list name editing. F5
+leftover: Alt-F12 Fourier spectrum analyser (SPECTRUMANALYSER build,
+`IT_FOUR.ASM`). S3M save (SaveFormat 1) not ported. Header
+FreeMem/FreeEMS show host free RAM / 0.
 
 ---
 
@@ -251,13 +277,17 @@ determinism control. Known-good FNV-1a hashes (all four `IDENTICAL`):
 
 Non-interactive editor checks (no terminal/window/audio needed):
 - `ITED_SELFTEST=1 ited <mod>` — runs a scripted smoke test of editor actions.
+- `test_pattern <mod> --roundtrip` — additionally saves the module with
+  SaveFormats 3/0/2, reloads each and re-renders: every hash must equal
+  the original's (the save-path gate, feature 004).
 - `ITED_DUMP=<screen#> ited <mod>` — writes `screen_dump.txt` (that screen
   as plain ASCII, box glyphs approximated).
 - `ITED_SHOT=<file.bmp> [ITED_SHOT_SCREEN=<n>] ited <mod>` — renders the
   screen **pixel-exactly** to a 640x400 24-bit BMP via the shared
   rasterizer. Screen numbers: 0 help, 1 pattern, 2 samples,
   3 instruments, 4 orders, 5 song vars, 6 info page, 7 main menu,
-  8 load requester. For the info page add `ITED_SHOT_PLAY=<secs>`
+  8 load requester, 9 message editor. For the info page add
+  `ITED_SHOT_PLAY=<secs>`
   (headless-mixes n seconds first so the capture shows real mid-song
   bars/rows) and `ITED_SHOT_METHOD=<0..10>` (window 0's view method);
   `ITED_SHOT_TAB=<0..3>` selects the F4 tab.
@@ -408,9 +438,11 @@ rough priority order:
    `Display_SampleDots` is commented out of the build; the velocity
    bars are what the original draws. Leftover: Alt-F12 Fourier
    spectrum analyser (`IT_FOUR.ASM`).
-4. **Message editor, save module (F10)** — F10 needs the `IT_DISK.ASM`
-   save path ported (the engine only loads today). The menu entries
-   exist and flash "not ported yet".
+4. **Message editor, save module (F10)** — ✅ DONE (2026-07-02, spec
+   `specs/004-save-module`): see §2. Full `.IT` writer incl. the
+   IT214/IT215 sample compressor, save requester with overwrite
+   confirm, Ctrl-S, Shift-F9 message editor, `--roundtrip` gate.
+   Leftover: S3M export (SaveFormat 1).
 5. **Editing depth**: block ops (Alt-keys), edit masks, more of
    `PE_TRANS.INC` behaviour; numeric entry on thumbbars (typed digits).
 6. **In-depth sample & instrument editors** (`IT_I.ASM`) — envelopes,

@@ -17,7 +17,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "it_music.h"
+#include "it_save.h"                    /* song message buffer */
 
 /* ---------------------------------------------------------------- */
 
@@ -392,6 +394,18 @@ int Music_LoadIT(const char *path)
             rd_read(r, MIDIDataArea, MIDIDATAAREA_SIZE);
         }
     }
+
+    /* song message (Special bit 0) into the editor's buffer */
+    memset(IT_MessageData, 0, sizeof(IT_MessageData));
+    if ((Song.Header.Special & 1) && Song.Header.MsgLgth > 1 &&
+        rd_seek(r, Song.Header.MsgOffset)) {
+        uint16_t n = Song.Header.MsgLgth;
+        if (n > IT_MESSAGELENGTH - 1)
+            n = IT_MESSAGELENGTH - 1;
+        rd_read(r, IT_MessageData, n);
+        IT_MessageData[IT_MESSAGELENGTH - 1] = 0;
+    }
+    Save_LoadTime = time(NULL);
 
     /* instruments */
     for (i = 0; i < Song.Header.InsNum; i++) {

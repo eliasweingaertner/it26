@@ -92,6 +92,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                                                      : ITK_TAB);
             return 0;
         }
+        if (wp == VK_F9 && (GetKeyState(VK_SHIFT) & 0x8000)) {
+            PushKey(ITK_SHIFT_F9);      /* message editor */
+            return 0;
+        }
         {
             int k = MapVKey(wp);
             if (k != ITK_NONE) {

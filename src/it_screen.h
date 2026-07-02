@@ -85,6 +85,11 @@ void Screen_DefineSmallNumbers(void);
  * playing row on the info page by Or-ing 0E0h over the drawn cells). */
 void Screen_OrAttr(int x, int y, uint8_t bits);
 
+/* read-modify-write helpers for cursor rules like the message
+ * editor's `attr = (attr & 8) | 30h` (Msg_PreMessage). */
+uint8_t Screen_GetAttr(int x, int y);
+void Screen_SetAttr(int x, int y, uint8_t attr);
+
 /* render the current cell buffer to `px` as 640x400 0x00RRGGBB pixels
  * using the real glyph bitmaps + palette (shared by the pixel backend,
  * Screen_WriteBMP and any future SDL backend). */
@@ -109,6 +114,7 @@ enum {
     ITK_F1, ITK_F2, ITK_F3, ITK_F4, ITK_F5, ITK_F6,
     ITK_F7, ITK_F8, ITK_F9, ITK_F10, ITK_F11, ITK_F12,
     ITK_ESC, ITK_ENTER, ITK_BACKSPACE, ITK_TAB, ITK_SHIFT_TAB,
+    ITK_SHIFT_F9,           /* message editor (Glbl_Shift_F9) */
     ITK_QUIT,               /* window closed (pixel backend) */
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };
