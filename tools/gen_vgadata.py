@@ -90,6 +90,17 @@ def main():
     assert len(boxes) % 18 == 0, f'boxes: got {len(boxes)}'
     nboxes = len(boxes) // 18
 
+    # ---- HexNumeralDefinitions: 4px-wide numerals 0-9 A-F G H used by
+    # S_DefineSmallNumbers (info page hex-pair charset + G0..H9 glyphs).
+    # NB the original table's '0' row has only 7 bytes, so every glyph
+    # n>=1 at offset n*8 is shifted by one byte -- part of the authentic
+    # look; keep the raw layout and pad the tail to 18*8 with the byte
+    # the original would read next (BoxDefinitions[0] = 128).
+    hexnum = extract_block(lines, 'HexNumeralDefinitions',
+                           'BoxDefinitions')
+    assert len(hexnum) == 143, f'hexnums: got {len(hexnum)}'
+    hexnum.append(boxes[0])
+
     # ---- ROM 8x8 font ----
     font = open(fontpath, 'rb').read()
     assert len(font) == 2048, f'font: got {len(font)} bytes, want 2048'
@@ -111,6 +122,13 @@ def main():
           ' *                     128..201, 8x8 bitmaps, MSB = left pixel)\n'
           ' *   IT_BoxDefs      = IT_S.ASM BoxDefinitions (box styles,\n'
           ' *                     9 x (char,attr): TL,T,TR,L,fill,R,BL,B,BR)\n'
+          ' *   IT_HexNumerals  = IT_S.ASM HexNumeralDefinitions (4px-wide\n'
+          ' *                     numerals 0-9 A-F G H for the info page\'s\n'
+          ' *                     small-number charsets, S_DefineSmallNumbers).\n'
+          ' *                     The original \'0\' row is only 7 bytes, so\n'
+          ' *                     glyphs 1.. read one byte early and \'H\'\n'
+          ' *                     reads BoxDefinitions[0]=128 as its last\n'
+          ' *                     row -- authentic quirk, preserved.\n'
           f' *   IT_FontROM      = IBM VGA ROM 8x8 font (CP437), the font\n'
           f' *                     int 10h AX=1112h loads ({fontsrc})\n'
           ' */\n\n#include "it_vgadata.h"\n\n')
@@ -132,6 +150,12 @@ def main():
             row = boxes[i*18:(i+1)*18]
             w('    {' + ','.join(('0x%02X' % v) for v in row) +
               '}, /* style %d */\n' % i)
+        w('};\n\n')
+
+        w('const uint8_t IT_HexNumerals[144] = {\n')
+        for i in range(0, 144, 8):
+            w('    ' + ','.join('0x%02X' % v for v in hexnum[i:i+8]) +
+              ', /* +%d */\n' % i)
         w('};\n\n')
 
         w('const uint8_t IT_FontROM[256][8] = {\n')

@@ -104,8 +104,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CHAR:
         if (wp >= 32 && wp < 127)
             PushKey((int)wp);
-        else if (wp == 0x11)            /* Ctrl-Q */
-            PushKey(0x11);
+        else if (wp >= 1 && wp <= 26 &&
+                 wp != 8 && wp != 9 && wp != 13)
+            PushKey((int)wp);           /* Ctrl-A..Z (BS/Tab/CR are
+                                           delivered as VK keys above) */
         return 0;
     case WM_MOUSEMOVE:
         MousePX = (int)(short)LOWORD(lp) / SCALE;

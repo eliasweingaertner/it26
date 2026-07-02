@@ -2077,121 +2077,1184 @@ static void draw_help(void)
 }
 
 /* ===================================================================
- * Info page (F5) -- live per-channel view, after IT_DISPL.ASM's
- * Display_HostChannel default ("track") view: a channel-number gutter,
- * a sample/instrument-number + name column, and per-channel panning.
- * Where the original scans the sample data to draw an oscilloscope,
- * this first pass shows a final-volume VU bar (the oscilloscope and the
- * other view modes -- note dots, multi-channel, scopes -- are the
- * documented follow-up). Reads live host/slave channel state under the
- * audio lock.
+ * Info page (F5) -- IT_DISPL.ASM ported 1:1: the DisplayWindows split-
+ * window engine (up to 5 windows stacked over rows 12..49) with all 11
+ * view methods of the 2.17 build. Display_SampleDots is commented out
+ * of the original's DisplayDataModes table and is excluded here too.
+ *
+ * The original decodes packed pattern data row by row with its own
+ * repeat-bit decoder (LoadNextData / GotoRow over a DataDecode memory
+ * table); this port realises identical semantics with Pattern_Unpack
+ * (the player-exact decoder) into a scratch grid, plus the pattern
+ * editor's own grid for its current pattern (the PE_GetCurrentPattern
+ * "PatternArrayNumber" fast path of the original).
  * =================================================================== */
-static int InfoTop;                 /* first channel row shown */
-#define INFO_ROWS 35
 
-/* IT pan labels are 9 chars wide, drawn at the box's left edge. */
-static const char *InfoLeftMsg = "Left     ";
-static const char *InfoRightMsg = "    Right";
-static const char *InfoSurrMsg = "Surround ";
+static void commit_current_pattern(void);
+static void load_pattern(uint16_t pat);
+
+typedef struct dispwin_t {          /* DisplayWindows entry             */
+    uint16_t method;                /* +0 index into DisplayDataModes   */
+    uint8_t  topchan;               /* +2 first channel shown           */
+    uint8_t  topline;               /* +3 first screen row              */
+    uint16_t length;                /* +4 rows (+6 offset is derived)   */
+} dispwin_t;
+
+/* 2.17 defaults: track view 12..31, Variables 32..34, 24-chn 35..49 */
+static dispwin_t InfoWin[5] = {
+    { 0, 0, 12, 20 }, { 8, 0, 32, 3 }, { 5, 0, 35, 15 },
+    { 0, 0, 0, 0 }, { 0, 0, 0, 0 },
+};
+static int     InfoNumWindows = 3;  /* NumWindows                       */
+static int     InfoCurWindow  = 0;  /* CurrentWindow                    */
+static int     InfoProcWindow = 0;  /* ProcessWindow                    */
+static int     InfoCurChannel = 0;  /* CurrentChannel                   */
+static uint8_t InfoVelocity   = 0;  /* Velocity: 0 = sample-scan bars   */
+static uint8_t InfoInstNames  = 0;  /* Instrument: 1 = instrument names */
+static uint8_t InfoFullScreen = 0;  /* FullScreen                       */
+
+/* local play-state copies (DrawDisplayData refreshes them per frame) */
+static uint16_t IPlayMode, ICurRow, ICurPattern, ICurOrder;
+static uint16_t InfoPEMaxRow;       /* PatternMaxRow                    */
+
+/* row decode state (DataArray + the LoadNextData walk) */
+static uint8_t    InfoRow[64][5];   /* per channel: note,ins,vol,cmd,val */
+static editcell_t InfoGrid[MAX_PATROWS * 64];
+static uint16_t   InfoGridPat = 0xFFFF;
+static uint16_t   IDecodePattern, IDecodeRow, IDecodeMaxRow;
+static int        INumbered;        /* span has row numbers (real pat)  */
+
+static const char InfoNNAMsg[4][4] = { "Cut", "Con", "Off", "Fde" };
+static const char Note2Table[13]   = "cCdDefFgGaAb";
+
+static uint16_t info_pattern_rows(uint16_t pat)
+{
+    if (pat == CurPattern)
+        return InfoPEMaxRow;
+    if (pat < MAX_PATTERNS && Song.Patterns[pat].PackedData)
+        return Song.Patterns[pat].Rows;
+    return 64;
+}
+
+static const editcell_t *info_cells(uint16_t pat)
+{
+    if (pat == CurPattern)
+        return Grid;
+    if (InfoGridPat != pat) {
+        Pattern_Unpack(pat, InfoGrid);
+        InfoGridPat = pat;
+    }
+    return InfoGrid;
+}
+
+/* LoadNextData: fetch the next row of IDecodePattern into InfoRow.
+ * Empty cells become {0FDh,0,0FFh,0,0} exactly as the original's
+ * DataArray init. Note that engine note 253 ("fade") shares 0FDh with
+ * the empty marker -- authentic collision, fades display as empty. */
+static void info_load_row(void)
+{
+    const editcell_t *g;
+    int c;
+
+    if (IDecodePattern == 0xFFFF || IDecodeRow >= MAX_PATROWS) {
+        for (c = 0; c < 64; c++) {
+            InfoRow[c][0] = 0xFD; InfoRow[c][1] = 0;
+            InfoRow[c][2] = 0xFF; InfoRow[c][3] = 0; InfoRow[c][4] = 0;
+        }
+        IDecodeRow++;
+        return;
+    }
+    g = info_cells(IDecodePattern) + (size_t)IDecodeRow * 64;
+    for (c = 0; c < 64; c++) {
+        const editcell_t *e = &g[c];
+        if ((e->mask & CM_NOTE) && e->note)
+            InfoRow[c][0] = (e->note <= 120) ? (uint8_t)(e->note - 1)
+                                             : e->note;
+        else
+            InfoRow[c][0] = 0xFD;
+        InfoRow[c][1] = (e->mask & CM_INS) ? e->ins : 0;
+        InfoRow[c][2] = (e->mask & CM_VOL) ? e->vol : 0xFF;
+        InfoRow[c][3] = (e->mask & CM_CMD) ? e->cmd : 0;
+        InfoRow[c][4] = (e->mask & CM_CMD) ? e->cmdval : 0;
+    }
+    IDecodeRow++;
+}
+
+/* GetBeforeRows: rows above the current pattern's span -- pattern mode
+ * wraps to the same pattern's end, song mode shows the previous order's
+ * pattern (blank rows at order 0 / end markers). */
+static int info_before_rows(const dispwin_t *w)
+{
+    int cnt = (((int)w->length - 4) >> 1) - (int)ICurRow;
+    uint16_t pat;
+
+    INumbered = 0;
+    if (cnt <= 0)
+        return 0;
+    if (IPlayMode != 1) {
+        if (ICurOrder == 0 || (pat = Song.Orders[ICurOrder - 1]) > 199) {
+            IDecodePattern = 0xFFFF;
+            return cnt;
+        }
+    } else
+        pat = ICurPattern;
+    IDecodePattern = pat;
+    {
+        int start = (int)info_pattern_rows(pat) - cnt;
+        if (start < 0)
+            start = 0;              /* port safety (degenerate window) */
+        IDecodeRow = (uint16_t)start;
+    }
+    INumbered = 1;
+    return cnt;
+}
+
+/* GetCurrentPatternRows */
+static int info_current_rows(const dispwin_t *w)
+{
+    int half  = ((int)w->length - 4) >> 1;
+    int final = ((int)w->length - 3) - half + (int)ICurRow; /* exclusive */
+    int start = (int)ICurRow - half;
+    int cnt;
+
+    if (start < 0)
+        start = 0;
+    IDecodePattern = ICurPattern;
+    IDecodeMaxRow  = info_pattern_rows(ICurPattern);
+    if (final > (int)IDecodeMaxRow)
+        final = (int)IDecodeMaxRow;
+    IDecodeRow = (uint16_t)start;
+    cnt = final - start;
+    if (cnt < 0)
+        cnt = 0;
+    INumbered = 1;
+    return cnt;
+}
+
+/* GetAfterRows */
+static int info_after_rows(const dispwin_t *w)
+{
+    int dx = ((int)w->length - 3) - (((int)w->length - 4) >> 1)
+             + (int)ICurRow;
+    int cnt = dx - (int)IDecodeMaxRow;
+    uint16_t pat;
+
+    INumbered = 0;
+    if (cnt <= 0)
+        return 0;
+    if (IPlayMode != 1) {
+        if (ICurOrder >= 255 || (pat = Song.Orders[ICurOrder + 1]) > 199) {
+            IDecodePattern = 0xFFFF;
+            return cnt;
+        }
+    } else
+        pat = ICurPattern;
+    IDecodePattern = pat;
+    IDecodeRow = 0;
+    INumbered = 1;
+    return cnt;
+}
+
+/* DisplayTrackData: walk the before/current/after row spans through
+ * `show`. Returns 0 when not playing (the original pops the caller's
+ * return address, skipping the view's hilight bar as well). */
+static int info_track_data(const dispwin_t *w,
+                           void (*show)(const dispwin_t *, int))
+{
+    int y = w->topline + 2, pass, i, cnt;
+    int budget = (int)w->length - 3;    /* port safety: the original
+                                           draws past the window bottom
+                                           for degenerate len<4 windows */
+
+    if (IPlayMode == 0)
+        return 0;
+
+    for (pass = 0; pass < 3; pass++) {
+        cnt = (pass == 0) ? info_before_rows(w)
+            : (pass == 1) ? info_current_rows(w)
+                          : info_after_rows(w);
+        if (cnt > budget)
+            cnt = budget;
+        budget -= cnt;
+        for (i = 0; i < cnt; i++, y++) {
+            if (INumbered)              /* PE_ConvAX2Num, attr 20h */
+                drawf(1, y, 0x20, "%03d", IDecodeRow % 1000);
+            info_load_row();
+            show(w, y);
+        }
+    }
+    return 1;
+}
+
+/* DrawHilightBar: hilight the centre (playing) row */
+static void info_hilight(const dispwin_t *w, int cells)
+{
+    int y = w->topline + ((int)w->length >> 1), i;
+    for (i = 0; i < cells; i++)
+        Screen_OrAttr(5 + i, y, 0xE0);
+}
+
+/* GetChannelColour */
+static uint8_t info_chan_colour(int chan)
+{
+    if (Song.Header.ChnlPan[chan] & 0x80)
+        return (chan == InfoCurChannel) ? 0x16 : 0x11;
+    if (chan == InfoCurChannel)
+        return 0x13;
+    return (InfoProcWindow == InfoCurWindow) ? 0x12 : 0x10;
+}
+
+/* DrawChannelNumbers: 2-digit gutter at x=2. Current channel 23h (26h
+ * when muted); other muted channels get NO number at all; otherwise
+ * 21h (20h when this window isn't the focused one). */
+static void info_channel_numbers(const dispwin_t *w, int rows, int ytop)
+{
+    int r;
+    for (r = 0; r < rows; r++) {
+        int c = w->topchan + r;
+        int muted;
+        uint8_t a;
+        if (c > 63)
+            break;                      /* port safety */
+        muted = Song.Header.ChnlPan[c] & 0x80;
+        if (c == InfoCurChannel)
+            a = muted ? 0x26 : 0x23;
+        else if (muted)
+            continue;
+        else
+            a = (InfoProcWindow == InfoCurWindow) ? 0x21 : 0x20;
+        drawf(2, ytop + r, a, "%02d", c + 1);
+    }
+}
+
+/* one 3-char note cell: "C-5", 255 -> three 205 (note off fill),
+ * 254 -> "^^^" (cut), anything else >119 -> three dots (char 173) */
+static void info_note3(int x, int y, uint8_t note)
+{
+    if (note > 119) {
+        uint8_t ch = (note == 0xFF) ? 205 : (note == 0xFE) ? '^' : 173;
+        Screen_PutChar(x,     y, ch, 6);
+        Screen_PutChar(x + 1, y, ch, 6);
+        Screen_PutChar(x + 2, y, ch, 6);
+    } else {
+        int sem = note % 12, oct = note / 12;
+        Screen_PutChar(x,     y, (uint8_t)NoteNameChars[sem * 2],     6);
+        Screen_PutChar(x + 1, y, (uint8_t)NoteNameChars[sem * 2 + 1], 6);
+        Screen_PutChar(x + 2, y, (uint8_t)('0' + oct), 6);
+    }
+}
+
+/* one 2-char volume-column cell. va/pa = attrs for plain volume / pan
+ * values, ea = attr for effect letter+digit (A0.., pan flag +60). */
+static void info_vol2(int x, int y, uint8_t v, uint8_t va, uint8_t pa,
+                      uint8_t ea)
+{
+    uint8_t t = (uint8_t)(v & 0x7F);
+
+    if (t >= 65) {                      /* volume-column effect */
+        t = (uint8_t)(t - 65);
+        if (v & 0x80)
+            t = (uint8_t)(t + 60);
+        Screen_PutChar(x,     y, (uint8_t)('A' + t / 10), ea);
+        Screen_PutChar(x + 1, y, (uint8_t)('0' + t % 10), ea);
+    } else {
+        uint8_t a = (v & 0x80) ? pa : va;
+        Screen_PutChar(x,     y, (uint8_t)('0' + t / 10), a);
+        Screen_PutChar(x + 1, y, (uint8_t)('0' + t % 10), a);
+    }
+}
+
+/* Draw2Num / Draw3Num / Draw10Num (Details columns, attr 2). The tens/
+ * hundreds characters can exceed '9' for large values, as the original
+ * simply adds '0' to each digit register. */
+static void info_draw2(int x, int y, uint8_t v)
+{
+    Screen_PutChar(x,     y, (uint8_t)('0' + v / 10), 2);
+    Screen_PutChar(x + 1, y, (uint8_t)('0' + v % 10), 2);
+}
+
+static void info_draw3(int x, int y, uint16_t v)
+{
+    if (v >= 2560)
+        v = 0;                          /* Draw3Num: AH >= 10 -> 0 */
+    Screen_PutChar(x,     y, (uint8_t)('0' + v / 100),      2);
+    Screen_PutChar(x + 1, y, (uint8_t)('0' + (v / 10) % 10), 2);
+    Screen_PutChar(x + 2, y, (uint8_t)('0' + v % 10),       2);
+}
+
+static void info_draw10(int xend, int y, uint32_t v)
+{
+    int x = xend;
+    do {
+        Screen_PutChar(x--, y, (uint8_t)('0' + v % 10), 2);
+        v /= 10;
+    } while (v);
+}
+
+/* ---- method 0: Display_HostChannel (track view) ------------------- */
+
+/* velocity-bar amplitude: min/max scan over the sample span mixed since
+ * the last frame (OldSampleOffset -> SampleOffset, loop-aware; 16-bit
+ * samples scan the high bytes). Returns max-min (0..255). */
+static int info_scan_amp(const slavechn_t *sc)
+{
+    int32_t beg = (int32_t)sc->OldSampleOffset;
+    int32_t end = sc->SampleOffset;
+    int32_t cnt, i;
+    const sample_t *s;
+    const uint8_t *p;
+    int step;
+    int8_t mn, mx;
+
+    if (beg < 0) beg = 0;
+    if (end < 0) end = 0;
+    if (sc->LpM >= 8) {
+        if (sc->LpM == 8) {             /* forwards loop: wrap to end  */
+            if (end < beg)
+                end = sc->LoopEnd;
+        } else {                        /* ping pong: |span|           */
+            if (end <= beg) { int32_t t = beg; beg = end; end = t; }
+        }
+    }
+    cnt = end - beg;
+    if (cnt <= 0)
+        return 0;
+    if (sc->Smp >= MAX_SAMPLES)
+        return 0;                       /* port safety */
+    s = &Song.Smp[sc->Smp];
+    if (!s->Data || beg >= (int32_t)s->Length)
+        return 0;                       /* port safety: the original
+                                           scans raw DOS memory here */
+    if (cnt > (int32_t)s->Length - beg)
+        cnt = (int32_t)s->Length - beg;
+
+    if (sc->Bit & 2) {                  /* 16 bit: high bytes (Or ESI,1) */
+        p = (const uint8_t *)s->Data + (size_t)beg * 2 + 1;
+        step = 2;
+    } else {
+        p = (const uint8_t *)s->Data + beg;
+        step = 1;
+    }
+    mn = mx = (int8_t)p[0];
+    for (i = 0; i < cnt; i++, p += step) {
+        int8_t v = (int8_t)*p;
+        if (v > mx)                     /* Cmp DH,AL / JL  */
+            mx = v;
+        else if (v < mn)                /* Cmp DL,AL / JG  */
+            mn = v;
+    }
+    return (uint8_t)(mx - mn);
+}
+
+static void view_hostchannel(dispwin_t *w)
+{
+    int stereo  = (Song.Header.Flags & ITF_STEREO) != 0;
+    int insmode = (Song.Header.Flags & ITF_INSTRUMENTS) != 0;
+    int top = w->topline, bot = top + (int)w->length - 1;
+    int tc, r, i;
+
+    Screen_DrawBox(4, top, 29, bot, 27);
+    Screen_DrawBox(30, top, 62, bot, 27);
+    if (stereo)
+        Screen_DrawBox(63, top, 73, bot, 27);
+
+    tc = w->topchan;                    /* Display_HostChannel1/2/22 */
+    if (InfoCurChannel < tc) tc = InfoCurChannel;
+    if (tc < InfoCurChannel + 3 - (int)w->length)
+        tc = InfoCurChannel + 3 - (int)w->length;
+    if (tc > 66 - (int)w->length)
+        tc = 65 - (int)w->length;
+    w->topchan = (uint8_t)tc;
+
+    info_channel_numbers(w, (int)w->length - 2, top + 1);
+
+    for (r = 0; r < (int)w->length - 2; r++) {
+        int c = tc + r, y = top + 1 + r, x;
+        hostchn_t  *hc;
+        slavechn_t *sc;
+        uint8_t a;
+
+        if (c > 63)
+            break;                      /* port safety */
+        hc = &HChn[c];
+        if (!(hc->Flags & HF_CHAN_ON))
+            continue;
+        sc = &SChn[hc->SCOffst];
+
+        /* sample number ("--" from 100 up), "/ii" in instrument mode */
+        x = 31;
+        if (sc->Smp + 1 <= 99) {
+            Screen_PutChar(x,     y, (uint8_t)('0' + (sc->Smp + 1) / 10), 6);
+            Screen_PutChar(x + 1, y, (uint8_t)('0' + (sc->Smp + 1) % 10), 6);
+        } else {
+            Screen_PutChar(x,     y, '-', 6);
+            Screen_PutChar(x + 1, y, '-', 6);
+        }
+        x += 2;
+        if (insmode && sc->Ins != 0xFF) {
+            Screen_PutChar(x,     y, '/', 6);
+            Screen_PutChar(x + 1, y, (uint8_t)('0' + sc->Ins / 10), 6);
+            Screen_PutChar(x + 2, y, (uint8_t)('0' + sc->Ins % 10), 6);
+            x += 3;
+        }
+        /* ':' attr: 6 normally, 7 after note-off, 4 when silent */
+        a = (sc->Flags & SF_NOTE_OFF) ? 7 : 6;
+        if (sc->FV == 0)
+            a = 4;
+        Screen_PutChar(x, y, ':', a);
+        x++;
+        /* 25-char sample/instrument name; chars >= 226 blanked (they
+         * are the redefined small-number glyphs -- "AvoidMouse") */
+        {
+            const char *nm = (sc->Smp < MAX_SAMPLES)
+                             ? Song.Smp[sc->Smp].SampleName : "";
+            if (insmode && InfoInstNames &&
+                sc->InsOffs >= 1 && sc->InsOffs <= MAX_INSTRUMENTS)
+                nm = Song.Ins[sc->InsOffs - 1].InstrumentName;
+            for (i = 0; i < 25; i++) {
+                uint8_t ch = (uint8_t)nm[i];
+                if (ch >= 226)
+                    ch = ' ';
+                Screen_PutChar(x + i, y, ch, 6);
+                if (!nm[i]) {           /* port safety: stop at NUL,   */
+                    for (i++; i < 25; i++)      /* pad with real blanks */
+                        Screen_PutChar(x + i, y, 0, 6);
+                    break;
+                }
+            }
+        }
+
+        /* panning (stereo box): words or the 2-cell fractional thumb */
+        if (stereo) {
+            uint8_t p = sc->FP;
+            if (p == 100)
+                Screen_DrawString(64, y, "Surround ", 2);
+            else if (p == 0)
+                Screen_DrawString(64, y, "Left     ", 2);
+            else if (p == 64)
+                Screen_DrawString(64, y, "    Right", 2);
+            else {
+                int v = p + 1;
+                Screen_PutChar(64 + (v >> 3), y,
+                               (uint8_t)(155 + (v & 7)), 2);
+                if (155 + (v & 7) > 157)
+                    Screen_PutChar(64 + (v >> 3) + 1, y,
+                                   (uint8_t)(155 + (v & 7) + 5), 2);
+            }
+        }
+
+        /* velocity / volume bar at x=5.. (24 cells max):
+         * value = (amp * FV) >> 9 rounded, amp = 255 in volume-bar mode
+         * (and for MIDI sample 100); bar = groups of 176/179/182 plus a
+         * 173+n fractional tip. attr 5, 1 when the channel is muted. */
+        {
+            int amp = 255;
+            int v, bar, full, rem, bx;
+            uint8_t ba = (sc->Flags & SF_CHN_MUTED) ? 1 : 5;
+
+            if (InfoVelocity == 0 && sc->Smp != 100)
+                amp = info_scan_amp(sc);
+            v    = amp * sc->FV;
+            bar  = (v >> 9) + ((v >> 8) & 1);
+            full = bar >> 3;
+            rem  = bar & 7;
+            bx   = 5;
+            for (i = 0; i < full; i++) {
+                Screen_PutChar(bx++, y, 176, ba);
+                Screen_PutChar(bx++, y, 179, ba);
+                Screen_PutChar(bx++, y, 182, ba);
+            }
+            if (rem) {
+                if (rem > 3)
+                    Screen_PutChar(bx++, y, 176, ba);
+                if (rem > 5) {
+                    Screen_PutChar(bx++, y, 179, ba);
+                    rem++;
+                }
+                Screen_PutChar(bx, y, (uint8_t)(173 + rem), ba);
+            }
+        }
+    }
+}
+
+/* ---- methods 1..7: the pattern views ------------------------------ */
+
+static void show_5channel(const dispwin_t *w, int y)
+{
+    int i, x = 5;
+    for (i = 0; i < 5; i++, x += 14) {
+        const uint8_t *d = InfoRow[w->topchan + i];
+        info_note3(x, y, d[0]);
+        if (d[1]) {
+            Screen_PutChar(x + 4, y, (uint8_t)('0' + d[1] / 10), 6);
+            Screen_PutChar(x + 5, y, (uint8_t)('0' + d[1] % 10), 6);
+        } else {
+            Screen_PutChar(x + 4, y, 173, 6);
+            Screen_PutChar(x + 5, y, 173, 6);
+        }
+        if (d[2] != 0xFF)
+            info_vol2(x + 7, y, d[2], 6, 2, 6);
+        else {
+            Screen_PutChar(x + 7, y, 173, 6);
+            Screen_PutChar(x + 8, y, 173, 6);
+        }
+        Screen_PutChar(x + 10, y, d[3] ? (uint8_t)('@' + d[3]) : '.', 6);
+        drawf(x + 11, y, 6, "%02X", d[4]);
+        if (i < 4)
+            Screen_PutChar(x + 13, y, 168, 2);
+    }
+}
+
+static void view_5channel(dispwin_t *w)
+{
+    int top = w->topline, tc, i;
+
+    Screen_DrawBox(4, top + 1, 74, top + (int)w->length - 1, 27);
+    tc = w->topchan;
+    if (InfoCurChannel < tc) tc = InfoCurChannel;
+    if (tc < InfoCurChannel - 4) tc = InfoCurChannel - 4;
+    if (tc >= 59) tc = 59;
+    w->topchan = (uint8_t)tc;
+    for (i = 0; i < 5; i++)
+        drawf(5 + 14 * i, top + 1, info_chan_colour(tc + i),
+              " Channel %02d ", tc + i + 1);
+    if (info_track_data(w, show_5channel))
+        info_hilight(w, 69);
+}
+
+static void show_8channel(const dispwin_t *w, int y)
+{
+    int i, x = 5;
+    for (i = 0; i < 8; i++, x += 9) {
+        const uint8_t *d = InfoRow[w->topchan + i];
+        info_note3(x, y, d[0]);
+        if (d[2] != 0xFF)
+            info_vol2(x + 3, y, d[2], 2, 1, 2);
+        Screen_PutChar(x + 5, y, d[3] ? (uint8_t)('@' + d[3]) : '.', 6);
+        drawf(x + 6, y, 6, "%02X", d[4]);
+        if (i < 7)
+            Screen_PutChar(x + 8, y, 168, 2);
+    }
+}
+
+static void view_8channel(dispwin_t *w)
+{
+    int top = w->topline, tc, i;
+
+    Screen_DrawBox(4, top + 1, 76, top + (int)w->length - 1, 27);
+    tc = w->topchan;
+    if (InfoCurChannel < tc) tc = InfoCurChannel;
+    if (tc < InfoCurChannel - 7) tc = InfoCurChannel - 7;
+    if (tc >= 56) tc = 56;
+    w->topchan = (uint8_t)tc;
+    for (i = 0; i < 8; i++)
+        drawf(6 + 9 * i, top + 1, info_chan_colour(tc + i),
+              "  %02d  ", tc + i + 1);
+    if (info_track_data(w, show_8channel))
+        info_hilight(w, 71);
+}
+
+static void show_10channel(const dispwin_t *w, int y)
+{
+    int i, x = 5;
+    for (i = 0; i < 10; i++, x += 7) {
+        const uint8_t *d = InfoRow[w->topchan + i];
+        info_note3(x, y, d[0]);
+        if (d[1])                       /* instrument as font-B pair    */
+            Screen_PutChar(x + 3, y,
+                           (uint8_t)((d[1] / 10) << 4 | (d[1] % 10)), 0x0A);
+        else
+            Screen_PutChar(x + 3, y, 184, 0x02);
+        if (d[2] != 0xFF) {
+            uint8_t t = (uint8_t)(d[2] & 0x7F);
+            if (t >= 65) {
+                t = (uint8_t)(t - 65);
+                if (d[2] & 0x80)        /* pan effect: G0..H9 glyph     */
+                    Screen_PutChar(x + 4, y, (uint8_t)(226 + t), 6);
+                else                    /* vol effect: hex-letter pair  */
+                    Screen_PutChar(x + 4, y,
+                                   (uint8_t)((10 + t / 10) << 4 | (t % 10)),
+                                   0x0C);
+            } else
+                Screen_PutChar(x + 4, y,
+                               (uint8_t)((t / 10) << 4 | (t % 10)),
+                               (d[2] & 0x80) ? 0x09 : 0x0C);
+        } else
+            Screen_PutChar(x + 4, y, 184, 0x06);
+        Screen_PutChar(x + 5, y, d[3] ? (uint8_t)('@' + d[3]) : '.', 2);
+        Screen_PutChar(x + 6, y, d[4], 0x0A);   /* value: hex pair     */
+    }
+}
+
+static void view_10channel(dispwin_t *w)
+{
+    int top = w->topline, tc, i;
+
+    Screen_DrawBox(4, top + 1, 75, top + (int)w->length - 1, 27);
+    tc = w->topchan;
+    if (InfoCurChannel < tc) tc = InfoCurChannel;
+    if (tc < InfoCurChannel - 9) tc = InfoCurChannel - 9;
+    if (tc >= 54) tc = 54;
+    w->topchan = (uint8_t)tc;
+    for (i = 0; i < 10; i++)
+        drawf(5 + 7 * i, top + 1, info_chan_colour(tc + i),
+              "  %02d  ", tc + i + 1);
+    if (info_track_data(w, show_10channel))
+        info_hilight(w, 70);
+}
+
+/* Process3CharacterRow: one 3-cell cell for the 18/24-channel views;
+ * priority note > instrument > volume > command. */
+static void info_cell3(int x, int y, const uint8_t *d)
+{
+    if (d[0] != 0xFD || d[1]) {
+        if (d[0] != 0xFD)
+            info_note3(x, y, d[0]);
+        else {                          /* instrument, right 2 cells    */
+            Screen_PutChar(x + 1, y, (uint8_t)('0' + d[1] / 10), 6);
+            Screen_PutChar(x + 2, y, (uint8_t)('0' + d[1] % 10), 6);
+        }
+    } else if (d[2] != 0xFF)
+        info_vol2(x + 1, y, d[2], 2, 1, 2);
+    else if (d[3]) {
+        Screen_PutChar(x, y, (uint8_t)('@' + d[3]), 2);
+        drawf(x + 1, y, 2, "%02X", d[4]);
+    } else {
+        Screen_PutChar(x,     y, 173, 6);
+        Screen_PutChar(x + 1, y, 173, 6);
+        Screen_PutChar(x + 2, y, 173, 6);
+    }
+}
+
+static void show_18channel(const dispwin_t *w, int y)
+{
+    int i, x = 5;
+    for (i = 0; i < 18; i++, x += 4) {
+        info_cell3(x, y, InfoRow[w->topchan + i]);
+        if (i < 17)
+            Screen_PutChar(x + 3, y, 168, 2);
+    }
+}
+
+static void view_18channel(dispwin_t *w)
+{
+    int top = w->topline, tc, i;
+
+    Screen_DrawBox(4, top + 1, 76, top + (int)w->length - 1, 27);
+    tc = w->topchan;
+    if (InfoCurChannel < tc) tc = InfoCurChannel;
+    if (tc < InfoCurChannel - 17) tc = InfoCurChannel - 17;
+    if (tc >= 46) tc = 46;
+    w->topchan = (uint8_t)tc;
+    for (i = 0; i < 18; i++)
+        drawf(6 + 4 * i, top + 1, info_chan_colour(tc + i),
+              "%02d", tc + i + 1);
+    if (info_track_data(w, show_18channel))
+        info_hilight(w, 71);
+}
+
+static void show_24channel(const dispwin_t *w, int y)
+{
+    int i;
+    for (i = 0; i < 24; i++)
+        info_cell3(5 + 3 * i, y, InfoRow[w->topchan + i]);
+}
+
+static void view_24channel(dispwin_t *w)
+{
+    int top = w->topline, tc, i;
+
+    Screen_DrawBox(4, top + 1, 77, top + (int)w->length - 1, 27);
+    tc = w->topchan;
+    if (InfoCurChannel < tc) tc = InfoCurChannel;
+    if (tc < InfoCurChannel - 23) tc = InfoCurChannel - 23;
+    if (tc >= 40) tc = 40;
+    w->topchan = (uint8_t)tc;
+    for (i = 0; i < 24; i++)
+        drawf(6 + 3 * i, top + 1, info_chan_colour(tc + i),
+              "%02d", tc + i + 1);
+    if (info_track_data(w, show_24channel))
+        info_hilight(w, 72);
+}
+
+static void show_36channel(const dispwin_t *w, int y)
+{
+    int i, x = 5;
+    for (i = 0; i < 36; i++, x += 2) {
+        const uint8_t *d = InfoRow[w->topchan + i];
+        if (d[0] != 0xFD || d[1]) {
+            if (d[0] != 0xFD) {
+                if (d[0] > 119) {
+                    uint8_t ch = (d[0] == 0xFF) ? 205
+                               : (d[0] == 0xFE) ? '^' : 173;
+                    Screen_PutChar(x,     y, ch, 6);
+                    Screen_PutChar(x + 1, y, ch, 6);
+                } else {
+                    Screen_PutChar(x, y,
+                                   (uint8_t)Note2Table[d[0] % 12], 6);
+                    Screen_PutChar(x + 1, y,
+                                   (uint8_t)('0' + d[0] / 12), 6);
+                }
+            } else {
+                Screen_PutChar(x,     y, (uint8_t)('0' + d[1] / 10), 6);
+                Screen_PutChar(x + 1, y, (uint8_t)('0' + d[1] % 10), 6);
+            }
+        } else if (d[2] != 0xFF)
+            info_vol2(x, y, d[2], 2, 1, 2);
+        else if (d[3]) {
+            Screen_PutChar(x,     y, (uint8_t)('@' + d[3]), 2);
+            Screen_PutChar(x + 1, y, d[4], 0x0A);   /* value hex pair  */
+        } else {
+            Screen_PutChar(x,     y, 173, 6);
+            Screen_PutChar(x + 1, y, 173, 6);
+        }
+    }
+}
+
+static void view_36channel(dispwin_t *w)
+{
+    int top = w->topline, tc, i;
+
+    Screen_DrawBox(4, top + 1, 77, top + (int)w->length - 1, 27);
+    tc = w->topchan;
+    if (InfoCurChannel < tc) tc = InfoCurChannel;
+    if (tc < InfoCurChannel - 35) tc = InfoCurChannel - 35;
+    if (tc >= 28) tc = 28;
+    w->topchan = (uint8_t)tc;
+    for (i = 0; i < 36; i++)
+        drawf(5 + 2 * i, top + 1, info_chan_colour(tc + i),
+              "%02d", tc + i + 1);
+    if (info_track_data(w, show_36channel))
+        info_hilight(w, 72);
+}
+
+static void show_64channel(const dispwin_t *w, int y)
+{
+    int i;
+    (void)w;
+    for (i = 0; i < 64; i++) {
+        const uint8_t *d = InfoRow[i];
+        int x = 5 + i;
+        if (d[0] != 0xFD || d[1]) {
+            if (d[0] != 0xFD) {
+                if (d[0] > 119)
+                    Screen_PutChar(x, y, (d[0] == 0xFF) ? 205
+                                       : (d[0] == 0xFE) ? '^' : 173, 6);
+                else
+                    Screen_PutChar(x, y,
+                                   (uint8_t)Note2Table[d[0] % 12], 6);
+            } else
+                Screen_PutChar(x, y,
+                               (uint8_t)((d[1] / 10) << 4 | (d[1] % 10)),
+                               0x0A);
+        } else if (d[2] != 0xFF && (d[2] & 0x7F) <= 64) {
+            uint8_t t = (uint8_t)(d[2] & 0x7F);
+            Screen_PutChar(x, y, (uint8_t)((t / 10) << 4 | (t % 10)),
+                           (d[2] & 0x80) ? 0x09 : 0x0C);
+        } else
+            Screen_PutChar(x, y, 173, 6);
+    }
+    for (i = 0; i < 9; i++)             /* 9-cell filler to x=77 */
+        Screen_PutChar(69 + i, y, 173, 6);
+}
+
+static void view_64channel(dispwin_t *w)
+{
+    int top = w->topline, i;
+
+    Screen_DrawBox(4, top + 1, 78, top + (int)w->length - 1, 27);
+    /* channel numbers as font-B packed decimal pairs, colour | 8 */
+    for (i = 0; i < 64; i++)
+        Screen_PutChar(5 + i, top + 1,
+                       (uint8_t)(((i + 1) / 10) << 4 | ((i + 1) % 10)),
+                       (uint8_t)(info_chan_colour(i) | 8));
+    for (i = 0; i < 9; i++)
+        Screen_PutChar(69 + i, top + 1, 0, 0x10);
+    w->topchan = 0;
+    if (info_track_data(w, show_64channel))
+        info_hilight(w, 73);
+}
+
+/* ---- method 8: Display_Variables ----------------------------------- */
+
+static void view_variables(dispwin_t *w)
+{
+    int i, act = 0, used = 0;
+    uint8_t a = (InfoProcWindow == InfoCurWindow) ? 0x23 : 0x20;
+
+    for (i = 0; i < MAXSLAVECHANNELS; i++) {
+        act += SChn[i].Flags & 1;
+        if (SChn[i].HCOffst != 0xFFFF)  /* original: word [SI+38h] != 0 */
+            used++;
+    }
+    drawf(2, w->topline + 1, a, "Active Channels: %d (%d)", act, used);
+    drawf(2, w->topline + 2, a, "  Global Volume: %d", GlobalVolume);
+}
+
+/* ---- method 9: Display_NoteDots ------------------------------------ */
+
+static void view_notedots(dispwin_t *w)
+{
+    int top = w->topline, tc, r, i;
+
+    Screen_DrawBox(4, top, 78, top + (int)w->length - 1, 27);
+
+    tc = w->topchan;                    /* Display_Dots1/2/3 clamp */
+    if (InfoCurChannel < tc) tc = InfoCurChannel;
+    if (tc < InfoCurChannel + 3 - (int)w->length)
+        tc = InfoCurChannel + 3 - (int)w->length;
+    if (tc > 66 - (int)w->length)
+        tc = 65 - (int)w->length;
+    w->topchan = (uint8_t)tc;
+
+    info_channel_numbers(w, (int)w->length - 2, top + 1);
+
+    for (r = 0; r < (int)w->length - 2; r++) {
+        int c = tc + r, y = top + 1 + r;
+        uint8_t row[73][2];
+
+        if (c > 63)
+            break;                      /* port safety */
+        for (i = 0; i < 73; i++) {
+            row[i][0] = 193;
+            row[i][1] = 6;
+        }
+        for (i = 0; i < MAXSLAVECHANNELS; i++) {
+            const slavechn_t *sc = &SChn[i];
+            int col, v;
+            uint8_t ch, a;
+            if (!(sc->Flags & SF_CHAN_ON))
+                continue;
+            if ((sc->HCN & 0x7F) != c)
+                continue;
+            col = (int)sc->Nte - 30;    /* columns = notes 30..102 */
+            if (col < 0 || col >= 73)
+                continue;
+            v  = sc->FV + 7;            /* dot size, rounded */
+            ch = (uint8_t)(193 + (v >> 4) + ((v >> 3) & 1));
+            a  = (uint8_t)(2 + ((sc->Smp == 100 ? sc->Ins
+                                                : sc->Smp) & 3));
+            if (sc->Flags & SF_CHN_MUTED)
+                a = 1;
+            if ((sc->HCN & 0x80) && row[col][0] > ch)
+                continue;               /* disowned: keep larger dots */
+            row[col][0] = ch;
+            row[col][1] = a;
+        }
+        for (i = 0; i < 73; i++)
+            Screen_PutChar(5 + i, y, row[i][0], row[i][1]);
+    }
+}
+
+/* ---- method 10: Display_Details ------------------------------------ */
+
+static void view_details(dispwin_t *w)
+{
+    static const int div9[9] = { 15, 26, 35, 38, 41, 44, 47, 51, 54 };
+    int insmode = (Song.Header.Flags & ITF_INSTRUMENTS) != 0;
+    int top = w->topline, bot = top + (int)w->length - 1;
+    int tc, r, i;
+
+    Screen_DrawBox(4,  top + 1, 30, bot, 27);
+    Screen_DrawBox(31, top + 1, 57, bot, 27);
+    if (insmode) {
+        Screen_DrawBox(58, top + 1, 66, bot, 27);
+        Screen_DrawString(59, top + 1, "NNA", 0x12);    /* VirtualMsg */
+        Screen_PutChar(62, top + 1, 148, 0x21);
+        Screen_DrawString(63, top + 1, "Tot", 0x12);
+    }
+    /* DetailsMsg header: text 12h, divider glyphs 148/152/153 21h */
+    Screen_DrawString(6, top + 1, "Frequency", 0x12);
+    Screen_PutChar(15, top + 1, 148, 0x21);
+    Screen_PutChar(16, top + 1, 148, 0x21);
+    Screen_DrawString(17, top + 1, "Position", 0x12);
+    Screen_PutChar(25, top + 1, 148, 0x21);
+    Screen_PutChar(26, top + 1, 148, 0x21);
+    Screen_DrawString(27, top + 1, "Smp", 0x12);
+    Screen_PutChar(30, top + 1, 152, 0x21);
+    Screen_PutChar(31, top + 1, 153, 0x21);
+    Screen_DrawString(32, top + 1, "FVl", 0x12);
+    Screen_PutChar(35, top + 1, 148, 0x21);
+    Screen_DrawString(36, top + 1, "Vl", 0x12);
+    Screen_PutChar(38, top + 1, 148, 0x21);
+    Screen_DrawString(39, top + 1, "CV", 0x12);
+    Screen_PutChar(41, top + 1, 148, 0x21);
+    Screen_DrawString(42, top + 1, "SV", 0x12);
+    Screen_PutChar(44, top + 1, 148, 0x21);
+    Screen_DrawString(45, top + 1, "VE", 0x12);
+    Screen_PutChar(47, top + 1, 148, 0x21);
+    Screen_DrawString(48, top + 1, "Fde", 0x12);
+    Screen_PutChar(51, top + 1, 148, 0x21);
+    Screen_DrawString(52, top + 1, "Pn", 0x12);
+    Screen_PutChar(54, top + 1, 148, 0x21);
+    Screen_DrawString(55, top + 1, "PE", 0x12);
+
+    tc = w->topchan;                    /* Display_Details1/2/22 clamp */
+    if (InfoCurChannel < tc) tc = InfoCurChannel;
+    if (tc < InfoCurChannel + 4 - (int)w->length)
+        tc = InfoCurChannel + 4 - (int)w->length;
+    if (tc >= 67 - (int)w->length)
+        tc = 67 - (int)w->length;
+    w->topchan = (uint8_t)tc;
+
+    info_channel_numbers(w, (int)w->length - 3, top + 2);
+
+    for (r = 0; r < (int)w->length - 3; r++) {
+        int c = tc + r, y = top + 2 + r;
+        hostchn_t  *hc;
+        slavechn_t *sc = NULL;
+
+        if (c < 0 || c > 63)
+            break;                      /* port safety */
+        hc = &HChn[c];
+        for (i = 0; i < 9; i++)
+            Screen_PutChar(div9[i], y, 168, 2);
+
+        if (hc->Flags & HF_CHAN_ON) {
+            sc = &SChn[hc->SCOffst];
+            info_draw10(14, y, (uint32_t)sc->Frequency);
+            info_draw10(25, y, (uint32_t)sc->SampleOffset);
+            info_draw3(27, y, (uint16_t)(sc->Smp + 1));
+            info_draw3(32, y, sc->FV);
+            info_draw2(36, y, sc->Vol);
+            info_draw2(39, y, sc->CVl);
+            info_draw2(42, y, (uint8_t)(sc->SVl >> 1));
+            info_draw2(45, y, (uint8_t)(sc->VEnv.Value >> 16));
+            info_draw3(48, y, (uint16_t)(sc->FadeOut >> 1));
+            if (sc->FP == 100) {
+                Screen_PutChar(52, y, 'S', 2);
+                Screen_PutChar(53, y, 'u', 2);
+            } else
+                info_draw2(52, y, sc->FP);
+            info_draw2(55, y, (uint8_t)((sc->PEnv.Value >> 16) + 32));
+        }
+        if (insmode) {
+            Screen_PutChar(62, y, 168, 2);
+            if (!(hc->Flags & HF_CHAN_ON)) {
+                Screen_PutChar(59, y, '-', 2);
+                Screen_PutChar(60, y, '-', 2);
+                Screen_PutChar(61, y, '-', 2);
+            } else
+                Screen_DrawString(59, y, InfoNNAMsg[sc->NNA & 3], 2);
+            {
+                int n = 0;              /* virtual channels of this host */
+                for (i = 0; i < MAXSLAVECHANNELS; i++)
+                    if ((SChn[i].Flags & 1) &&
+                        (SChn[i].HCN & 0x7F) == hc->HCN)
+                        n++;
+                info_draw3(63, y, (uint16_t)n);
+            }
+        }
+    }
+}
+
+/* ---- DrawDisplayData: walk the windows ------------------------------ */
+
+typedef void (*info_view_fn)(dispwin_t *);
+static info_view_fn const InfoViews[11] = {
+    view_hostchannel, view_5channel,  view_8channel,  view_10channel,
+    view_18channel,   view_24channel, view_36channel, view_64channel,
+    view_variables,   view_notedots,  view_details,
+};
 
 static void draw_info(void)
 {
-    int stereo   = (Song.Header.Flags & ITF_STEREO) != 0;
-    int instmode = (Song.Header.Flags & ITF_INSTRUMENTS) != 0;
-    int r;
-
-    if (InfoTop > 64 - INFO_ROWS) InfoTop = 64 - INFO_ROWS;
-    if (InfoTop < 0) InfoTop = 0;
-
-    Screen_DrawBox(4, 12, 29, 48, 27);          /* VU / scope box    */
-    Screen_DrawBox(30, 12, 62, 48, 27);         /* sample + name box */
-    if (stereo)
-        Screen_DrawBox(63, 12, 73, 48, 27);     /* panning box       */
+    int i;
 
     ed_lock();
-    for (r = 0; r < INFO_ROWS; r++) {
-        int c = InfoTop + r;
-        int y = 13 + r;
-        int muted, on;
-        slavechn_t *sc;
-        uint8_t cattr, a;
+    IPlayMode    = PlayMode;            /* Music_GetPlayMode snapshot */
+    ICurRow      = CurrentRow;
+    ICurPattern  = CurrentPattern;
+    ICurOrder    = CurrentOrder;
+    InfoPEMaxRow = CurRows;             /* PE_GetCurrentPattern        */
+    if (ICurPattern == CurPattern)
+        InfoPEMaxRow = NumberOfRows;    /* Music_GetPatternLength      */
+    InfoGridPat = 0xFFFF;               /* patterns may have changed   */
 
-        if (c >= 64) break;
-
-        muted = (Song.Header.ChnlPan[c] & 0x80) != 0;
-        on    = (HChn[c].Flags & HF_CHAN_ON) &&
-                HChn[c].SCOffst < MAXSLAVECHANNELS;
-
-        /* channel number gutter, coloured as GetChannelColour for a
-         * single window (10h = the dim "other window" colour is unused):
-         * current 13h, current+muted 16h, muted 11h, otherwise 12h. */
-        if (muted)
-            cattr = (c == CurChan) ? 0x16 : 0x11;
-        else
-            cattr = (c == CurChan) ? 0x13 : 0x12;
-        drawf(1, y, cattr, "%02d", c + 1);
-
-        if (!on)
-            continue;
-        sc = &SChn[HChn[c].SCOffst];
-        if (!(sc->Flags & SF_CHAN_ON))
-            continue;
-
-        /* sample (+ instrument) number, ":" and the name (box 2).
-         * attr 6 normal, 7 when note-off, 4 when silent (FV 0). */
-        a = (sc->Flags & SF_NOTE_OFF) ? 0x07 : 0x06;
-        if (sc->FV == 0)
-            a = 0x04;
-        drawf(31, y, 0x06, "%02d", (sc->Smp + 1) % 100);
-        if (instmode && sc->Ins != 0xFF) {
-            drawf(33, y, 0x06, "/%02d", (sc->Ins + 1) % 100);
-            Screen_PutChar(36, y, ':', a);
-            if (sc->Ins < MAX_INSTRUMENTS)
-                draw_itname(37, y, Song.Ins[sc->Ins].InstrumentName, 25, a);
-        } else {
-            Screen_PutChar(33, y, ':', a);
-            if (sc->Smp < MAX_SAMPLES)
-                draw_itname(34, y, Song.Smp[sc->Smp].SampleName, 25, a);
+    for (i = 0; i < InfoNumWindows; i++) {
+        dispwin_t adj = InfoWin[i];
+        InfoProcWindow = i;
+        /* DrawDisplayData quirk: windows after the first (or any window
+         * in fullscreen) grow one row upward -- unless the method draws
+         * its own full frame (track view 0 / note dots 9) -- so their
+         * box top border replaces the previous window's bottom one. */
+        if ((InfoFullScreen || i > 0) &&
+            adj.method != 0 && adj.method != 9) {
+            adj.topline--;
+            adj.length++;
         }
-
-        /* final-volume VU bar (box 1, cols 5..28 = 24 cells) */
-        {
-            int w = sc->FV * 24 / 128, i;
-            for (i = 0; i < w && i < 24; i++)
-                Screen_PutChar(5 + i, y, 219, 0x06);
-        }
-
-        /* panning (box 3, stereo only): Left/Right/Surround or a thumb */
-        if (stereo) {
-            uint8_t pan = sc->Pan;
-            if (pan == 100)
-                Screen_DrawString(64, y, InfoSurrMsg, 0x02);
-            else if (pan == 0)
-                Screen_DrawString(64, y, InfoLeftMsg, 0x02);
-            else if (pan == 64)
-                Screen_DrawString(64, y, InfoRightMsg, 0x02);
-            else if (pan < 128) {
-                int v = pan + 1;
-                Screen_PutChar(64 + (v >> 3), y,
-                               (uint8_t)(155 + (v & 7)), 0x02);
-            }
-        }
+        InfoViews[adj.method](&adj);
+        InfoWin[i].topchan = adj.topchan;   /* clamped value persists */
     }
     ed_unlock();
 }
 
+/* PostDisplayData / DisplayListKeys. Portable stand-ins for Alt-only
+ * combos (no Alt modifier in the key layer yet, HANDOFF roadmap #5):
+ * Ctrl-U/Ctrl-D = Alt-Up/Alt-Down (resize), 'r' = Alt-R (reverse),
+ * 's' = Alt-S (stereo). Documented in the README fidelity notes. */
 static void handle_info_key(int key)
 {
-    int maxtop = 64 - INFO_ROWS;
+    dispwin_t *w = &InfoWin[InfoCurWindow];
+
     switch (key) {
-    case ITK_UP:   if (InfoTop > 0) InfoTop--; break;
-    case ITK_DOWN: if (InfoTop < maxtop) InfoTop++; break;
-    case ITK_PGUP: InfoTop -= 16; if (InfoTop < 0) InfoTop = 0; break;
-    case ITK_PGDN: InfoTop += 16; if (InfoTop > maxtop) InfoTop = maxtop;
-                   break;
-    case ITK_HOME: InfoTop = 0; break;
-    case ITK_END:  InfoTop = maxtop; break;
-    default: break;
+    case ITK_UP: case ITK_LEFT:         /* DisplayUp */
+        if (InfoCurChannel > 0) InfoCurChannel--;
+        return;
+    case ITK_DOWN: case ITK_RIGHT:      /* DisplayDown */
+        if (InfoCurChannel < 63) InfoCurChannel++;
+        return;
+    case ITK_HOME:                      /* DisplayHome */
+        InfoCurChannel = 0;
+        return;
+    case ITK_END:                       /* DisplayEnd */
+        ed_lock();
+        InfoCurChannel = Music_GetLastChannel();
+        ed_unlock();
+        return;
+    case '+':                           /* DisplayPlus */
+        ed_lock(); Music_NextOrder(); ed_unlock();
+        return;
+    case '-':                           /* DisplayMinus */
+        ed_lock(); Music_LastOrder(); ed_unlock();
+        return;
+    case ITK_PGUP:                      /* DisplayPageUp: method-1 mod 11 */
+        w->method = (uint16_t)((w->method + 10) % 11);
+        return;
+    case ITK_PGDN:                      /* DisplayPageDown */
+        w->method = (uint16_t)((w->method + 1) % 11);
+        return;
+    case ITK_TAB:                       /* DisplayNext (wraps) */
+        InfoCurWindow = (InfoCurWindow + 1) % InfoNumWindows;
+        return;
+    case ITK_SHIFT_TAB:                 /* DisplayPrevious (saturates) */
+        if (InfoCurWindow > 0) InfoCurWindow--;
+        return;
+    case ITK_INS: {                     /* DisplayInsert: split */
+        int n, half;
+        if (InfoNumWindows >= 5 || w->length <= 6)
+            return;
+        for (n = InfoNumWindows; n > InfoCurWindow; n--)
+            InfoWin[n] = InfoWin[n - 1];
+        half = ((int)w->length >> 1) + ((int)w->length & 1);
+        InfoWin[InfoCurWindow + 1].length =
+            (uint16_t)((int)w->length - half);
+        InfoWin[InfoCurWindow + 1].topline =
+            (uint8_t)(w->topline + half);
+        w->length = (uint16_t)half;
+        InfoNumWindows++;
+        return;
+    }
+    case ITK_DEL: {                     /* DisplayDelete: merge */
+        int n;
+        uint16_t blen;
+        if (InfoNumWindows <= 1)
+            return;
+        blen = w->length;
+        for (n = InfoCurWindow; n < InfoNumWindows - 1; n++)
+            InfoWin[n] = InfoWin[n + 1];
+        InfoNumWindows--;
+        if (InfoCurWindow >= InfoNumWindows) {
+            InfoCurWindow--;            /* deleted last: grow previous */
+            InfoWin[InfoCurWindow].length =
+                (uint16_t)(InfoWin[InfoCurWindow].length + blen);
+        } else {                        /* next window grows upward */
+            InfoWin[InfoCurWindow].length =
+                (uint16_t)(InfoWin[InfoCurWindow].length + blen);
+            InfoWin[InfoCurWindow].topline =
+                (uint8_t)(InfoWin[InfoCurWindow].topline - blen);
+        }
+        return;
+    }
+    case 0x15: {                        /* Ctrl-U = DisplayAltUp */
+        int idx    = (InfoCurWindow == 0) ? 1 : InfoCurWindow + 1;
+        int minlen = (InfoCurWindow == 0) ? 4 : 3;
+        if (idx < InfoNumWindows && InfoWin[idx - 1].length > minlen) {
+            InfoWin[idx].length++;
+            InfoWin[idx - 1].length--;
+            InfoWin[idx].topline--;
+        }
+        return;
+    }
+    case 0x04: {                        /* Ctrl-D = DisplayAltDown */
+        int idx = InfoCurWindow + 1;
+        if (idx < InfoNumWindows && InfoWin[idx].length > 3) {
+            InfoWin[idx - 1].length++;
+            InfoWin[idx].length--;
+            InfoWin[idx].topline++;
+        }
+        return;
+    }
+    case 'Q':                           /* DisplayToggleChannel */
+        ed_lock();
+        Music_ToggleChannel((uint16_t)InfoCurChannel);
+        ed_unlock();
+        return;
+    case 'S':                           /* DisplaySoloChannel */
+        ed_lock();
+        Music_SoloChannel((uint16_t)InfoCurChannel);
+        ed_unlock();
+        return;
+    case ' ':                           /* Display_SpaceBar: toggle+down */
+        ed_lock();
+        Music_ToggleChannel((uint16_t)InfoCurChannel);
+        ed_unlock();
+        if (InfoCurChannel < 63) InfoCurChannel++;
+        return;
+    case 'r':                           /* DisplayToggleReverse (Alt-R) */
+        ed_lock(); Music_ToggleReverse(); ed_unlock();
+        /* the original engine SetInfoLines this itself (same text in
+         * both directions); the port keeps the engine UI-free */
+        status("Left/right outputs reversed");
+        return;
+    case 's':                           /* DisplayToggleStereo (Alt-S) */
+        ed_lock();
+        Song.Header.Flags ^= ITF_STEREO;
+        Music_InitStereo();
+        ed_unlock();
+        status((Song.Header.Flags & ITF_STEREO) ? "Stereo Enabled"
+                                                : "Stereo Disabled");
+        return;
+    case 'V':                           /* DisplayToggleVelocity */
+        InfoVelocity ^= 1;
+        status(InfoVelocity ? "Using velocity bars" : "Using volume bars");
+        return;
+    case 'I':                           /* DisplayToggleInstrument */
+        InfoInstNames ^= 1;
+        status(InfoInstNames ? "Using Instrument names"
+                             : "Using Sample names");
+        return;
+    case 'G': {                         /* Display_GotoPattern */
+        uint16_t pat, row;
+        int playing;
+        ed_lock();
+        playing = (PlayMode != 0);
+        pat = CurrentPattern;
+        row = CurrentRow;
+        ed_unlock();
+        if (!playing)
+            return;
+        commit_current_pattern();
+        load_pattern(pat);
+        CurRow  = (row < CurRows) ? row : 0;
+        CurChan = InfoCurChannel;
+        Screen  = SCR_PATTERN;
+        return;
+    }
+    case 0x06:                          /* Ctrl-F = Display_FullScreen */
+        if (InfoNumWindows != 1)
+            return;                     /* only a single window */
+        InfoFullScreen ^= 1;
+        if (InfoFullScreen) {
+            InfoWin[0].topline = 1;
+            InfoWin[0].length  = 49;
+        } else {
+            InfoWin[0].topline = 12;
+            InfoWin[0].length  = 38;
+        }
+        return;
+    default:
+        break;
     }
 }
 
@@ -2211,6 +3274,13 @@ static void draw_screen(void)
     };
 
     Screen_Clear(0x20);
+    if (Screen == SCR_INFO && InfoFullScreen) {
+        /* Display_FullScreen mode 200: no standard chrome, only the
+         * display data over rows 1..49 */
+        NW = 0;
+        draw_info();
+        return;
+    }
     draw_chrome(titles[Screen]);
     switch (Screen) {
     case SCR_PATTERN:     NW = 0; draw_pattern(); break;
@@ -3378,8 +4448,24 @@ static void handle_global(int key)
     case ITK_F4:  Screen = SCR_INSTRUMENTS; ListSel = CurInstr-1; return;
     case ITK_F11: Screen = SCR_ORDER; ListSel = 0; return;
     case ITK_F12: Screen = SCR_VARS; return;
-    case ITK_F5:  commit_current_pattern(); play_song();
-                  Screen = SCR_INFO; return;   /* play + show info page */
+    case ITK_F5: {                      /* Glbl_F5: info page; start the
+                                           song only when nothing plays */
+        int mode0, anyslave = 0, i;
+        ed_lock();
+        mode0 = (PlayMode == 0);
+        if (mode0)
+            for (i = 0; i < MAXSLAVECHANNELS; i++)
+                if (SChn[i].Flags & SF_CHAN_ON) { anyslave = 1; break; }
+        ed_unlock();
+        if (Screen == SCR_INFO) {
+            if (mode0) { commit_current_pattern(); play_song(); }
+        } else {
+            if (mode0 && !anyslave) { commit_current_pattern(); play_song(); }
+            Screen_DefineSmallNumbers();    /* S_DefineSmallNumbers   */
+            Screen = SCR_INFO;
+        }
+        return;
+    }
     case ITK_F6:  commit_current_pattern(); play_pattern(); return;
     case ITK_F7:  commit_current_pattern(); play_pattern(); return;
     case ITK_F8:  stop_song(); return;
@@ -3491,6 +4577,27 @@ int main(int argc, char **argv)
                 Screen = scr;
             if (getenv("ITED_SHOT_TAB"))   /* F4 tab 0..3 for captures */
                 InsTab = (uint8_t)(atoi(getenv("ITED_SHOT_TAB")) & 3);
+            if (scr == SCR_INFO) {         /* Glbl_F5 entry side effect */
+                Screen_DefineSmallNumbers();
+                /* capture aids: view method for window 0, play state */
+                if (getenv("ITED_SHOT_METHOD"))
+                    InfoWin[0].method =
+                        (uint16_t)(atoi(getenv("ITED_SHOT_METHOD")) % 11);
+                if (getenv("ITED_SHOT_PLAY")) {
+                    /* ITED_SHOT_PLAY=n: play + mix n seconds headless
+                     * so the capture shows real mid-song state */
+                    static int16_t pbuf[2048 * 2];
+                    int secs = atoi(getenv("ITED_SHOT_PLAY"));
+                    uint32_t left = (uint32_t)(secs > 0 ? secs : 1)
+                                    * WAVDriver_GetMixSpeed();
+                    Music_PlaySong(0);
+                    while (left) {
+                        uint32_t n = left > 2048 ? 2048 : left;
+                        WAVDriver_Render(pbuf, n);
+                        left -= n;
+                    }
+                }
+            }
             Screen_Clear(0x20);
             if (scr == 7) {                 /* main menu overlay */
                 draw_screen();
@@ -3599,6 +4706,68 @@ int main(int argc, char **argv)
                     f4_ok = 0;
                 redraw();
             }
+        }
+
+        /* F5 info page (feature 003): start playback, cycle the focused
+         * window through all 11 view methods, split / resize / merge
+         * windows, toggle the bar and name modes, and fullscreen. */
+        {
+            int f5_ok = 1, m0, i;
+
+            handle_global(ITK_F5);          /* play + info page */
+            redraw();
+            if (Screen != SCR_INFO || PlayMode != 2)
+                f5_ok = 0;
+            m0 = InfoWin[InfoCurWindow].method;
+            for (i = 0; i < 11; i++) {      /* all view methods render */
+                handle_global(ITK_PGDN);
+                redraw();
+            }
+            if ((int)InfoWin[InfoCurWindow].method != m0)
+                f5_ok = 0;
+            handle_global(ITK_INS);         /* split: 3 -> 4 windows */
+            redraw();
+            if (InfoNumWindows != 4)
+                f5_ok = 0;
+            handle_global(0x15);            /* Ctrl-U / Ctrl-D resize */
+            handle_global(0x04);
+            redraw();
+            handle_global(ITK_DEL);         /* merge back to 3 */
+            redraw();
+            if (InfoNumWindows != 3)
+                f5_ok = 0;
+            handle_global(ITK_TAB);         /* focus cycling wraps */
+            handle_global(ITK_TAB);
+            handle_global(ITK_TAB);
+            if (InfoCurWindow != 0)
+                f5_ok = 0;
+            handle_global('V');             /* velocity <-> volume bars */
+            redraw();
+            if (!InfoVelocity)
+                f5_ok = 0;
+            handle_global('V');
+            handle_global('I');             /* instrument names */
+            redraw();
+            handle_global('I');
+            handle_global('Q');             /* mute + unmute channel */
+            handle_global('Q');
+            handle_global('S');             /* solo + unsolo */
+            handle_global('S');
+            redraw();
+            handle_global(ITK_DEL);         /* down to a single window */
+            handle_global(ITK_DEL);
+            handle_global(0x06);            /* Ctrl-F fullscreen */
+            redraw();
+            if (!InfoFullScreen || InfoWin[0].length != 49)
+                f5_ok = 0;
+            handle_global(0x06);
+            redraw();
+            if (InfoFullScreen)
+                f5_ok = 0;
+            handle_global(ITK_F8);          /* stop */
+            redraw();
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    f5_ok ? "F5 OK" : "F5 FAIL");
         }
 
         /* Verify the F12 Global/Mixing Volume wiring actually reaches the

@@ -143,10 +143,49 @@ void Screen_GenerateCharacters(int first, int wchars, int hchars,
     }
 }
 
+/* DrawHilightBar-style read-modify-write: Or [ES:DI], bits on the
+ * attribute byte (IT_DISPL.ASM hilights the playing row this way). */
+void Screen_OrAttr(int x, int y, uint8_t bits)
+{
+    if (x >= 0 && x < SCREEN_W && y >= 0 && y < SCREEN_H)
+        Back[y][x].attr |= bits;
+}
+
+/* S_DefineSmallNumbers (IT_S.ASM): build the info page's small-number
+ * charsets from HexNumeralDefinitions.  Font bank B char 0xXY shows hex
+ * digits X and Y in its left and right 4 pixels; font A chars 226..245
+ * become G0..G9,H0..H9 (letter left, digit right).  The font A override
+ * is permanent once defined, exactly as in the original (nothing ever
+ * restores 226..245). */
+
+static uint8_t FontASmall[20][8];
+static int SmallNumbersOn;
+
+void Screen_DefineSmallNumbers(void)
+{
+    int c, row, l, d;
+
+    for (c = 0; c < 256; c++)
+        for (row = 0; row < 8; row++)
+            FontB[c][row] =
+                (uint8_t)((IT_HexNumerals[(c >> 4)*8 + row] << 4)
+                          | IT_HexNumerals[(c & 15)*8 + row]);
+
+    for (l = 0; l < 2; l++)
+        for (d = 0; d < 10; d++)
+            for (row = 0; row < 8; row++)
+                FontASmall[l*10 + d][row] =
+                    (uint8_t)((IT_HexNumerals[(16 + l)*8 + row] << 4)
+                              | IT_HexNumerals[d*8 + row]);
+    SmallNumbersOn = 1;
+}
+
 /* ---- rasterizer: cells -> 640x400 RGB (the authentic output) --------- */
 
 static const uint8_t *GlyphBitmap(uint8_t ch)
 {
+    if (SmallNumbersOn && ch >= 226 && ch <= 245)
+        return FontASmall[ch - 226];
     if (ch >= IT_CHARDEF_FIRST && ch < IT_CHARDEF_FIRST + IT_CHARDEF_COUNT)
         return IT_CharDefs[ch - IT_CHARDEF_FIRST];
     return IT_FontROM[ch];
@@ -349,6 +388,11 @@ static const char *TermGlyph(uint8_t c)
             return "\xE2\x96\x8A";              /* ▊ slider thumb */
         if (c >= 193 && c <= 201)
             return "\xE2\x80\xA2";              /* • note dots */
+        if (SmallNumbersOn && c >= 226 && c <= 245) {
+            buf[0] = (char)('0' + (c - 226) % 10);  /* G0..H9: show digit */
+            buf[1] = 0;
+            return buf;
+        }
         buf[0] = (c >= 0x20 && c < 0x7F) ? (char)c : '.';
         buf[1] = 0;
         return buf;

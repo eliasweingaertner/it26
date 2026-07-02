@@ -2360,6 +2360,85 @@ void Music_InitMuteTable(void)
     SoloInstrument = 0xFF;
 }
 
+/* Music_SoloChannel (IT_MUSIC.ASM 6403): if the target is the only
+ * unmuted channel, restore every channel muted via the mute table
+ * (Music_UnmuteAll path); otherwise mute everything but the target. */
+void Music_SoloChannel(uint16_t Channel)
+{
+    int i, playing = 0;
+
+    for (i = 0; i < 64; i++)
+        if (!(Song.Header.ChnlPan[i] & 0x80))
+            playing++;
+
+    if (playing == 1 && !(Song.Header.ChnlPan[Channel] & 0x80)) {
+        for (i = 63; i >= 0; i--)           /* unmute-all */
+            if (MuteChannelTable[i] == 1)
+                Music_ToggleChannel((uint16_t)i);
+        return;
+    }
+
+    for (i = 63; i >= 0; i--) {
+        if (i == Channel) {
+            if (Song.Header.ChnlPan[i] & 0x80)
+                Music_ToggleChannel((uint16_t)i);
+        } else {
+            if (!(Song.Header.ChnlPan[i] & 0x80))
+                Music_ToggleChannel((uint16_t)i);
+        }
+    }
+}
+
+/* Music_ToggleReverse (IT_MUSIC.ASM 7020); the info-line message is the
+ * caller's job in this port. */
+void Music_ToggleReverse(void)
+{
+    ReverseChannels ^= 1;
+    RecalculateAllVolumes();
+}
+
+/* Music_GetLastChannel (IT_MUSIC.ASM 7077): last channel whose muted
+ * state came from the user toggle (or is unmuted) - song-muted channels
+ * with a clear mute-table entry don't count. */
+uint16_t Music_GetLastChannel(void)
+{
+    uint16_t ax = 0, dx;
+
+    for (dx = 0; dx < 64; dx++)
+        if (((Song.Header.ChnlPan[dx] >> 7) ^ MuteChannelTable[dx]) == 0)
+            ax = dx;
+    return ax;
+}
+
+/* Music_NextOrder / Music_LastOrder (IT_MUSIC.ASM 6169/6196): while
+ * playing a song, restart processing at the next / previous order. */
+void Music_NextOrder(void)
+{
+    if (PlayMode != 2)
+        return;
+    PlayMode = 0;
+    Music_StopChannels();
+    ProcessRow = 0xFFFE;
+    CurrentTick = 1;
+    RowDelay = 1;
+    PlayMode = 2;
+}
+
+void Music_LastOrder(void)
+{
+    if (PlayMode != 2)
+        return;
+    if ((int16_t)ProcessOrder > 0) {
+        PlayMode = 0;
+        Music_StopChannels();
+        ProcessOrder -= 2;
+        ProcessRow = 0xFFFE;
+        CurrentTick = 1;
+        RowDelay = 1;
+        PlayMode = 2;
+    }
+}
+
 /* =====================================================================
  * Music_InitMusic - engine initialisation (driver-independent parts of
  * the original Music_InitMusic)

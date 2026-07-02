@@ -154,6 +154,20 @@ Behavioral:
   (`MIDITranslate`) is fully ported because Zxx macros drive the
   resonant filters through it.
 
+Info page (F5):
+- IT 2.17 has **no oscilloscope**: what the track view draws are
+  velocity bars (a min/max scan of the sample span mixed since the last
+  frame, scaled by the channel's final volume). They are ported exactly.
+  `Display_SampleDots` is commented out of the 2.17 mode table and is
+  excluded here too.
+- The port's key layer has no Alt modifier yet, so the Alt-only F5
+  combos have portable stand-ins: Ctrl-U/Ctrl-D = Alt-Up/Alt-Down
+  (window resize), 'r' = Alt-R (reverse output), 's' = Alt-S (stereo
+  toggle). The shifted-letter aliases (Q/S/G/V/I) are as in the
+  original. Alt-F12 (Fourier spectrum analyser) is not ported.
+- The velocity-bar scan is bounds-clamped to the sample data (the
+  original scans raw DOS memory for transient mixer offsets).
+
 ## What about the editor?
 
 This port deliberately preserves everything the editor builds on: the

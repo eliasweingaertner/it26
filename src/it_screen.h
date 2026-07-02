@@ -74,6 +74,17 @@ void Screen_Update(void);
 void Screen_GenerateCharacters(int first, int wchars, int hchars,
                                const uint8_t *pix);
 
+/* S_DefineSmallNumbers: loads the info page's small-number charsets.
+ * Font bank B char 0xXY becomes the hex pair X,Y (4 pixels each); font
+ * A chars 226..245 become G0..G9,H0..H9. Called on entering pages that
+ * use them (Glbl_F5/Glbl_F2 in the original); the font A part persists,
+ * font bank B is reclaimed by the next Screen_GenerateCharacters. */
+void Screen_DefineSmallNumbers(void);
+
+/* OR bits into a cell's attribute byte (the original hilights the
+ * playing row on the info page by Or-ing 0E0h over the drawn cells). */
+void Screen_OrAttr(int x, int y, uint8_t bits);
+
 /* render the current cell buffer to `px` as 640x400 0x00RRGGBB pixels
  * using the real glyph bitmaps + palette (shared by the pixel backend,
  * Screen_WriteBMP and any future SDL backend). */

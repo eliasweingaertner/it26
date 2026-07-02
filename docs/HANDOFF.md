@@ -153,26 +153,40 @@ transliteration) layered on top of the real engine.
   near-pixel matches. End-to-end window capture verified on Win11,
   including posted-keystroke/-click interaction tests.
 
-**Info page (F5) — first pass DONE (2026-06-15):** live per-channel view
-after `IT_DISPL.ASM` `Display_HostChannel` (the default "track" view).
-Three boxes (4-29 VU, 30-62 sample/inst+name, 63-73 panning if stereo),
-a channel-number gutter coloured per `GetChannelColour` (current 13h,
-muted 11h/16h, normal 12h), and per active host channel: `ss[/ii]:name`
-(sample, instrument in instrument mode, then the sample/instrument
-name), a final-volume VU bar where the original draws the oscilloscope,
-and a pan thumb / Left-Right-Surround. Reads `HChn[]`/`SChn[]` live under
-the audio lock (`HF_CHAN_ON` + `SCOffst < MAXSLAVECHANNELS`). F5 now
-*plays and switches to it* (matching the IT manual); the Playback menu
-"Show Infopage" switches without playing; Up/Down/PgUp/PgDn/Home/End
-scroll the channel window. **Follow-ups:** the real oscilloscope, the
-other view methods (note dots, sample dots, 5/8/.../64-channel pattern
-views, Display_Variables), split view windows, and per-channel solo.
+**Info page (F5) — full IT_DISPL.ASM port DONE (2026-07-02, spec
+`specs/003-info-page-views`):** the complete `DisplayWindows` split-
+window engine (up to 5 stacked windows over rows 12..49, 2.17 defaults
+track/Variables/24-channel, one-row-taller quirk for non-first windows)
+with **all 11 view methods** of the 2.17 build: track view
+(`Display_HostChannel`) with authentic velocity bars (loop-aware
+min/max scan of the sample span mixed since the last frame,
+`(max-min)*FV>>9` rounded, chars 176/179/182 + 173+n tip; 'V' toggles
+plain FV bars), the 5/8/10/18/24/36/64-channel pattern views (rows
+centred on the playing row *across order boundaries*, hilight `|=0E0h`,
+per-proc cell formats incl. font-B packed digit pairs and the G0..H9
+glyphs from `S_DefineSmallNumbers`), `Display_Variables`,
+`Display_NoteDots` (dot size `(FV+7)>>4` rounded, disowned-overwrite
+rule) and `Display_Details` (all 11 columns + NNA/Tot in instrument
+mode). Keys: Up/Down channel, PgUp/PgDn method (mod 11), Tab focus,
+Ins/Del split/merge, Ctrl-U/Ctrl-D resize (= Alt-Up/Down), Ctrl-F
+fullscreen (single window only, rows 1..49), shift-Q/S toggle/solo,
+'G' goto pattern, Space toggle+down, '+'/'-' order skip, 'V'/'I'
+bars/names, 'r'/'s' reverse/stereo (= Alt-R/Alt-S).
+`Display_SampleDots` is commented out of the 2.17 mode table — excluded.
+Engine additions (1:1): `Music_SoloChannel`, `Music_ToggleReverse`,
+`Music_GetLastChannel`, `Music_NextOrder`, `Music_LastOrder`. Pattern
+row decode reuses `Pattern_Unpack` (the player-exact decoder) instead of
+re-porting `LoadNextData`'s incremental walk — identical semantics.
+Capture aids: `ITED_SHOT_METHOD=<0..10>` (window 0's view) and
+`ITED_SHOT_PLAY=<secs>` (headless-mix n seconds first so captures show
+real mid-song state).
 
 **Not done yet** (see §6): the full IT sample *editor* (waveform
-draw/loop/zoom), message editor, save (F10), terminal-backend mouse,
-and the info-page follow-ups above. F4 leftovers: envelope presets,
-Alt-based instrument list ops, in-list name editing. Header
-FreeMem/FreeEMS show host free RAM / 0.
+draw/loop/zoom), message editor, save (F10), terminal-backend mouse.
+F4 leftovers: envelope presets, Alt-based instrument list ops, in-list
+name editing. F5 leftover: Alt-F12 Fourier spectrum analyser
+(SPECTRUMANALYSER build, `IT_FOUR.ASM`). Header FreeMem/FreeEMS show
+host free RAM / 0.
 
 ---
 
@@ -243,8 +257,10 @@ Non-interactive editor checks (no terminal/window/audio needed):
   screen **pixel-exactly** to a 640x400 24-bit BMP via the shared
   rasterizer. Screen numbers: 0 help, 1 pattern, 2 samples,
   3 instruments, 4 orders, 5 song vars, 6 info page, 7 main menu,
-  8 load requester. (The info page is empty unless playing, since it
-  reads live channel state — capture it from a running window instead.)
+  8 load requester. For the info page add `ITED_SHOT_PLAY=<secs>`
+  (headless-mixes n seconds first so the capture shows real mid-song
+  bars/rows) and `ITED_SHOT_METHOD=<0..10>` (window 0's view method);
+  `ITED_SHOT_TAB=<0..3>` selects the F4 tab.
   **This is the visual-iteration workflow:** render, convert to PNG
   (PowerShell `System.Drawing`), compare against `..\screenshots\`.
 
@@ -386,10 +402,12 @@ rough priority order:
    ✅ DONE (2026-07-02, spec `specs/002-f4-instrument-editor`): see §2.
    Leftovers folded into later items: envelope presets, Alt list ops,
    in-list name editing.
-3. **Info page (F5) follow-ups** — the first-pass track view landed
-   (§2); next: the real oscilloscope, the other view methods
-   (`Display_NoteDots`/`SampleDots`/`5..64Channel`/`Variables` in
-   `IT_DISPL.ASM`), split view windows, channel solo.
+3. **Info page (F5) full port** — ✅ DONE (2026-07-02, spec
+   `specs/003-info-page-views`): see §2. All 11 view methods, split
+   windows, solo, velocity bars. Note IT 2.17 has no oscilloscope —
+   `Display_SampleDots` is commented out of the build; the velocity
+   bars are what the original draws. Leftover: Alt-F12 Fourier
+   spectrum analyser (`IT_FOUR.ASM`).
 4. **Message editor, save module (F10)** — F10 needs the `IT_DISK.ASM`
    save path ported (the engine only loads today). The menu entries
    exist and flash "not ported yet".
