@@ -115,7 +115,14 @@ enum {
     ITK_F7, ITK_F8, ITK_F9, ITK_F10, ITK_F11, ITK_F12,
     ITK_ESC, ITK_ENTER, ITK_BACKSPACE, ITK_TAB, ITK_SHIFT_TAB,
     ITK_SHIFT_F9,           /* message editor (Glbl_Shift_F9) */
-    ITK_QUIT,               /* window closed (pixel backend) */
+    /* Alt/Ctrl modifier combos (Win32 backend; the terminal backend
+     * doesn't produce these). ITK_ALT_A..Z and ITK_ALT_0..9 are
+     * contiguous. */
+    ITK_ALT_A = 0x200,      /* .. ITK_ALT_A + 25 = Alt-Z */
+    ITK_ALT_0 = 0x220,      /* .. ITK_ALT_0 + 9  = Alt-9 */
+    ITK_ALT_INS = 0x230, ITK_ALT_DEL, ITK_ALT_UP, ITK_ALT_DOWN,
+    ITK_ALT_PLUS, ITK_ALT_MINUS, ITK_CTRL_PLUS, ITK_CTRL_MINUS,
+    ITK_QUIT = 0x300,       /* window closed (pixel backend) */
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };
 int Key_Get(void);          /* non-blocking, K_GetKey-style             */

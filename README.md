@@ -168,6 +168,16 @@ Info page (F5):
 - The velocity-bar scan is bounds-clamped to the sample data (the
   original scans raw DOS memory for transient mixer offsets).
 
+Sample editor (F3):
+- IT 2.17 has no freehand waveform drawing, no selection
+  cut/copy/paste and no zoom — the authentic surface is the waveform
+  view plus the Alt-key operations, all ported. Alt-Y (calculate C5
+  speed) is a stub in the 2.17 source and stays one here.
+- Loop/speed numeric fields edit through a value prompt instead of the
+  original's inline digit entry.
+- The Alt modifier works on the Win32 backend only (the terminal
+  backend has no Alt reporting yet).
+
 Save (F10) / message editor:
 - The `.IT` writer and the IT 2.14/2.15 sample compressor are ported
   1:1 (SaveFormat default 3 = IT215, as `SWITCH.INC`); S3M export

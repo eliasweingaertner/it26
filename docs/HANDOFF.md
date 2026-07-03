@@ -207,11 +207,40 @@ stand-in), cursor attr `(a&8)|30h`. Gate: `test_pattern <mod>
 re-renders — all four modules IDENTICAL to the original hashes,
 message round-trips.
 
-**Not done yet** (see §6): the full IT sample *editor* (waveform
-draw/loop/zoom), terminal-backend mouse. F4 leftovers: envelope
-presets, Alt-based instrument list ops, in-list name editing. F5
-leftover: Alt-F12 Fourier spectrum analyser (SPECTRUMANALYSER build,
-`IT_FOUR.ASM`). S3M save (SaveFormat 1) not ported. Header
+**Sample & instrument editors (IT_I.ASM) — DONE (2026-07-03, spec
+`specs/005-sample-instrument-editors`):** the F3 waveform view
+(`I_DrawWaveForm` 1:1 — 176×32 canvas → font-B chars 1..88 in box
+(54,25)-(77,30) attr 0Dh, column min/max scan with previous-column
+smoothing, byte-exact `((v>>1)+2)>>2` row mapping incl. the AL→AH
+carry quirk, 2-px dashed loop / 1-px sustain markers that clear
+waveform pixels), editable loop/susloop tri-states + begin/end +
+C5-speed + filename fields with the `I_CheckLoopValues` clamps (End ≤
+Beg clears the flag; slaves' loop state re-fetched under lock), and
+the complete Alt-key op set: Alt-A convert (high-byte XOR 80h), Alt-I
+invert, Alt-H centre (−(min+max)/2 with confirm), Alt-M amplify
+(suggested % = 0x320000/dev "normalize", 16.16 multiply + clip), Alt-G
+reverse (loops mirrored), Alt-B/L cut before/after loop, Alt-E/F
+resize ±interpolation (loop points scaled new/old, cap 9999999), Alt-Q
+quality 3-way (convert data / adjust fields), Alt-+/− double/halve
+C5, Ctrl-+/− semitone (multipliers 255392045 / 4053909306 >>32),
+Alt-Ins/Del slot insert/remove, Alt-S/X/R swap/exchange/replace (refs
+fixed via NoteSampleTable in instrument mode or a pattern
+unpack→adjust→pack walk in sample mode), Alt-J scale volumes, Alt-C
+clear name, Alt-Y = the authentic 2.17 stub. Instrument list: Alt-D
+delete, Alt-P copy-from, Alt-S/X/R, Alt-J (GbV cap 128), Alt-Ins/Del,
+Alt-C. F4 note window: Alt-A identity fill, Alt-N/P next/previous,
+Alt-Up/Down transpose table, Alt-Ins/Del row shift. Envelope presets:
+digit loads, Alt-digit stores (compensate-shifted, Flags & 7Fh).
+The Alt modifier key layer itself is new (Win32 WM_SYSKEYDOWN →
+`ITK_ALT_*`; part of roadmap #5). Deviations: numeric fields edit via
+a prompt (not inline digits); no draw/selection/zoom because IT 2.17
+has none (README).
+
+**Not done yet** (see §6): terminal-backend mouse and Alt keys. F4
+leftovers: in-list name editing, Alt-U pattern update. F5 leftover:
+Alt-F12 Fourier spectrum analyser (SPECTRUMANALYSER build,
+`IT_FOUR.ASM`). S3M save (SaveFormat 1) and the sample/instrument
+disk library (Alt-O/T/W, feature 006) not ported. Header
 FreeMem/FreeEMS show host free RAM / 0.
 
 ---
@@ -445,8 +474,11 @@ rough priority order:
    Leftover: S3M export (SaveFormat 1).
 5. **Editing depth**: block ops (Alt-keys), edit masks, more of
    `PE_TRANS.INC` behaviour; numeric entry on thumbbars (typed digits).
-6. **In-depth sample & instrument editors** (`IT_I.ASM`) — envelopes,
-   sample draw/loop/zoom ops.
+6. **In-depth sample & instrument editors** (`IT_I.ASM`) — ✅ DONE
+   (2026-07-03, spec `specs/005-sample-instrument-editors`): see §2.
+   Waveform view, loop editing, the full Alt-op set, note-table ops,
+   envelope presets, plus the Alt key layer. Leftovers: Alt-U pattern
+   update, sample/instrument disk saves (feature 006).
 7. **Terminal-backend mouse** (xterm SGR mouse reporting) if wanted;
    the editor side is backend-agnostic already.
 

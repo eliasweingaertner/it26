@@ -1027,6 +1027,1054 @@ static const uint8_t InstParamText[] =
 static int SmpListTop, InsListTop, OrdListTop;
 static int PanSel;                              /* selected pan channel */
 
+/* ===================================================================
+ * Sample editor core (IT_I.ASM): the F3 waveform view, loop editing
+ * and the Alt-key destructive operations. IT 2.17 has no freehand
+ * draw / selection / zoom -- the authentic surface is exactly this
+ * (README fidelity notes).
+ * =================================================================== */
+static void draw_screen(void);
+static void stop_song(void);
+static void commit_current_pattern(void);
+static void load_pattern(uint16_t pat);
+
+#define SMP_MAXBYTES 4177920u           /* I_ReMix size cap */
+#define SMP_PAD      32                 /* interpolator padding, as loader */
+
+static sample_t *cur_smp(void) { return &Song.Smp[ListSel]; }
+
+static int smp_has_data(const sample_t *s)
+{
+    return (s->Flags & 1) && s->Data && s->Length;
+}
+
+static int ed_mem_nonzero(const void *p, size_t n)
+{
+    const uint8_t *b = (const uint8_t *)p;
+    size_t i;
+    for (i = 0; i < n; i++)
+        if (b[i])
+            return 1;
+    return 0;
+}
+
+/* generic Yes/No confirm (O1_Confirm*List), default No */
+static int confirm_box(const char *text)
+{
+    int sel = 1;
+
+    for (;;) {
+        int key, tx;
+
+        draw_screen();
+        Screen_DrawBox(24, 22, 55, 27, 27);
+        tx = 40 - (int)strlen(text) / 2;
+        Screen_DrawString(tx, 23, text, 0x20);
+        draw_button_style(30, 24, 36, 26, 3, " Yes", 0, sel == 0);
+        draw_button_style(43, 24, 48, 26, 3, " No", 0, sel == 1);
+        Screen_Update();
+
+        key = Key_Get();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (key) {
+        case ITK_QUIT: Running = 0; return 0;
+        case ITK_LEFT: case ITK_RIGHT: case ITK_TAB: case ITK_SHIFT_TAB:
+            sel ^= 1; break;
+        case 'y': case 'Y': return 1;
+        case 'n': case 'N': case ITK_ESC: return 0;
+        case ITK_ENTER: return sel == 0;
+        default: break;
+        }
+    }
+}
+
+/* numeric prompt (GetNumberInput / O1_*List): returns -1 on cancel */
+static long prompt_number(const char *title, unsigned long def,
+                          unsigned long maxv)
+{
+    char buf[12];
+    int len;
+
+    snprintf(buf, sizeof(buf), "%lu", def);
+    len = (int)strlen(buf);
+
+    for (;;) {
+        int key;
+
+        draw_screen();
+        Screen_DrawBox(24, 22, 55, 27, 27);
+        Screen_DrawString(26, 23, title, 0x20);
+        drawf(26, 25, 0x30, "%-10.10s", buf);
+        Screen_Update();
+
+        key = Key_Get();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (key) {
+        case ITK_QUIT: Running = 0; return -1;
+        case ITK_ESC:  return -1;
+        case ITK_BACKSPACE:
+            if (len > 0)
+                buf[--len] = 0;
+            break;
+        case ITK_ENTER: {
+            unsigned long v = strtoul(buf, NULL, 10);
+            if (v > maxv)
+                v = maxv;
+            return (long)v;
+        }
+        default:
+            if (key >= '0' && key <= '9' && len < 9) {
+                buf[len++] = (char)key;
+                buf[len] = 0;
+            }
+            break;
+        }
+    }
+}
+
+/* O1_ConfirmConvert2List: 0 cancel, 1 convert data, 2 adjust fields */
+static int quality_dialog(int to16)
+{
+    int sel = 0;
+
+    for (;;) {
+        int key;
+
+        draw_screen();
+        Screen_DrawBox(18, 21, 61, 28, 27);
+        drawf(24, 22, 0x20, "Convert sample to %d bit?", to16 ? 16 : 8);
+        draw_button_style(21, 24, 34, 26, 3, " Convert data", 0, sel == 0);
+        draw_button_style(36, 24, 49, 26, 3, " Adjust  end", 0, sel == 1);
+        draw_button_style(51, 24, 59, 26, 3, " Cancel", 0, sel == 2);
+        Screen_Update();
+
+        key = Key_Get();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (key) {
+        case ITK_QUIT: Running = 0; return 0;
+        case ITK_ESC:  return 0;
+        case ITK_LEFT:  sel = (sel + 2) % 3; break;
+        case ITK_RIGHT: case ITK_TAB: sel = (sel + 1) % 3; break;
+        case ITK_ENTER: return sel == 0 ? 1 : sel == 1 ? 2 : 0;
+        default: break;
+        }
+    }
+}
+
+/* ---- waveform view: I_DrawWaveForm (IT_I.ASM 1846) ----------------- */
+
+static uint8_t WavePix[176 * 32];
+
+static void wave_marker(uint32_t beg, uint32_t end, uint32_t len,
+                        int twopix)
+{
+    uint32_t cb = (uint32_t)(((uint64_t)175 * beg + len / 2) / len);
+    uint32_t ce = (uint32_t)(((uint64_t)175 * end + len / 2) / len);
+    int r;
+
+    for (r = 0; r < 32; r++) {
+        uint8_t v = twopix ? (uint8_t)(((r + 1) >> 1) & 1)
+                           : (uint8_t)(1 - (r & 1));
+        if (cb < 176)
+            WavePix[r * 176 + cb] = v;
+        if (ce < 176)
+            WavePix[r * 176 + ce] = v;
+    }
+}
+
+static void draw_waveform(void)
+{
+    const sample_t *s = cur_smp();
+
+    memset(WavePix, 0, sizeof(WavePix));
+
+    if (smp_has_data(s)) {
+        int is16 = (s->Flags & 2) != 0;
+        int step = is16 ? 2 : 1;
+        const uint8_t *base = (const uint8_t *)s->Data + (is16 ? 1 : 0);
+        uint32_t len = s->Length;
+        uint64_t stepfx = ((uint64_t)len << 16) / 176;
+        uint64_t posfx = 0;
+        int prevmin = -128, prevmax = 127;  /* LastWaveformValues 7F80h */
+        int col;
+
+        for (col = 0; col < 176; col++) {
+            uint64_t nextfx = posfx + stepfx;
+            uint32_t i0 = (uint32_t)(posfx >> 16);
+            uint32_t i1 = (uint32_t)(nextfx >> 16);
+            int8_t mn, mx;
+            int lo, hi, cnt, row;
+            uint32_t i;
+
+            if (i0 >= len)
+                i0 = len - 1;
+            mn = mx = (int8_t)base[(size_t)i0 * step];
+            for (i = i0; i < i1 && i < len; i++) {
+                int8_t v = (int8_t)base[(size_t)i * step];
+                if (v < mn)
+                    mn = v;
+                else if (v > mx)
+                    mx = v;
+            }
+            /* join with the previous column (XChg LastWaveformValues) */
+            lo = mn; hi = mx;
+            if (lo > prevmax) lo = prevmax;
+            if (hi < prevmin) hi = prevmin;
+            prevmin = mn; prevmax = mx;
+
+            /* row map: byte-exact SAR/Add AX,202h/SAR (incl. the AL->AH
+             * carry when min>>1 is -1 or -2 -- authentic) */
+            {
+                uint8_t al = (uint8_t)((int8_t)lo >> 1);
+                uint8_t ah = (uint8_t)((int8_t)hi >> 1);
+                unsigned ax = (unsigned)((ah << 8) | al) + 0x202;
+                int rlo, rhi;
+                ah = (uint8_t)((int8_t)(ax >> 8) >> 2);
+                al = (uint8_t)((int8_t)(ax & 0xFF) >> 2);
+                rhi = (int8_t)ah;
+                rlo = (int8_t)al;
+                cnt = rhi - rlo + 1;
+                row = 16 - rhi;
+                if (row == 32)
+                    row = 31;
+            }
+            for (; cnt > 0; cnt--, row++)
+                if (row >= 0 && row < 32)
+                    WavePix[row * 176 + col] = 1;
+
+            posfx = nextfx;
+        }
+
+        if (s->Flags & 0x10)
+            wave_marker(s->LoopBeg, s->LoopEnd, len, 1);
+        if (s->Flags & 0x20)
+            wave_marker(s->SusLoopBeg, s->SusLoopEnd, len, 0);
+    }
+
+    Screen_GenerateCharacters(1, 22, 4, WavePix);
+}
+
+/* ---- loop clamps: I_CheckLoopValues / I_CheckSusLoopValues --------- */
+
+static void smp_refresh_loops(void)     /* Music_RegetLoopInformation */
+{
+    int i;
+    ed_lock();
+    for (i = 0; i < MAXSLAVECHANNELS; i++)
+        if (SChn[i].Flags & SF_CHAN_ON)
+            GetLoopInformation(&SChn[i]);
+    ed_unlock();
+}
+
+static void smp_check_loop(void)
+{
+    sample_t *s = cur_smp();
+    uint32_t lim = s->Length ? s->Length - 1 : 0;
+
+    if (s->LoopBeg > lim)
+        s->LoopBeg = lim;
+    if (s->LoopEnd > lim + 1)
+        s->LoopEnd = lim + 1;
+    if (s->LoopEnd <= s->LoopBeg)
+        s->Flags &= (uint8_t)~0x10;
+    smp_refresh_loops();
+}
+
+static void smp_check_susloop(void)
+{
+    sample_t *s = cur_smp();
+    uint32_t lim = s->Length ? s->Length - 1 : 0;
+
+    if (s->SusLoopBeg > lim)
+        s->SusLoopBeg = lim;
+    if (s->SusLoopEnd > lim + 1)
+        s->SusLoopEnd = lim + 1;
+    if (s->SusLoopEnd <= s->SusLoopBeg)
+        s->Flags &= (uint8_t)~0x20;
+    smp_refresh_loops();
+}
+
+static void smp_check_both(void)
+{
+    smp_check_loop();
+    smp_check_susloop();
+}
+
+/* ---- sample memory (Music_AllocateSample / ReleaseSample) ---------- */
+
+static void *smp_alloc(uint32_t bytes)
+{
+    void *p;
+    if (bytes > SMP_MAXBYTES)
+        bytes = SMP_MAXBYTES;
+    p = malloc((size_t)bytes + SMP_PAD);
+    if (p)
+        memset((uint8_t *)p + bytes, 0, SMP_PAD);
+    return p;
+}
+
+static void smp_free_data(sample_t *s)
+{
+    ed_lock();
+    free(s->Data);
+    s->Data = NULL;
+    s->Flags &= (uint8_t)~1;
+    ed_unlock();
+}
+
+/* ---- destructive ops (research R3, transliterated) ----------------- */
+
+static void smp_op_convert(void)        /* Alt-A: I_ConvertSample */
+{
+    sample_t *s = cur_smp();
+    uint32_t i, n;
+    uint8_t *p;
+
+    if (!smp_has_data(s))
+        return;
+    if (!confirm_box("Convert between signed/unsigned?"))
+        return;
+    stop_song();
+    ed_lock();
+    n = s->Length;
+    p = (uint8_t *)s->Data + ((s->Flags & 2) ? 1 : 0);
+    for (i = 0; i < n; i++)             /* 16-bit: high bytes only */
+        p[(size_t)i * ((s->Flags & 2) ? 2 : 1)] ^= 0x80;
+    ed_unlock();
+}
+
+static void smp_op_invert(void)         /* Alt-I: I_InvertSample */
+{
+    sample_t *s = cur_smp();
+    uint32_t i, n;
+
+    if (!smp_has_data(s))
+        return;
+    stop_song();
+    ed_lock();
+    n = s->Length;
+    if (s->Flags & 2) {
+        int16_t *p = (int16_t *)s->Data;
+        for (i = 0; i < n; i++)
+            p[i] = (int16_t)-p[i];
+    } else {
+        int8_t *p = (int8_t *)s->Data;
+        for (i = 0; i < n; i++)
+            p[i] = (int8_t)-p[i];
+    }
+    ed_unlock();
+}
+
+static void smp_op_centre(void)         /* Alt-H: I_CenterSample */
+{
+    sample_t *s = cur_smp();
+    uint32_t i, n;
+    long off;
+    char msg[48];
+
+    if (!smp_has_data(s))
+        return;
+    n = s->Length;
+    if (s->Flags & 2) {
+        const int16_t *p = (const int16_t *)s->Data;
+        int16_t mn = p[0], mx = p[0];
+        for (i = 0; i < n; i++) {
+            if (p[i] < mn) mn = p[i];
+            else if (p[i] > mx) mx = p[i];
+        }
+        off = -((long)mn + mx) >> 1;
+    } else {
+        const int8_t *p = (const int8_t *)s->Data;
+        int8_t mn = p[0], mx = p[0];
+        for (i = 0; i < n; i++) {
+            if (p[i] < mn) mn = p[i];
+            else if (p[i] > mx) mx = p[i];
+        }
+        off = -((long)mn + mx) >> 1;
+    }
+    snprintf(msg, sizeof(msg), "Centre sample (DC offset %ld)?", off);
+    if (!confirm_box(msg))
+        return;
+    stop_song();
+    ed_lock();
+    if (s->Flags & 2) {
+        int16_t *p = (int16_t *)s->Data;
+        for (i = 0; i < n; i++)
+            p[i] = (int16_t)(p[i] + off);
+    } else {
+        int8_t *p = (int8_t *)s->Data;
+        for (i = 0; i < n; i++)
+            p[i] = (int8_t)(p[i] + off);
+    }
+    ed_unlock();
+}
+
+static void smp_op_amplify(void)        /* Alt-M: I_AmplifySample */
+{
+    sample_t *s = cur_smp();
+    uint32_t i, n;
+    unsigned dev = 0, sug;
+    long amp;
+    uint32_t mult;
+
+    if (!smp_has_data(s))
+        return;
+    n = s->Length;
+    if (s->Flags & 2) {
+        const int16_t *p = (const int16_t *)s->Data;
+        for (i = 0; i < n; i++) {
+            int v = p[i] < 0 ? -p[i] : p[i];
+            if ((unsigned)v > dev)
+                dev = (unsigned)v;
+        }
+    } else {
+        const int8_t *p = (const int8_t *)s->Data;
+        for (i = 0; i < n; i++) {
+            int v = p[i] < 0 ? -p[i] : p[i];
+            if ((unsigned)v > dev)
+                dev = (unsigned)v;
+        }
+        dev <<= 8;                      /* BH-position, as the original */
+    }
+    sug = (dev > 0x32) ? (unsigned)(0x320000u / dev) : 400;
+    if (sug >= 400)
+        sug = 400;
+    amp = prompt_number("Amplification % (100 = no change)", sug, 400);
+    if (amp <= 0)
+        return;
+    stop_song();
+    mult = (uint32_t)(((uint64_t)(unsigned long)amp << 16) / 100);
+    ed_lock();
+    if (s->Flags & 2) {
+        int16_t *p = (int16_t *)s->Data;
+        for (i = 0; i < n; i++) {
+            int64_t v = ((int64_t)p[i] * (int64_t)mult + 0x8000) >> 16;
+            if (v > 0x7FFF) v = 0x7FFF;
+            if (v < -0x8000) v = -0x8000;
+            p[i] = (int16_t)v;
+        }
+    } else {
+        int8_t *p = (int8_t *)s->Data;
+        for (i = 0; i < n; i++) {
+            int32_t v = (int32_t)(((int64_t)p[i] * (int64_t)mult
+                                   + 0x8000) >> 16);
+            if (v > 0x7F) v = 0x7F;
+            if (v < -0x80) v = -0x80;
+            p[i] = (int8_t)v;
+        }
+    }
+    ed_unlock();
+}
+
+static void smp_op_reverse(void)        /* Alt-G: I_ReverseSample */
+{
+    sample_t *s = cur_smp();
+    uint32_t n, t;
+
+    if (!smp_has_data(s))
+        return;
+    stop_song();
+    ed_lock();
+    n = s->Length;
+    if (s->Flags & 2) {
+        int16_t *p = (int16_t *)s->Data;
+        uint32_t a = 0, b = n - 1;
+        while (a < b) {
+            int16_t x = p[a]; p[a] = p[b]; p[b] = x;
+            a++; b--;
+        }
+    } else {
+        int8_t *p = (int8_t *)s->Data;
+        uint32_t a = 0, b = n - 1;
+        while (a < b) {
+            int8_t x = p[a]; p[a] = p[b]; p[b] = x;
+            a++; b--;
+        }
+    }
+    t = s->LoopBeg;                     /* mirror both loops */
+    s->LoopBeg = n - s->LoopEnd;
+    s->LoopEnd = n - t;
+    t = s->SusLoopBeg;
+    s->SusLoopBeg = n - s->SusLoopEnd;
+    s->SusLoopEnd = n - t;
+    ed_unlock();
+    smp_refresh_loops();
+}
+
+static void smp_op_cut_before(void)     /* Alt-B: I_CutSampleBeforeLoop */
+{
+    sample_t *s = cur_smp();
+    uint32_t cut, bytes;
+
+    if (!smp_has_data(s) || s->LoopBeg == 0)
+        return;
+    if (!confirm_box("Cut sample before loop?"))
+        return;
+    stop_song();
+    ed_lock();
+    cut = s->LoopBeg;
+    if ((s->Flags & 0x20) && s->SusLoopBeg < cut)
+        cut = s->SusLoopBeg;
+    s->LoopBeg    = (s->LoopBeg    > cut) ? s->LoopBeg    - cut : 0;
+    s->LoopEnd    = (s->LoopEnd    > cut) ? s->LoopEnd    - cut : 0;
+    s->SusLoopBeg = (s->SusLoopBeg > cut) ? s->SusLoopBeg - cut : 0;
+    s->SusLoopEnd = (s->SusLoopEnd > cut) ? s->SusLoopEnd - cut : 0;
+    s->Length -= cut;
+    bytes = s->Length << ((s->Flags & 2) ? 1 : 0);
+    memmove(s->Data,
+            (uint8_t *)s->Data + ((size_t)cut << ((s->Flags & 2) ? 1 : 0)),
+            bytes);
+    memset((uint8_t *)s->Data + bytes, 0, SMP_PAD);
+    ed_unlock();
+    smp_check_both();
+}
+
+static void smp_op_cut_after(void)      /* Alt-L: I_CutSample */
+{
+    sample_t *s = cur_smp();
+    uint32_t end;
+
+    if (!smp_has_data(s) || s->LoopEnd == 0)
+        return;
+    if (!confirm_box("Cut sample after loop?"))
+        return;
+    stop_song();
+    ed_lock();
+    end = s->LoopEnd;
+    if (s->SusLoopEnd > end)
+        end = s->SusLoopEnd;
+    s->Length = end;
+    ed_unlock();
+    smp_check_both();
+}
+
+/* Alt-E / Alt-F: I_ResizeSample(NoInt) via I_ReMix */
+static void smp_op_resize(int interpolate)
+{
+    sample_t *s = cur_smp();
+    long nl;
+    uint32_t newlen, oldlen;
+    int is16;
+    void *nd;
+
+    if (!smp_has_data(s))
+        return;
+    nl = prompt_number(interpolate ? "Resize sample to (interpolated)"
+                                   : "Resize sample to (no interpolation)",
+                       s->Length, 9999999);
+    if (nl <= 0)
+        return;
+    is16 = (s->Flags & 2) != 0;
+    newlen = (uint32_t)nl;
+    if ((newlen << is16) > SMP_MAXBYTES)
+        newlen = SMP_MAXBYTES >> is16;
+    oldlen = s->Length;
+
+    nd = smp_alloc(newlen << is16);
+    if (!nd) {
+        status("Out of memory");
+        return;
+    }
+    stop_song();
+    ed_lock();
+    {
+        /* 16.16 source step = old/new (BP:BX in the original) */
+        uint64_t stepfx = (((uint64_t)oldlen << 16) / newlen);
+        uint64_t pos = 0;
+        uint32_t i;
+
+        if (is16) {
+            const int16_t *src = (const int16_t *)s->Data;
+            int16_t *dst = (int16_t *)nd;
+            for (i = 0; i < newlen; i++) {
+                uint32_t si = (uint32_t)(pos >> 16);
+                if (si >= oldlen)
+                    si = oldlen - 1;
+                if (interpolate) {
+                    uint32_t f = ((uint32_t)pos >> 8) & 0xFF;
+                    int32_t s0 = src[si];
+                    int32_t s1 = src[si + 1 < oldlen ? si + 1 : si];
+                    dst[i] = (int16_t)((s0 * (int32_t)(256 - f)
+                                        + s1 * (int32_t)f + 0x80) >> 8);
+                } else
+                    dst[i] = src[si];
+                pos += stepfx;
+            }
+        } else {
+            const int8_t *src = (const int8_t *)s->Data;
+            int8_t *dst = (int8_t *)nd;
+            for (i = 0; i < newlen; i++) {
+                uint32_t si = (uint32_t)(pos >> 16);
+                if (si >= oldlen)
+                    si = oldlen - 1;
+                if (interpolate) {
+                    uint32_t f = ((uint32_t)pos >> 8) & 0xFF;
+                    int32_t s0 = src[si];
+                    int32_t s1 = src[si + 1 < oldlen ? si + 1 : si];
+                    dst[i] = (int8_t)((s0 * (int32_t)(256 - f)
+                                       + s1 * (int32_t)f + 0x80) >> 8);
+                } else
+                    dst[i] = src[si];
+                pos += stepfx;
+            }
+        }
+        free(s->Data);
+        s->Data = nd;
+        s->Length = newlen;
+        /* scale the loop points by new/old, cap 9999999 (I_ReMix5) */
+        {
+            uint32_t *pts[4];
+            int k;
+            pts[0] = &s->LoopBeg;    pts[1] = &s->LoopEnd;
+            pts[2] = &s->SusLoopBeg; pts[3] = &s->SusLoopEnd;
+            for (k = 0; k < 4; k++) {
+                uint64_t v = (uint64_t)*pts[k] * newlen / oldlen;
+                *pts[k] = (v > 9999999u) ? 9999999u : (uint32_t)v;
+            }
+            /* C5 speed scaled too (offset 3Ch is among the 5 dwords
+             * from +34h in the original: 34,38,3C,40,44) */
+            {
+                uint64_t v = (uint64_t)s->C5Speed * newlen / oldlen;
+                s->C5Speed = (v > 9999999u) ? 9999999u : (uint32_t)v;
+            }
+        }
+    }
+    ed_unlock();
+    smp_check_both();
+}
+
+static void smp_op_quality(void)        /* Alt-Q: I_ToggleSampleQuality */
+{
+    sample_t *s = cur_smp();
+    int mode, is16;
+    uint32_t i, n;
+
+    if (!smp_has_data(s))
+        return;
+    is16 = (s->Flags & 2) != 0;
+    mode = quality_dialog(!is16);
+    if (!mode)
+        return;
+    stop_song();
+    ed_lock();
+    n = s->Length;
+    if (mode == 2) {                    /* adjust fields (reinterpret) */
+        if (is16) {
+            s->Flags &= (uint8_t)~2;
+            s->Length <<= 1; s->LoopBeg <<= 1; s->LoopEnd <<= 1;
+            s->SusLoopBeg <<= 1; s->SusLoopEnd <<= 1;
+        } else {
+            s->Flags |= 2;
+            s->Length >>= 1; s->LoopBeg >>= 1; s->LoopEnd >>= 1;
+            s->SusLoopBeg >>= 1; s->SusLoopEnd >>= 1;
+        }
+    } else if (is16) {                  /* convert 16 -> 8: high bytes */
+        void *nd = smp_alloc(n);
+        if (nd) {
+            const int16_t *src = (const int16_t *)s->Data;
+            int8_t *dst = (int8_t *)nd;
+            for (i = 0; i < n; i++)
+                dst[i] = (int8_t)(src[i] >> 8);
+            free(s->Data);
+            s->Data = nd;
+            s->Flags &= (uint8_t)~2;
+        } else
+            status("Out of memory");
+    } else {                            /* convert 8 -> 16: v << 8 */
+        void *nd = smp_alloc(n * 2);
+        if (nd) {
+            const int8_t *src = (const int8_t *)s->Data;
+            int16_t *dst = (int16_t *)nd;
+            for (i = 0; i < n; i++)
+                dst[i] = (int16_t)(src[i] << 8);
+            free(s->Data);
+            s->Data = nd;
+            s->Flags |= 2;
+        } else
+            status("Out of memory");
+    }
+    ed_unlock();
+    smp_check_both();
+}
+
+static void smp_op_delete(void)         /* Alt-D: I_DeleteSample */
+{
+    sample_t *s = cur_smp();
+
+    if (!confirm_box("Delete sample?"))
+        return;
+    stop_song();
+    smp_free_data(s);
+    ed_lock();
+    memset(s, 0, sizeof(*s));           /* Music_ReleaseSample + name */
+    ed_unlock();
+}
+
+static void smp_op_speed(int which)     /* Alt/Ctrl +/-: speed ops */
+{
+    sample_t *s = cur_smp();
+    uint32_t c5 = s->C5Speed;
+
+    switch (which) {
+    case 0:                             /* Alt-+: double, cap 9999999 */
+        if (c5 * 2 <= 9999999u && c5 <= 0x7FFFFFFFu / 2)
+            s->C5Speed = c5 * 2;
+        break;
+    case 1:                             /* Alt--: halve */
+        s->C5Speed = c5 >> 1;
+        break;
+    case 2: {                           /* Ctrl-+: semitone up */
+        uint64_t add = ((uint64_t)c5 * 255392045u) >> 32;
+        uint64_t v = (uint64_t)c5 + add;
+        if (v <= 0xFFFFFFFFu)           /* JC keeps the old value */
+            s->C5Speed = (uint32_t)v;
+        break;
+    }
+    case 3:                             /* Ctrl--: semitone down */
+        s->C5Speed = (uint32_t)(((uint64_t)c5 * 4053909306u) >> 32);
+        break;
+    }
+}
+
+static void smp_op_clear_name(void)     /* Alt-C: I_ClearSampleName */
+{
+    sample_t *s = cur_smp();
+    ed_lock();
+    memset(s->DOSFileName, 0, sizeof(s->DOSFileName));
+    memset(s->SampleName, 0, sizeof(s->SampleName));
+    ed_unlock();
+}
+
+static void smp_op_scale_volumes(void)  /* Alt-J: I_ScaleSampleVolumes */
+{
+    long amp = prompt_number("Scale all sample volumes by %", 100, 400);
+    int i;
+
+    if (amp <= 0)
+        return;
+    ed_lock();
+    for (i = 0; i < 99; i++) {
+        unsigned v = (unsigned)Song.Smp[i].GvL * (unsigned)amp / 100;
+        Song.Smp[i].GvL = (uint8_t)(v >= 64 ? 64 : v);
+    }
+    ed_unlock();
+}
+
+/* pattern instrument-byte remap (PE_InsertInstrument /
+ * PE_DeleteInstrument / PE_SwapInstruments) via the exact codec.
+ * op: 0 = insert at n (bytes >= n incremented, cap 99),
+ *     1 = delete n (bytes >= n decremented),
+ *     2 = swap a <-> b,  3 = replace a -> b. */
+static editcell_t OpGrid[MAX_PATROWS * 64];
+
+static void pattern_remap_ins(int op, int a, int b)
+{
+    int p, i;
+
+    commit_current_pattern();
+    for (p = 0; p < MAX_PATTERNS; p++) {
+        uint16_t rows;
+        int changed = 0;
+        if (!Song.Patterns[p].PackedData)
+            continue;
+        rows = Pattern_Unpack((uint16_t)p, OpGrid);
+        for (i = 0; i < (int)rows * 64; i++) {
+            editcell_t *e = &OpGrid[i];
+            int v;
+            if (!(e->mask & CM_INS))
+                continue;
+            v = e->ins;
+            switch (op) {
+            case 0: if (v >= a && v < 99) { e->ins = (uint8_t)(v + 1);
+                                            changed = 1; } break;
+            case 1: if (v >= a) { e->ins = (uint8_t)(v - 1);
+                                  changed = 1; } break;
+            case 2: if (v == a) { e->ins = (uint8_t)b; changed = 1; }
+                    else if (v == b) { e->ins = (uint8_t)a; changed = 1; }
+                    break;
+            case 3: if (v == a) { e->ins = (uint8_t)b; changed = 1; }
+                    break;
+            }
+        }
+        if (changed)
+            Pattern_Pack((uint16_t)p, OpGrid, rows);
+    }
+    load_pattern(CurPattern);
+}
+
+/* NoteSampleTable remap over all instruments (sample slot ops in
+ * instrument mode) */
+static void nst_remap(int op, int a, int b)
+{
+    int i, n;
+
+    ed_lock();
+    for (i = 0; i < MAX_INSTRUMENTS; i++) {
+        uint8_t *t = Song.Ins[i].NoteSampleTable;
+        for (n = 0; n < 120; n++) {
+            int v = t[n * 2 + 1];
+            switch (op) {
+            case 0: if (v >= a && v < 99) t[n * 2 + 1] = (uint8_t)(v + 1);
+                    break;
+            case 1: if (v >= a) t[n * 2 + 1] = (uint8_t)(v - 1); break;
+            case 2: if (v == a) t[n * 2 + 1] = (uint8_t)b;
+                    else if (v == b) t[n * 2 + 1] = (uint8_t)a;
+                    break;
+            case 3: if (v == a) t[n * 2 + 1] = (uint8_t)b; break;
+            }
+        }
+    }
+    ed_unlock();
+}
+
+static void smp_op_insert_slot(void)    /* Alt-Ins: I_InsertSample */
+{
+    int cur = ListSel, i;
+
+    if (ed_mem_nonzero(&Song.Smp[98], 80) || cur >= 98)
+        return;
+    stop_song();
+    ed_lock();
+    for (i = 98; i > cur; i--)
+        Song.Smp[i] = Song.Smp[i - 1];
+    memset(&Song.Smp[cur], 0, sizeof(sample_t));
+    ed_unlock();
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        nst_remap(0, cur + 1, 0);
+    else
+        pattern_remap_ins(0, cur + 1, 0);
+}
+
+static void smp_op_remove_slot(void)    /* Alt-Del: I_RemoveSample */
+{
+    int cur = ListSel, i;
+    sample_t *s = cur_smp();
+
+    if (s->Flags & 1)                   /* only when slot has no data */
+        return;
+    stop_song();
+    ed_lock();
+    for (i = cur; i < 98; i++)
+        Song.Smp[i] = Song.Smp[i + 1];
+    memset(&Song.Smp[98], 0, sizeof(sample_t));
+    ed_unlock();
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        nst_remap(1, cur + 1, 0);
+    else
+        pattern_remap_ins(1, cur + 1, 0);
+}
+
+static void smp_op_swap(void)           /* Alt-S: I_SwapSamples */
+{
+    long n = prompt_number("Swap current sample with", 0, 99);
+    sample_t t;
+
+    if (n <= 0 || (int)n - 1 == ListSel)
+        return;
+    stop_song();
+    ed_lock();
+    t = Song.Smp[n - 1];
+    Song.Smp[n - 1] = Song.Smp[ListSel];
+    Song.Smp[ListSel] = t;
+    ed_unlock();
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        nst_remap(2, ListSel + 1, (int)n);
+    else
+        pattern_remap_ins(2, ListSel + 1, (int)n);
+}
+
+static void smp_op_exchange(void)       /* Alt-X: I_ExchangeSamples */
+{
+    long n = prompt_number("Exchange current sample with", 0, 99);
+    sample_t t;
+
+    if (n <= 0 || (int)n - 1 == ListSel)
+        return;
+    stop_song();
+    ed_lock();
+    t = Song.Smp[n - 1];
+    Song.Smp[n - 1] = Song.Smp[ListSel];
+    Song.Smp[ListSel] = t;
+    ed_unlock();
+}
+
+static void smp_op_replace(void)        /* Alt-R: I_ReplaceSample */
+{
+    long n = prompt_number("Replace all uses of current with", 0, 99);
+
+    if (n <= 0 || (int)n - 1 == ListSel)
+        return;
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        nst_remap(3, ListSel + 1, (int)n);
+    else
+        pattern_remap_ins(3, ListSel + 1, (int)n);
+}
+
+/* ---- F3 editable loop/speed fields (O1_SampleList objects 30..36).
+ * Numbers edit through the numeric prompt (Enter on the field) --
+ * a documented deviation from the original's inline digit entry. --- */
+
+typedef struct smpfield_t {
+    const char *title;
+    int y;                              /* row in the InstParamBox */
+    int kind;                           /* 0 num, 1 loop tri, 2 sus tri */
+    int which;                          /* num: 0 C5,1 LB,2 LE,3 SB,4 SE */
+} smpfield_t;
+
+static const smpfield_t SmpFields[] = {
+    { "C5 speed",           14, 0, 0 },
+    { "Loop",               15, 1, 0 },
+    { "Loop beginning",     16, 0, 1 },
+    { "Loop end",           17, 0, 2 },
+    { "Sustain loop",       18, 2, 0 },
+    { "SusLoop beginning",  19, 0, 3 },
+    { "SusLoop end",        20, 0, 4 },
+};
+static int SmpFieldSel;                 /* focused field for cdraw */
+
+static uint32_t *smp_field_ptr(int which)
+{
+    sample_t *s = cur_smp();
+    switch (which) {
+    case 0:  return &s->C5Speed;
+    case 1:  return &s->LoopBeg;
+    case 2:  return &s->LoopEnd;
+    case 3:  return &s->SusLoopBeg;
+    default: return &s->SusLoopEnd;
+    }
+}
+
+static void smp_field_commit(int idx)
+{
+    const smpfield_t *f = &SmpFields[idx];
+    sample_t *s = cur_smp();
+
+    if (f->kind == 0) {
+        long v = prompt_number(f->title, *smp_field_ptr(f->which),
+                               9999999);
+        if (v >= 0) {
+            ed_lock();
+            *smp_field_ptr(f->which) = (uint32_t)v;
+            ed_unlock();
+        }
+    } else if (f->kind == 1) {          /* Off -> On -> Ping Pong */
+        ed_lock();
+        if (!(s->Flags & 0x10))
+            s->Flags |= 0x10, s->Flags &= (uint8_t)~0x40;
+        else if (!(s->Flags & 0x40))
+            s->Flags |= 0x40;
+        else
+            s->Flags &= (uint8_t)~(0x10 | 0x40);
+        ed_unlock();
+    } else {
+        ed_lock();
+        if (!(s->Flags & 0x20))
+            s->Flags |= 0x20, s->Flags &= (uint8_t)~0x80;
+        else if (!(s->Flags & 0x80))
+            s->Flags |= 0x80;
+        else
+            s->Flags &= (uint8_t)~(0x20 | 0x80);
+        ed_unlock();
+    }
+    smp_check_both();
+}
+
+static void smpfield_cdraw(int focused)
+{
+    const sample_t *s = cur_smp();
+    int i;
+
+    for (i = 0; i < (int)(sizeof(SmpFields) / sizeof(SmpFields[0])); i++) {
+        const smpfield_t *f = &SmpFields[i];
+        uint8_t a = (focused && i == SmpFieldSel) ? 0x30 : 0x03;
+        switch (f->kind) {
+        case 0:
+            drawf(64, f->y, a, "%7u",
+                  (unsigned)*((const uint32_t *)smp_field_ptr(f->which)));
+            break;
+        case 1:
+            drawf(64, f->y, a, "%-9.9s",
+                  !(s->Flags & 0x10) ? "Off"
+                  : (s->Flags & 0x40) ? "Ping Pong" : "On");
+            break;
+        case 2:
+            drawf(64, f->y, a, "%-9.9s",
+                  !(s->Flags & 0x20) ? "Off"
+                  : (s->Flags & 0x80) ? "Ping Pong" : "On");
+            break;
+        }
+    }
+}
+
+static int smpfield_ckey(int key)
+{
+    int nf = (int)(sizeof(SmpFields) / sizeof(SmpFields[0]));
+
+    switch (key) {
+    case ITK_UP:
+        if (SmpFieldSel > 0) { SmpFieldSel--; return 1; }
+        return 0;
+    case ITK_DOWN:
+        if (SmpFieldSel < nf - 1) { SmpFieldSel++; return 1; }
+        return 0;
+    case ITK_ENTER: case ' ':
+        smp_field_commit(SmpFieldSel);
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static void smpfield_cclick(const it_mouse_t *m)
+{
+    int i;
+    for (i = 0; i < (int)(sizeof(SmpFields) / sizeof(SmpFields[0])); i++)
+        if (m->y == SmpFields[i].y) {
+            SmpFieldSel = i;
+            smp_field_commit(i);
+            return;
+        }
+}
+
+/* Alt-key dispatch for the F3 sample list; returns 1 when consumed */
+static int handle_sample_altkey(int key)
+{
+    switch (key) {
+    case ITK_ALT_A + ('A'-'A'): smp_op_convert();      break;
+    case ITK_ALT_A + ('B'-'A'): smp_op_cut_before();   break;
+    case ITK_ALT_A + ('C'-'A'): smp_op_clear_name();   break;
+    case ITK_ALT_A + ('D'-'A'): smp_op_delete();       break;
+    case ITK_ALT_A + ('E'-'A'): smp_op_resize(1);      break;
+    case ITK_ALT_A + ('F'-'A'): smp_op_resize(0);      break;
+    case ITK_ALT_A + ('G'-'A'): smp_op_reverse();      break;
+    case ITK_ALT_A + ('H'-'A'): smp_op_centre();       break;
+    case ITK_ALT_A + ('I'-'A'): smp_op_invert();       break;
+    case ITK_ALT_A + ('J'-'A'): smp_op_scale_volumes();break;
+    case ITK_ALT_A + ('L'-'A'): smp_op_cut_after();    break;
+    case ITK_ALT_A + ('M'-'A'): smp_op_amplify();      break;
+    case ITK_ALT_A + ('Q'-'A'): smp_op_quality();      break;
+    case ITK_ALT_A + ('R'-'A'): smp_op_replace();      break;
+    case ITK_ALT_A + ('S'-'A'): smp_op_swap();         break;
+    case ITK_ALT_A + ('X'-'A'): smp_op_exchange();     break;
+    case ITK_ALT_A + ('Y'-'A'): /* I_CalculateC5Speed: 2.17 stub */
+        break;
+    case ITK_ALT_A + ('O'-'A'):
+    case ITK_ALT_A + ('T'-'A'):
+    case ITK_ALT_A + ('W'-'A'):
+        status("Sample disk ops arrive with the sample library (006)");
+        break;
+    case ITK_ALT_PLUS:  smp_op_speed(0); break;
+    case ITK_ALT_MINUS: smp_op_speed(1); break;
+    case ITK_CTRL_PLUS: smp_op_speed(2); break;
+    case ITK_CTRL_MINUS:smp_op_speed(3); break;
+    case ITK_ALT_INS:   smp_op_insert_slot(); break;
+    case ITK_ALT_DEL:   smp_op_remove_slot(); break;
+    default:
+        return 0;
+    }
+    return 1;
+}
+
 static void draw_samples(void)
 {
     int i, n = Song.Header.SmpNum ? Song.Header.SmpNum : 1;
@@ -1087,6 +2135,13 @@ static void draw_samples(void)
     wthumb(56, 46, 0, 255, &s->ViR, 0, 15);
 
     Screen_DrawBox(54, 25, 77, 30, 9);          /* waveform display */
+    draw_waveform();                            /* I_DrawWaveForm   */
+    for (i = 0; i < 4; i++) {
+        int j;
+        for (j = 0; j < 22; j++)                /* InstWaveFormText */
+            Screen_PutChar(55 + j, 26 + i,
+                           (uint8_t)(1 + i * 22 + j), 0x0D);
+    }
     Screen_DrawBox(54, 31, 77, 41, 9);          /* Vibrato Waveform */
     Screen_DrawString(58, 33, "Vibrato Waveform", 0x20);
     wradio8(56, 35, 65, 37, "   \271\272", &s->ViT, 3, 0);    /* sine   */
@@ -1096,14 +2151,9 @@ static void draw_samples(void)
 
     Screen_DrawBox(63, 12, 77, 24, 27);         /* InstParamBox */
     Screen_DrawStringCtl(55, 13, InstParamText, 0x20, NULL);
-    drawf(64, 13, 0x03, "%-12.12s", s->DOSFileName);
-    drawf(64, 14, 0x03, "%6u", s->C5Speed);
-    drawf(64, 15, 0x03, (s->Flags & 0x10) ? "On" : "Off");
-    drawf(64, 16, 0x03, "%6u", s->LoopBeg);
-    drawf(64, 17, 0x03, "%6u", s->LoopEnd);
-    drawf(64, 18, 0x03, (s->Flags & 0x20) ? "On" : "Off");
-    drawf(64, 19, 0x03, "%6u", s->SusLoopBeg);
-    drawf(64, 20, 0x03, "%6u", s->SusLoopEnd);
+    wtext(64, 13, s->DOSFileName, 12);          /* InstFileName     */
+    wcustom(64, 14, 77, 20, smpfield_cdraw, smpfield_ckey,
+            smpfield_cclick);                   /* speed/loop fields */
     drawf(64, 22, 0x03, "%d bits", (s->Flags & 2) ? 16 : 8);
     drawf(64, 23, 0x03, "%u", s->Length);
 
@@ -1163,6 +2213,149 @@ static int env_axis_row(const env_t *e)
 {
     if (e->Flags & 0x80) return 62;
     return (InsTab == 1) ? 62 : 31;
+}
+
+/* ---- instrument list Alt ops (InstrumentGlobalKeyList) ------------- */
+
+static void ins_op_delete(void)         /* Alt-D: I_DeleteInstrument */
+{
+    if (!confirm_box("Delete instrument?"))
+        return;
+    stop_song();
+    ed_lock();
+    memset(cur_ins(), 0, sizeof(instrument_t));
+    ed_unlock();
+}
+
+static void ins_op_swap(void)           /* Alt-S: I_SwapInstruments */
+{
+    long n = prompt_number("Swap current instrument with", 0, 99);
+    instrument_t t;
+
+    if (n <= 0 || (int)n - 1 == ListSel)
+        return;
+    stop_song();
+    ed_lock();
+    t = Song.Ins[n - 1];
+    Song.Ins[n - 1] = Song.Ins[ListSel];
+    Song.Ins[ListSel] = t;
+    ed_unlock();
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        pattern_remap_ins(2, ListSel + 1, (int)n);
+}
+
+static void ins_op_exchange(void)       /* Alt-X: I_ExchangeInstruments */
+{
+    long n = prompt_number("Exchange current instrument with", 0, 99);
+    instrument_t t;
+
+    if (n <= 0 || (int)n - 1 == ListSel)
+        return;
+    stop_song();
+    ed_lock();
+    t = Song.Ins[n - 1];
+    Song.Ins[n - 1] = Song.Ins[ListSel];
+    Song.Ins[ListSel] = t;
+    ed_unlock();
+}
+
+static void ins_op_replace(void)        /* Alt-R: I_ReplaceInstrument */
+{
+    long n = prompt_number("Replace all uses of current with", 0, 99);
+
+    if (n <= 0 || (int)n - 1 == ListSel)
+        return;
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        pattern_remap_ins(3, ListSel + 1, (int)n);
+}
+
+static void ins_op_copy(void)           /* Alt-P: I_CopyInstrument */
+{
+    long n = prompt_number("Copy instrument from", 0, 99);
+
+    if (n <= 0 || (int)n - 1 == ListSel)
+        return;
+    ed_lock();
+    Song.Ins[ListSel] = Song.Ins[n - 1];
+    ed_unlock();
+}
+
+static void ins_op_scale_volumes(void)  /* Alt-J */
+{
+    long amp = prompt_number("Scale all instrument volumes by %",
+                             100, 400);
+    int i;
+
+    if (amp <= 0)
+        return;
+    ed_lock();
+    for (i = 0; i < 99; i++) {
+        unsigned v = (unsigned)Song.Ins[i].GbV * (unsigned)amp / 100;
+        Song.Ins[i].GbV = (uint8_t)(v >= 128 ? 128 : v);
+    }
+    ed_unlock();
+}
+
+static void ins_op_clear_name(void)     /* Alt-C: I_InstrumentNameClear */
+{
+    instrument_t *ins = cur_ins();
+    ed_lock();
+    memset(ins->DOSFileName, 0, sizeof(ins->DOSFileName));
+    memset(ins->InstrumentName, 0, sizeof(ins->InstrumentName));
+    ed_unlock();
+}
+
+static void ins_op_insert_slot(void)    /* Alt-Ins: I_InsertInstrument */
+{
+    int cur = ListSel, i;
+
+    if (ed_mem_nonzero(&Song.Ins[98], 554) || cur >= 98)
+        return;
+    stop_song();
+    ed_lock();
+    for (i = 98; i > cur; i--)
+        Song.Ins[i] = Song.Ins[i - 1];
+    memset(&Song.Ins[cur], 0, sizeof(instrument_t));
+    ed_unlock();
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        pattern_remap_ins(0, cur + 1, 0);
+}
+
+static void ins_op_remove_slot(void)    /* Alt-Del: I_RemoveInstrument */
+{
+    int cur = ListSel, i;
+
+    stop_song();
+    ed_lock();
+    for (i = cur; i < 98; i++)
+        Song.Ins[i] = Song.Ins[i + 1];
+    memset(&Song.Ins[98], 0, sizeof(instrument_t));
+    ed_unlock();
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        pattern_remap_ins(1, cur + 1, 0);
+}
+
+/* returns 1 when consumed (F4 instrument list screen) */
+static int handle_instrument_altkey(int key)
+{
+    switch (key) {
+    case ITK_ALT_A + ('C'-'A'): ins_op_clear_name();    break;
+    case ITK_ALT_A + ('D'-'A'): ins_op_delete();        break;
+    case ITK_ALT_A + ('J'-'A'): ins_op_scale_volumes(); break;
+    case ITK_ALT_A + ('P'-'A'): ins_op_copy();          break;
+    case ITK_ALT_A + ('R'-'A'): ins_op_replace();       break;
+    case ITK_ALT_A + ('S'-'A'): ins_op_swap();          break;
+    case ITK_ALT_A + ('X'-'A'): ins_op_exchange();      break;
+    case ITK_ALT_A + ('U'-'A'):
+        status("Update pattern data (Alt-U) not ported yet");
+        break;
+    case ITK_ALT_A + ('O'-'A'):
+        status("Instrument disk ops arrive with the library (006)");
+        break;
+    default:
+        return 0;
+    }
+    return 1;
 }
 
 /* SetInstrument3Num tail: after a loop-node edit, push each pair's end
@@ -1414,6 +2607,73 @@ static void env_node_tick(int delta, int home_end)
     ed_unlock();
 }
 
+/* PresetEnvelopes (IT_I.ASM 367): ten stored envelopes, all defaulting
+ * to the flat 2-node 32-amplitude shape. Digit keys load a preset
+ * (Magnitude -= compensate on the pan/pitch tabs), Alt-digit stores
+ * the current envelope (Flags & 7Fh, Magnitude += compensate). */
+typedef struct presetenv_t {
+    uint8_t   Flags, Num, LpB, LpE, SLB, SLE;
+    envnode_t Nodes[25];
+} presetenv_t;
+static presetenv_t PresetEnv[10];
+static int PresetEnvInit;
+
+static void preset_init(void)
+{
+    int i;
+    for (i = 0; i < 10; i++) {
+        memset(&PresetEnv[i], 0, sizeof(PresetEnv[i]));
+        PresetEnv[i].Num = 2;
+        PresetEnv[i].Nodes[0].Magnitude = 32;
+        PresetEnv[i].Nodes[1].Magnitude = 32;
+        PresetEnv[i].Nodes[1].Tick = 100;
+    }
+    PresetEnvInit = 1;
+}
+
+static void preset_load(int n)
+{
+    env_t *e = cur_env();
+    int comp = env_compensate(e), i;
+    const presetenv_t *p = &PresetEnv[n];
+
+    if (!PresetEnvInit)
+        preset_init();
+    p = &PresetEnv[n];
+    ed_lock();
+    e->Flags = p->Flags;
+    e->Num = p->Num; e->LpB = p->LpB; e->LpE = p->LpE;
+    e->SLB = p->SLB; e->SLE = p->SLE;
+    for (i = 0; i < 25; i++) {
+        e->NodePoints[i].Magnitude =
+            (int8_t)(p->Nodes[i].Magnitude - comp);
+        e->NodePoints[i].Tick = p->Nodes[i].Tick;
+    }
+    ed_unlock();
+    if (CurrentNode >= e->Num)
+        CurrentNode = 0;
+}
+
+static void preset_save(int n)
+{
+    env_t *e = cur_env();
+    int comp = env_compensate(e), i;
+    presetenv_t *p;
+
+    if (!PresetEnvInit)
+        preset_init();
+    p = &PresetEnv[n];
+    p->Flags = (uint8_t)(e->Flags & 0x7F);
+    p->Num = e->Num; p->LpB = e->LpB; p->LpE = e->LpE;
+    p->SLB = e->SLB; p->SLE = e->SLE;
+    for (i = 0; i < 25; i++) {
+        p->Nodes[i].Magnitude =
+            (int8_t)(e->NodePoints[i].Magnitude + comp);
+        p->Nodes[i].Tick = e->NodePoints[i].Tick;
+    }
+    status("Envelope preset %d set", n);
+}
+
 static int env_ckey(int key)               /* I_PostEnvelope key model */
 {
     env_t *e = cur_env();
@@ -1453,8 +2713,12 @@ static int env_ckey(int key)               /* I_PostEnvelope key model */
         case ITK_DEL:  env_delete_node(); return 1;
         default: break;
         }
-        if (key >= '0' && key <= '9') {
-            status("Envelope presets not ported yet");
+        if (key >= '0' && key <= '9') {    /* load preset */
+            preset_load(key - '0');
+            return 1;
+        }
+        if (key >= ITK_ALT_0 && key <= ITK_ALT_0 + 9) {
+            preset_save(key - ITK_ALT_0);  /* store preset */
             return 1;
         }
     }
@@ -1636,6 +2900,77 @@ static int notewin_ckey(int key)           /* NoteListKeys+PostNoteWindow */
     case ITK_ENTER:                        /* I_NoteSamplePickUp */
         NoteSampleNumber = entry[1];
         return 1;
+    case ITK_ALT_A + ('A'-'A'): {          /* I_NoteAll: identity + smp */
+        int n;
+        ed_lock();
+        for (n = 0; n < 120; n++) {
+            ins->NoteSampleTable[n * 2] = (uint8_t)n;
+            ins->NoteSampleTable[n * 2 + 1] = NoteSampleNumber;
+        }
+        ed_unlock();
+        return 1;
+    }
+    case ITK_ALT_A + ('N'-'A'):            /* I_NoteNext */
+        if (NoteWinSel > 0) {
+            uint8_t *prev = entry - 2;
+            if (prev[0] < 119) {
+                ed_lock();
+                entry[0] = (uint8_t)(prev[0] + 1);
+                entry[1] = prev[1];
+                ed_unlock();
+            }
+        }
+        return 1;
+    case ITK_ALT_A + ('P'-'A'):            /* I_NotePrevious */
+        if (NoteWinSel < 119) {
+            uint8_t *next = entry + 2;
+            if (next[0] != 0) {
+                ed_lock();
+                entry[0] = (uint8_t)(next[0] - 1);
+                entry[1] = next[1];
+                ed_unlock();
+            }
+        }
+        return 1;
+    case ITK_ALT_UP: {                     /* I_NoteTransposeUp */
+        int n;
+        ed_lock();
+        for (n = 0; n < 120; n++) {
+            uint8_t v = ins->NoteSampleTable[n * 2];
+            ins->NoteSampleTable[n * 2] =
+                (uint8_t)(v + 1 > 119 ? 119 : v + 1);
+        }
+        ed_unlock();
+        return 1;
+    }
+    case ITK_ALT_DOWN: {                   /* I_NoteTransposeDown */
+        int n;
+        ed_lock();
+        for (n = 0; n < 120; n++) {
+            uint8_t v = ins->NoteSampleTable[n * 2];
+            ins->NoteSampleTable[n * 2] = (uint8_t)(v ? v - 1 : 0);
+        }
+        ed_unlock();
+        return 1;
+    }
+    case ITK_ALT_INS: {                    /* I_NoteInsert: shift down */
+        ed_lock();
+        memmove(ins->NoteSampleTable + 2, ins->NoteSampleTable,
+                119 * 2);
+        ins->NoteSampleTable[0] = 0;
+        ins->NoteSampleTable[1] = 0;
+        ed_unlock();
+        return 1;
+    }
+    case ITK_ALT_DEL: {                    /* I_NoteDelete: shift up */
+        ed_lock();
+        memmove(ins->NoteSampleTable, ins->NoteSampleTable + 2,
+                119 * 2);
+        ins->NoteSampleTable[119 * 2] = 0;
+        ins->NoteSampleTable[119 * 2 + 1] = 0;
+        ed_unlock();
+        return 1;
+    }
     case ' ':                              /* I_NoteSpace */
         if (NotePos >= 2) {
             ed_lock();
@@ -4967,7 +6302,13 @@ static void handle_global(int key)
         handle_info_key(key);
     else if (Screen == SCR_MESSAGE)
         handle_message_key(key);
-    else
+    else if (Screen == SCR_SAMPLES) {
+        if (!widgets_key(key))          /* Alt ops after the widgets */
+            handle_sample_altkey(key);
+    } else if (Screen == SCR_INSTRUMENTS) {
+        if (!widgets_key(key))          /* note window gets Alt first */
+            handle_instrument_altkey(key);
+    } else
         widgets_key(key);
 }
 
@@ -5063,6 +6404,8 @@ int main(int argc, char **argv)
                 Screen = SCR_MESSAGE;
             if (getenv("ITED_SHOT_TAB"))   /* F4 tab 0..3 for captures */
                 InsTab = (uint8_t)(atoi(getenv("ITED_SHOT_TAB")) & 3);
+            if (getenv("ITED_SHOT_SAMPLE"))    /* F3 list selection */
+                ListSel = atoi(getenv("ITED_SHOT_SAMPLE")) - 1;
             if (scr == SCR_INFO) {         /* Glbl_F5 entry side effect */
                 Screen_DefineSmallNumbers();
                 /* capture aids: view method for window 0, play state */
@@ -5254,6 +6597,51 @@ int main(int argc, char **argv)
             redraw();
             fprintf(stderr, "ITED selftest: [%s]\n",
                     f5_ok ? "F5 OK" : "F5 FAIL");
+        }
+
+        /* F3 sample editor (feature 005): waveform view + destructive
+         * ops verified as involutions / no-ops on real sample data. */
+        {
+            int f3_ok = 1;
+            sample_t *s;
+            uint32_t h0 = 0, h1, lb, le, i;
+
+            Screen = SCR_SAMPLES;
+            ListSel = 2;                    /* itdemo sample 3 has data */
+            redraw();
+            s = cur_smp();
+            if (!smp_has_data(s))
+                f3_ok = 0;
+            else {
+                const uint8_t *d = (const uint8_t *)s->Data;
+                uint32_t bytes = s->Length << ((s->Flags & 2) ? 1 : 0);
+                for (i = 0; i < bytes; i++)
+                    h0 = h0 * 31 + d[i];
+                lb = s->LoopBeg; le = s->LoopEnd;
+
+                smp_op_invert(); smp_op_invert();       /* involution */
+                smp_op_reverse(); smp_op_reverse();     /* involution */
+                redraw();
+                h1 = 0;
+                d = (const uint8_t *)s->Data;
+                for (i = 0; i < bytes; i++)
+                    h1 = h1 * 31 + d[i];
+                if (h1 != h0 || s->LoopBeg != lb || s->LoopEnd != le)
+                    f3_ok = 0;
+
+                /* loop clamp: End <= Beg clears the loop flag */
+                s->Flags |= 0x10;
+                s->LoopEnd = s->LoopBeg;
+                smp_check_loop();
+                if (s->Flags & 0x10)
+                    f3_ok = 0;
+                s->LoopBeg = lb; s->LoopEnd = le;
+                s->Flags |= 0x10;
+                smp_check_loop();
+                redraw();
+            }
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    f3_ok ? "F3 OK" : "F3 FAIL");
         }
 
         /* Save + message editor (feature 004): type into the message

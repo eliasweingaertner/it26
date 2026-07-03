@@ -96,6 +96,39 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             PushKey(ITK_SHIFT_F9);      /* message editor */
             return 0;
         }
+        /* Alt combos (WM_SYSKEYDOWN with the menu key held) */
+        if (GetKeyState(VK_MENU) & 0x8000) {
+            if (wp >= 'A' && wp <= 'Z') {
+                PushKey(ITK_ALT_A + (int)(wp - 'A'));
+                return 0;
+            }
+            if (wp >= '0' && wp <= '9') {
+                PushKey(ITK_ALT_0 + (int)(wp - '0'));
+                return 0;
+            }
+            switch (wp) {
+            case VK_INSERT: PushKey(ITK_ALT_INS);  return 0;
+            case VK_DELETE: PushKey(ITK_ALT_DEL);  return 0;
+            case VK_UP:     PushKey(ITK_ALT_UP);   return 0;
+            case VK_DOWN:   PushKey(ITK_ALT_DOWN); return 0;
+            case VK_OEM_PLUS: case VK_ADD:
+                PushKey(ITK_ALT_PLUS);  return 0;
+            case VK_OEM_MINUS: case VK_SUBTRACT:
+                PushKey(ITK_ALT_MINUS); return 0;
+            default: break;
+            }
+        }
+        /* Ctrl +/- (no WM_CHAR is generated for these) */
+        if (GetKeyState(VK_CONTROL) & 0x8000) {
+            if (wp == VK_OEM_PLUS || wp == VK_ADD) {
+                PushKey(ITK_CTRL_PLUS);
+                return 0;
+            }
+            if (wp == VK_OEM_MINUS || wp == VK_SUBTRACT) {
+                PushKey(ITK_CTRL_MINUS);
+                return 0;
+            }
+        }
         {
             int k = MapVKey(wp);
             if (k != ITK_NONE) {
