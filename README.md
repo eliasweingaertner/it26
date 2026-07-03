@@ -168,6 +168,14 @@ Info page (F5):
 - The velocity-bar scan is bounds-clamped to the sample data (the
   original scans raw DOS memory for transient mixer offsets).
 
+Module import:
+- S3M/XM/MOD/MTM/669 conversion follows IT 2.17's own importers
+  including their quirks (MOD pattern count scans only the first 127
+  order entries; XM's saved SmpNum is one high and an XM note byte of
+  0 in an uncompressed cell becomes B-0; the S3M Dxy nibble fix is
+  dead code and stays a passthrough) — imported modules match what the
+  original IT produced, not a "corrected" conversion.
+
 Sample editor (F3):
 - IT 2.17 has no freehand waveform drawing, no selection
   cut/copy/paste and no zoom — the authentic surface is the waveform

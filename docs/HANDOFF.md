@@ -236,6 +236,26 @@ The Alt modifier key layer itself is new (Win32 WM_SYSKEYDOWN →
 a prompt (not inline digits); no draw/selection/zoom because IT 2.17
 has none (README).
 
+**Module format import — DONE (2026-07-03, spec
+`specs/007-module-format-import`):** `src/it_import.c` ports the
+original's whole-module importers (`IT_D_RM.INC` D_LoadS3M/XM/MOD/
+MTM/669 + the `PE_TRANS.INC` pattern converters). `Import_LoadModule`
+sniffs the format (IMPM delegates to `Music_LoadIT`; "Extended
+Module: ", "SCRM"@0x2C, "MTM", 'if'/'JN', MOD magic@1080 incl. xCHN/
+xxCH counts, .MOD-extension fallback = 15-instrument SoundTracker) and
+converts into the IT in-memory song; patterns are built in an editcell
+grid and packed with the exact codec. Conversion rules transliterated
+per `specs/007-module-format-import/research.md` R2..R6, keeping the
+authentic quirks (MOD 127-entry order scan, XM SmpNum off-by-one and
+note-0 → B-0, the S3M Dxy dead code, XM >200-row pattern splitting via
+D_InsertOrder, XM envelope keyoff/hold emulations, 669 repeating
+effect memories, MTM comment → song message). The F9 requester lists
+all five formats; save-as-.IT (feature 004) completes the conversion
+path. Verification: `tools/gen_import_tests.py` generates minimal
+modules in each format (`testdata/import_test.*`); the selftest loads
+each, requires a non-silent 2 s render, and round-trips the S3M
+through the .IT writer — reports `IMPORT OK`.
+
 **Not done yet** (see §6): terminal-backend mouse and Alt keys. F4
 leftovers: in-list name editing, Alt-U pattern update. F5 leftover:
 Alt-F12 Fourier spectrum analyser (SPECTRUMANALYSER build,
@@ -481,6 +501,8 @@ rough priority order:
    update, sample/instrument disk saves (feature 006).
 7. **Terminal-backend mouse** (xterm SGR mouse reporting) if wanted;
    the editor side is backend-agnostic already.
+8. **Module format import (S3M/XM/MOD/MTM/669)** — ✅ DONE
+   (2026-07-03, spec `specs/007-module-format-import`): see §2.
 
 ### Working agreements when continuing
 - Engine code stays 1:1; if you must touch it, re-run the §4 regression and

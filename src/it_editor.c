@@ -48,6 +48,7 @@
 #include "it_music.h"
 #include "it_pattern.h"
 #include "it_save.h"
+#include "it_import.h"
 #include "it_screen.h"
 
 #define MINIAUDIO_IMPLEMENTATION
@@ -5438,10 +5439,7 @@ static int req_dir_cmp(const void *a, const void *b)
 
 static int has_it_ext(const char *name)
 {
-    size_t l = strlen(name);
-    return l > 3 && name[l-3] == '.' &&
-           (name[l-2] == 'i' || name[l-2] == 'I') &&
-           (name[l-1] == 't' || name[l-1] == 'T');
+    return Import_KnownExt(name);   /* .IT/.S3M/.XM/.MOD/.MTM/.669 */
 }
 
 static void req_read_songname(reqfile_t *f)
@@ -5891,11 +5889,15 @@ static void quick_save(void)
 
 static int do_load_named(const char *path)
 {
+    /* stop_song leaves all slave channels off, so the mixer touches no
+     * Song data while the loader replaces it; the importers take the
+     * engine lock themselves via Pattern_Pack (so this must not hold
+     * it around the whole load). */
     stop_song();
-    ed_lock();
-    if (Music_LoadIT(path)) {
+    if (Import_LoadModule(path)) {
         const char *base = path, *p;
         char *q;
+        ed_lock();
         Driver->InitSound();
         Music_InitMusic();
         Music_InitStereo();
@@ -5913,7 +5915,6 @@ static int do_load_named(const char *path)
                 *q = (char)(*q - 32);
         return 1;
     }
-    ed_unlock();
     return 0;
 }
 
@@ -6356,7 +6357,7 @@ int main(int argc, char **argv)
     Driver->InitSound();
 
     if (startmod) {
-        if (!Music_LoadIT(startmod)) {
+        if (!Import_LoadModule(startmod)) {
             fprintf(stderr, "failed to load %s\n", startmod);
             return 1;
         }
@@ -6597,6 +6598,61 @@ int main(int argc, char **argv)
             redraw();
             fprintf(stderr, "ITED selftest: [%s]\n",
                     f5_ok ? "F5 OK" : "F5 FAIL");
+        }
+
+        /* Module import (feature 007): load each generated test module,
+         * render 2 s (must be non-silent), then convert-and-save via
+         * the 004 writer and reload the .IT (US3). */
+        {
+            static const char *mods[] = {
+                "testdata/import_test.s3m", "testdata/import_test.mod",
+                "testdata/import_test.mtm", "testdata/import_test.669",
+                "testdata/import_test.xm",
+            };
+            int import_ok = 1;
+            size_t mi;
+
+            for (mi = 0; mi < sizeof(mods) / sizeof(mods[0]); mi++) {
+                FILE *probe = fopen(mods[mi], "rb");
+                if (!probe)
+                    continue;           /* generated files absent: skip */
+                fclose(probe);
+                if (!do_load_named(mods[mi])) {
+                    fprintf(stderr, "  import failed: %s\n", mods[mi]);
+                    import_ok = 0;
+                    continue;
+                }
+                {
+                    static int16_t rbuf[1024 * 2];
+                    long acc = 0;
+                    int fr, k2;
+                    ed_lock();
+                    Music_PlaySong(0);
+                    ed_unlock();
+                    for (fr = 0; fr < 80; fr++) {
+                        WAVDriver_Render(rbuf, 1024);
+                        for (k2 = 0; k2 < 1024 * 2; k2++)
+                            acc += rbuf[k2] < 0 ? -rbuf[k2] : rbuf[k2];
+                    }
+                    stop_song();
+                    if (acc == 0) {
+                        fprintf(stderr, "  import silent: %s\n",
+                                mods[mi]);
+                        import_ok = 0;
+                    }
+                }
+                if (mi == 0) {          /* US3: convert-and-save */
+                    commit_current_pattern();
+                    if (!Save_ITModule("st_import.it") ||
+                        !do_load_named("st_import.it"))
+                        import_ok = 0;
+                    remove("st_import.it");
+                }
+            }
+            /* restore the original module for the following blocks */
+            do_load_named("testdata/itdemo.it");
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    import_ok ? "IMPORT OK" : "IMPORT FAIL");
         }
 
         /* F3 sample editor (feature 005): waveform view + destructive

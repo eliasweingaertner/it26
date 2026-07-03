@@ -36,6 +36,7 @@ extern song_t Song;
  * configuration in .IT files (9+16+128 macros, 32 bytes each).            */
 #define MIDIDATAAREA_SIZE (9*32 + 16*32 + 128*32)
 extern char MIDIDataArea[MIDIDATAAREA_SIZE];
+void SetDefaultMIDIDataArea(void);  /* stock ITMIDI.CFG (it_load.c) */
 
 /* MIDICOMMAND_* equates, IT_MUSIC.ASM line 205-214 (offsets into
  * MIDIDataArea, except CHANGEPITCH which is handled internally). */

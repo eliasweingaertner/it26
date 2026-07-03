@@ -62,8 +62,9 @@ static uint32_t rd_u32(reader_t *r)
 
 /* ---------------------------------------------------------------- *
  * Default MIDI macro configuration (contents of ITMIDI.CFG).
+ * Exported for the module importers (it_import.c).
  * ---------------------------------------------------------------- */
-static void SetDefaultMIDIDataArea(void)
+void SetDefaultMIDIDataArea(void)
 {
     int i;
 
