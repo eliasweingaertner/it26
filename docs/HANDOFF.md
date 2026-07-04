@@ -5,7 +5,23 @@
 > code is organised**, and **what to do next**. For the staged editor plan
 > see `EDITOR-PORT-PLAN.md`; for the user-facing overview see `../README.md`.
 
-Last updated: 2026-06-12.
+Last updated: 2026-07-04.
+
+**State in one paragraph:** the engine has been done and verified since
+the start; the editor now covers the full planned surface — the real IT
+2.14 UI on Win32/SDL2/terminal backends, pattern editor, F3/F4 sample &
+instrument *editors* (waveform view, Alt-op set, envelopes, presets),
+F5 info page (all 11 views), F11/F12, message editor, .IT saving with
+the IT214/215 compressor, whole-module import (S3M/XM/MOD/MTM/669),
+and the sample/instrument library (rip samples/instruments from other
+modules, .ITS/.ITI/.XI, Alt-O/T/W saves). All gates green as of
+2026-07-04: determinism ×4 + save roundtrip ×4×3 IDENTICAL, selftest
+reports F4/F5/F3/SAVE/IMPORT/LIB OK. **Deferred / still open** (see §6):
+the macOS verification pass (spec 001 T022 — needs a Mac), pattern
+editing depth (roadmap #5) and terminal mouse/Alt keys (roadmap #7) —
+both **have no spec yet**, plus small leftovers: S3M export
+(SaveFormat 1), Alt-U update-pattern-data, Alt-F12 Fourier analyser,
+F4 in-list name editing, instrument-record preview.
 
 ---
 
@@ -547,13 +563,16 @@ rough priority order:
    Leftover: S3M export (SaveFormat 1).
 5. **Editing depth**: block ops (Alt-keys), edit masks, more of
    `PE_TRANS.INC` behaviour; numeric entry on thumbbars (typed digits).
+   **No spec exists yet** — run the SpecKit `/specify` flow before
+   starting (sources: `IT_PE.ASM` key lists + `PE_TRANS.INC`).
 6. **In-depth sample & instrument editors** (`IT_I.ASM`) — ✅ DONE
    (2026-07-03, spec `specs/005-sample-instrument-editors`): see §2.
    Waveform view, loop editing, the full Alt-op set, note-table ops,
    envelope presets, plus the Alt key layer. Leftover: Alt-U pattern
    update. The deferred disk saves landed with feature 006.
-7. **Terminal-backend mouse** (xterm SGR mouse reporting) if wanted;
-   the editor side is backend-agnostic already.
+7. **Terminal-backend mouse** (xterm SGR mouse reporting) and
+   **terminal Alt keys** (ESC-prefix sequences) if wanted; the editor
+   side is backend-agnostic already. **No spec exists yet.**
 8. **Module format import (S3M/XM/MOD/MTM/669)** — ✅ DONE
    (2026-07-03, spec `specs/007-module-format-import`): see §2.
 9. **Sample/instrument library** (rip from other modules,
