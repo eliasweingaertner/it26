@@ -21,11 +21,14 @@ set(ENGINE_SOURCES
     src/it_driver.c
     src/it_load.c
     src/it_pattern.c
+    src/it_save.c
 )
 
 add_executable(itplay ${ENGINE_SOURCES} src/main.c)
 
 set(EDITOR_SOURCES
+    src/it_import.c
+    src/it_ris.c
     src/it_screen.c
     src/it_vgadata.c
     src/it_editor.c

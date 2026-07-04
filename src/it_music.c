@@ -2305,6 +2305,38 @@ void Music_PlayNote(uint16_t Channel, const uint8_t Note[5], uint8_t DH)
     DecodeExpectedRow = 0xFFFE;
 }
 
+/* Music_PlaySample (IT_MUSIC.ASM 6077): play a raw sample regardless
+ * of instrument mode -- the disk screens' preview path. Note and
+ * sample are preloaded into the translated fields (Nt2/Smp) with
+ * Ins = 0FFh, then InitNoCommand allocates the voice. SmpNum is
+ * 1-based (100 = the check slot). */
+void Music_PlaySample(uint8_t Note, uint8_t SmpNum, uint16_t Channel)
+{
+    hostchn_t *hc = &HChn[Channel];
+
+    hc->Msk = 3;                        /* note + instrument */
+    hc->Nte = Note;
+    hc->Ins = 0xFF;
+    hc->Nt2 = Note;
+    hc->Smp = SmpNum;
+    hc->Flags |= 0x8020;
+
+    InitNoCommand(hc);
+
+    if (hc->Flags & HF_CHAN_ON) {
+        slavechn_t *sc = SLAVE(hc);
+        sc->Pan = 32;
+        sc->PS = 32;
+        sc->CVl = 0x40;                 /* full channel volume */
+        sc->NNA = 0;                    /* note cut */
+        sc->DCT = 0;
+        sc->DCA = 0;
+    }
+
+    hc->Flags &= (uint16_t)~0x8000;
+    DecodeExpectedRow = 0xFFFE;
+}
+
 /* =====================================================================
  * Mute / solo control
  * ===================================================================== */

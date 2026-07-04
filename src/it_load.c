@@ -246,6 +246,125 @@ static int DecompressIT16(reader_t *r, int16_t *dst, uint32_t length,
 }
 
 /* ---------------------------------------------------------------- *
+ * D_LoadSampleData (IT_DISK.ASM 2867..): read + convert one sample's
+ * data from a source file image, driven by the header's Flags/Cvt.
+ * Flag word (BP in the ASM): 1 = 16-bit, 2 = already signed,
+ * 4 = swap bytes (big endian), 8 = delta values, 16 = byte delta
+ * (PTM), 8000h = IT-compressed. (32 = TX 12-bit and 64 = stereo
+ * prompt are standalone-WAV/TXWave paths, not ported.)
+ * Exported for the sample/instrument library (it_ris.c).
+ * ---------------------------------------------------------------- */
+int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
+{
+    reader_t rr = { filedata, size, 0 };
+    reader_t *r = &rr;
+    int is16, compressed, it215, bswap, delta, bytedelta;
+    uint32_t len = s->Length;
+    size_t bytes;
+    uint8_t *data;
+
+    s->Data = NULL;
+    if (len == 0 || !(s->Flags & 1))
+        return 1;                       /* D_NoLoadSample */
+    if (len > 0x0FFFFFFF)
+        return 0;
+
+    is16       = (s->Flags & 2) != 0;
+    compressed = (s->Flags & 8) != 0;
+    it215      = compressed && (s->Cvt & 4) != 0;
+    bswap      = is16 && (s->Cvt & 2) != 0;
+    /* the DOS decompressor is IT214-only and the shared delta pass
+     * supplies the IT215 second integration (Cvt bit 2); ours applies
+     * it internally, so the pass runs for uncompressed data only */
+    delta      = !compressed && (s->Cvt & 0x0C) != 0;
+    bytedelta  = !compressed && (s->Cvt & 8) != 0;
+
+    bytes = (size_t)len << (is16 ? 1 : 0);
+    data = (uint8_t *)calloc(len + 4, is16 ? 2 : 1);
+    if (!data)
+        return 0;
+    s->Data = data;
+
+    if (!rd_seek(r, s->OffsetInFile)) {
+        /* missing data: keep silence */
+    } else {
+        if (compressed) {
+            if (is16)
+                DecompressIT16(r, (int16_t *)data, len, it215);
+            else
+                DecompressIT8(r, (int8_t *)data, len, it215);
+        } else {
+            size_t avail = r->size - r->pos;
+            if (bytes > avail)
+                bytes = avail;
+            memcpy(data, r->data + r->pos, bytes);
+        }
+
+        /* order as in the ASM: byte-swap, then delta, then sign */
+        if (bswap) {
+            uint32_t n;
+            for (n = 0; n < len; n++) {
+                uint8_t t = data[n * 2];
+                data[n * 2] = data[n * 2 + 1];
+                data[n * 2 + 1] = t;
+            }
+        }
+        if (delta) {
+            if (is16 && !bytedelta) {
+                int16_t *p = (int16_t *)data, acc = 0;
+                uint32_t n;
+                for (n = 0; n < len; n++) {
+                    acc = (int16_t)(acc + p[n]);
+                    p[n] = acc;
+                }
+            } else {
+                uint32_t n, cnt = is16 ? len * 2 : len;
+                uint8_t acc = 0;
+                for (n = 0; n < cnt; n++) {
+                    acc = (uint8_t)(acc + data[n]);
+                    data[n] = acc;
+                }
+            }
+        }
+        if (!(s->Cvt & 1)) {            /* unsigned -> signed */
+            if (is16) {
+                int16_t *p = (int16_t *)data;
+                uint32_t n;
+                for (n = 0; n < len; n++)
+                    p[n] = (int16_t)((uint16_t)p[n] ^ 0x8000);
+            } else {
+                uint32_t n;
+                for (n = 0; n < len; n++)
+                    data[n] = (uint8_t)(data[n] ^ 0x80);
+            }
+        }
+    }
+
+    /* header rewrite, as the original does up front */
+    s->Flags &= (uint8_t)~0x0C;
+    s->Cvt = 1;
+
+    /* pad for the cubic interpolator (reads pos+1, pos+2) */
+    if (is16) {
+        int16_t *p = (int16_t *)data;
+        p[len] = p[len + 1] = (len > 0) ? p[len - 1] : 0;
+        p[len + 2] = p[len + 3] = 0;
+    } else {
+        int8_t *p = (int8_t *)data;
+        p[len] = p[len + 1] = (len > 0) ? p[len - 1] : 0;
+        p[len + 2] = p[len + 3] = 0;
+    }
+
+    /* clamp loop points defensively (malformed files) */
+    if (s->LoopEnd > s->Length)     s->LoopEnd = s->Length;
+    if (s->SusLoopEnd > s->Length)  s->SusLoopEnd = s->Length;
+    if (s->LoopBeg > s->Length)     s->LoopBeg = 0;
+    if (s->SusLoopBeg > s->Length)  s->SusLoopBeg = 0;
+    s->ViT &= 3;
+    return 1;
+}
+
+/* ---------------------------------------------------------------- *
  * Old-format (cmwt < 2.00) instrument conversion
  * ---------------------------------------------------------------- */
 static void LoadOldInstrument(const uint8_t *src, instrument_t *in)
@@ -301,6 +420,11 @@ static void LoadOldInstrument(const uint8_t *src, instrument_t *in)
                                         ((flags & 2) ? 2 : 0) |
                                         ((flags & 4) ? 4 : 0));
     }
+}
+
+void Load_OldInstrument(const uint8_t *src, instrument_t *in)
+{
+    LoadOldInstrument(src, in);
 }
 
 /* ---------------------------------------------------------------- */
@@ -496,6 +620,11 @@ int Music_LoadIT(const char *path)
             if (s->SusLoopBeg > s->Length)
                 s->SusLoopBeg = 0;
             s->ViT &= 3;
+
+            /* in-memory header cleanup, as D_LoadSampleData does:
+             * data is now flat signed */
+            s->Flags &= (uint8_t)~0x0C;
+            s->Cvt = 1;
         }
     }
 

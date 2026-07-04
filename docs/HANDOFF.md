@@ -256,12 +256,54 @@ modules in each format (`testdata/import_test.*`); the selftest loads
 each, requires a non-silent 2 s render, and round-trips the S3M
 through the .IT writer — reports `IMPORT OK`.
 
+**Sample & instrument library — DONE (2026-07-04, spec
+`specs/006-cross-module-sample-load`):** `src/it_ris.c` ports
+`IT_D_RIS.INC` + `IT_D_RI.INC` + the record/transfer machinery from
+`IT_DISK.ASM` (see the decode contract in `specs/006-.../research.md`).
+**Enter on the F3/F4 lists** opens the load-sample/-instrument
+requester (the F9 chrome with per-mode extension filters and a lazy
+sniffed format-name info line); Enter on a module drills into the
+library view (records with the `····Directory····` exit row, names,
+format names from `SampleFormatNames`, lengths / sample counts). Sample
+sources: **IT (incl. IT214/215-compressed), S3M, XM, MOD (+15-instr
+fallback), MTM, 669, FAR, PTM, KRZ, PAT, standalone .ITS** — ULT is
+commented out in the 2.17 source and stays unsupported. Instrument
+sources: **.ITI, .XI, instruments inside .IT/.XM modules**, with the
+authentic transfer: UnusedSamples pre-check (computed at requester
+open, before the release — kept), release of samples exclusive to the
+target instrument, free-slot allocation + note-table remap, the
+`word [smp+2Eh]=1` Cvt/DfP overwrite, and the "Enable instrument
+mode?" prompt. Note keys **preview** the selected record through check
+slot 100 via the newly-ported `Music_PlaySample` (IT_MUSIC.ASM 6077).
+`Load_SampleData` (exported from `it_load.c`) is the full
+`D_LoadSampleData` converter: 16-bit, unsigned, byte-swap (KRZ), delta
+(XM/XI), byte-delta (PTM), IT-compressed — with the insight that the
+DOS decompressor is IT214-only and the shared delta pass supplies the
+IT215 second integration (our decompressor does it internally, so the
+pass is skipped for compressed data). The loader now also clears
+Flg bits 2/3 + sets Cvt=1 in memory after load, as `D_LoadSampleData`
+does. Disk saves (the 005 leftovers): F3 **Alt-O/T/W** = .ITS /
+Scream Tracker / WAV (44-byte header, C5Speed rate, RIFF size left 0
+as the original does), F4 **Alt-O** = .ITI (compact sample renumber +
+chained data pointers, `D_SaveInstrument`). The F3/F4 lists now span
+all 99 slots as in IT. FR-004 deviation: occupied slots ask
+"Replace sample/instrument N?" (the original overwrites silently).
+Verification: selftest `LIB OK` = rip-vs-full-load byte equality
+against an IT215 re-save of itdemo, scans+rips of all nine generated
+source files (`testdata/import_test.*` + `testdata/lib_test.{ptm,far,
+krz,pat}`), .ITS and .ITI round-trips, and in-IT / in-XM / .XI
+instrument transfers with remap checks. Capture aids:
+`ITED_SHOT_SCREEN=10/11` render the sample/instrument library browser
+(`ITED_SHOT_LIB=<file>` picks the source, default itdemo).
+
 **Not done yet** (see §6): terminal-backend mouse and Alt keys. F4
 leftovers: in-list name editing, Alt-U pattern update. F5 leftover:
 Alt-F12 Fourier spectrum analyser (SPECTRUMANALYSER build,
-`IT_FOUR.ASM`). S3M save (SaveFormat 1) and the sample/instrument
-disk library (Alt-O/T/W, feature 006) not ported. Header
-FreeMem/FreeEMS show host free RAM / 0.
+`IT_FOUR.ASM`). S3M save (SaveFormat 1) not ported. No preview for
+instrument records (samples only). Header FreeMem/FreeEMS show host
+free RAM / 0. NB: the selftest script must never send ITK_ENTER while
+the F3/F4 *list widget* has focus — that now opens the modal library
+requester and would block the headless run.
 
 ---
 
@@ -280,7 +322,7 @@ Produces `itplay` (player) and `ited` (editor).
 
 ### MSVC directly (Windows) — the command used this session
 ```
-cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" >nul 2>&1 && cl /nologo /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c src\it_load.c src\it_pattern.c src\it_screen.c src\it_screen_win32.c src\it_vgadata.c src\it_editor.c user32.lib gdi32.lib"
+cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" >nul 2>&1 && cl /nologo /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c src\it_load.c src\it_pattern.c src\it_save.c src\it_import.c src\it_ris.c src\it_screen.c src\it_screen_win32.c src\it_vgadata.c src\it_editor.c user32.lib gdi32.lib"
 ```
 `/std:c11` is **required** (for `_Static_assert`); `/D_CRT_SECURE_NO_WARNINGS`
 silences CRT warnings. The editor needs `user32.lib gdi32.lib` (pixel
@@ -335,16 +377,22 @@ Non-interactive editor checks (no terminal/window/audio needed):
   screen **pixel-exactly** to a 640x400 24-bit BMP via the shared
   rasterizer. Screen numbers: 0 help, 1 pattern, 2 samples,
   3 instruments, 4 orders, 5 song vars, 6 info page, 7 main menu,
-  8 load requester, 9 message editor. For the info page add
-  `ITED_SHOT_PLAY=<secs>`
+  8 load requester, 9 message editor, 10 sample library browser,
+  11 instrument library browser (10/11 take `ITED_SHOT_LIB=<file>` as
+  the source to scan, default `testdata/itdemo.it`). For the info page
+  add `ITED_SHOT_PLAY=<secs>`
   (headless-mixes n seconds first so the capture shows real mid-song
   bars/rows) and `ITED_SHOT_METHOD=<0..10>` (window 0's view method);
-  `ITED_SHOT_TAB=<0..3>` selects the F4 tab.
+  `ITED_SHOT_TAB=<0..3>` selects the F4 tab; `ITED_SHOT_SAMPLE=<n>`
+  the F3 selection.
   **This is the visual-iteration workflow:** render, convert to PNG
   (PowerShell `System.Drawing`), compare against `..\screenshots\`.
 
 Test modules live in `testdata/` (`beyond_network.it`, `itdemo.it`,
-`quests_end.it`, `synthscape_filters.it`).
+`quests_end.it`, `synthscape_filters.it`); the generated import/library
+sources (`import_test.{s3m,mod,mtm,669,xm}`, `lib_test.{xi,ptm,far,krz,
+pat}`) come from `python tools/gen_import_tests.py testdata` and are
+consumed by the selftest's `IMPORT OK` / `LIB OK` blocks.
 
 ---
 
@@ -369,7 +417,12 @@ ittrack/
     it_tables.c  (216)     pitch/waveform/slide LUTs — verbatim incl. original typos
     it_driver.c  (1115)    WAVDRV+MIXWAV+WAV.MIX: hiqual driver; DoTick wraps Update()+mix
                            in Engine_Lock/Unlock; WAV_InitSound resets OutFilled/OutPos
-    it_load.c    (523)     .IT loader (IT_DISK.ASM load path vs ITTECH.TXT)
+    it_load.c    (523)     .IT loader (IT_DISK.ASM load path vs ITTECH.TXT);
+                           exports Load_SampleData (D_LoadSampleData) for it_ris.c
+    it_save.c              .IT writer + IT214/215 compressor (feature 004)
+    it_import.c            whole-module importers S3M/XM/MOD/MTM/669 (feature 007)
+    it_ris.c               sample/instrument library: scanners, rip loaders,
+                           .ITS/.ITI/ST/WAV saves (feature 006, IT_D_RIS/RI.INC)
     it_music.h   (218)     engine API; Music_ResetRNG added for deterministic tests
     it_structs.h (400)     host/slave channel + instrument/sample layouts, _Static_assert pinned
     --- EDITOR (faithful UI/behaviour port over the engine) ---
@@ -497,12 +550,19 @@ rough priority order:
 6. **In-depth sample & instrument editors** (`IT_I.ASM`) — ✅ DONE
    (2026-07-03, spec `specs/005-sample-instrument-editors`): see §2.
    Waveform view, loop editing, the full Alt-op set, note-table ops,
-   envelope presets, plus the Alt key layer. Leftovers: Alt-U pattern
-   update, sample/instrument disk saves (feature 006).
+   envelope presets, plus the Alt key layer. Leftover: Alt-U pattern
+   update. The deferred disk saves landed with feature 006.
 7. **Terminal-backend mouse** (xterm SGR mouse reporting) if wanted;
    the editor side is backend-agnostic already.
 8. **Module format import (S3M/XM/MOD/MTM/669)** — ✅ DONE
    (2026-07-03, spec `specs/007-module-format-import`): see §2.
+9. **Sample/instrument library** (rip from other modules,
+   `IT_D_RIS.INC`/`IT_D_RI.INC`) — ✅ DONE (2026-07-04, spec
+   `specs/006-cross-module-sample-load`): see §2. F3/F4 Enter
+   requesters, ten sample source formats + .ITS, .ITI/.XI/in-module
+   instrument import with slot allocation, check-slot preview,
+   Alt-O/T/W + .ITI saves. Leftovers: WAV/AIFF/TXWave standalone
+   sample loading, instrument-record preview.
 
 ### Working agreements when continuing
 - Engine code stays 1:1; if you must touch it, re-run the §4 regression and

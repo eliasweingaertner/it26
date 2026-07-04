@@ -38,6 +38,14 @@ extern song_t Song;
 extern char MIDIDataArea[MIDIDATAAREA_SIZE];
 void SetDefaultMIDIDataArea(void);  /* stock ITMIDI.CFG (it_load.c) */
 
+/* D_LoadSampleData port (it_load.c): read + convert one sample's data
+ * from a whole-file image per the header's Flags/Cvt (incl. IT214/215
+ * decompression); allocates s->Data, rewrites Flags/Cvt like the
+ * original. For the sample/instrument library (it_ris.c). */
+int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s);
+/* pre-2.00 instrument conversion, shared with the library loaders */
+void Load_OldInstrument(const uint8_t *src, instrument_t *in);
+
 /* MIDICOMMAND_* equates, IT_MUSIC.ASM line 205-214 (offsets into
  * MIDIDataArea, except CHANGEPITCH which is handled internally). */
 #define MIDICOMMAND_START         0x0000
@@ -122,6 +130,7 @@ void Music_Stop(void);
 void Music_PlaySong(uint16_t Order);
 void Music_PlayPattern(uint16_t Pattern, uint16_t NumRows, uint16_t Row);
 void Music_PlayNote(uint16_t Channel, const uint8_t Note[5], uint8_t DH);
+void Music_PlaySample(uint8_t Note, uint8_t SmpNum, uint16_t Channel);
 void Music_StopChannels(void);
 void Music_InitTempo(void);
 void Music_InitMixTable(void);

@@ -77,7 +77,7 @@ same WAV/hiqual driver. Screens and keys follow IT 2.x:
 |-----|-----------------|
 | F1  | Help (key reference) |
 | F2  | Pattern editor |
-| F3 / F4 | Sample list / Instrument list (piano keys audition) |
+| F3 / F4 | Sample list / Instrument list (piano keys audition; **Enter = load sample/instrument** from another module or file, as in IT) |
 | F11 / F12 | Order list & panning / Song variables |
 | F5  | Play song + live info page (per-channel VU / sample / pan) |
 | F6 / F8 | Play current pattern / stop |
@@ -120,10 +120,12 @@ window (Windows), the SDL2 pixel window (Linux/macOS) — both the
 authentic look, rendered from the shared `Screen_Rasterize` — and a
 24-bit-truecolor VT terminal fallback.
 
-This is a focused editor — the in-depth IT sample/instrument *editors*
-(envelopes, waveform ops), the info page's oscilloscope/other view
-modes, message editor, and saving are future work (see `docs/HANDOFF.md`
-§6 and `docs/EDITOR-PORT-PLAN.md`).
+The in-depth sample/instrument editors (waveform view, Alt-key ops,
+envelopes), the F5 info page views, the message editor, saving (.IT
+writer with the IT215 compressor), module import (S3M/XM/MOD/MTM/669)
+and the sample/instrument library (rip from other modules) are all
+ported; remaining gaps are listed in `docs/HANDOFF.md` §6 (pattern
+block ops, terminal mouse/Alt keys, S3M export, Alt-F12 Fourier).
 
 ## Fidelity notes (deviations from the DOS binary)
 
@@ -175,6 +177,27 @@ Module import:
   0 in an uncompressed cell becomes B-0; the S3M Dxy nibble fix is
   dead code and stays a passthrough) — imported modules match what the
   original IT produced, not a "corrected" conversion.
+
+Sample/instrument library (F3/F4 Enter):
+- Ripping single samples out of IT/S3M/XM/MOD/MTM/669/FAR/PTM/KRZ/PAT
+  files and instruments out of IT/XM/.ITI/.XI follows the original
+  `Load*SamplesInModule` / instrument loaders with their quirks kept
+  (FAR ignores the file's per-sample volume and reads a hardcoded
+  256-entry pattern-size table; PAT takes the loop-end field as the
+  sample length; the out-of-slots check uses the free-slot count from
+  when the requester was opened; instrument import forces each
+  transferred sample's default pan off). ULT ripping is commented out
+  in the 2.17 source and is likewise absent here. WAV/AIFF/TXWave
+  standalone samples are not ported. Deviation from the original: an
+  occupied slot asks "Replace sample/instrument N?" before it is
+  overwritten (IT overwrites silently); reads are bounds-checked
+  rather than trusting DOS scratch buffers.
+- Note keys preview the selected library entry through IT's check
+  slot (sample 100) via the ported `Music_PlaySample`; there is no
+  key-release note-off (the port's key layer has no release events).
+- F3 Alt-O/T/W save the current sample as .ITS / Scream Tracker /
+  WAV under its DOS filename, F4 Alt-O saves the instrument as .ITI —
+  as in IT, including the WAV header's RIFF size staying 0.
 
 Sample editor (F3):
 - IT 2.17 has no freehand waveform drawing, no selection

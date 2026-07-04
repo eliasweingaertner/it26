@@ -49,6 +49,7 @@
 #include "it_pattern.h"
 #include "it_save.h"
 #include "it_import.h"
+#include "it_ris.h"
 #include "it_screen.h"
 
 #define MINIAUDIO_IMPLEMENTATION
@@ -2037,6 +2038,54 @@ static void smpfield_cclick(const it_mouse_t *m)
         }
 }
 
+static instrument_t *cur_ins(void);
+
+/* D_SaveSample / D_SaveST3Sample / D_SaveRawSample: Alt-O/T/W write
+ * the current sample under its DOS filename (error when empty). */
+static void smp_save_disk(int fmt)
+{
+    sample_t *s = cur_smp();
+    char name[16];
+    int ok;
+
+    if (!s->DOSFileName[0]) {
+        status("Error: Sample %d NOT saved! (No Filename?)", ListSel + 1);
+        return;
+    }
+    snprintf(name, sizeof(name), "%.12s", s->DOSFileName);
+    switch (fmt) {
+    default: ok = RIS_SaveITS(s, name); break;
+    case 1:  ok = RIS_SaveST(s, name);  break;
+    case 2:  ok = RIS_SaveWAV(s, name); break;
+    }
+    if (!ok) {
+        status("Error: Sample %d NOT saved! (No Filename?)", ListSel + 1);
+        return;
+    }
+    status(fmt == 0 ? "Impulse Tracker sample saved (sample %d)"
+         : fmt == 1 ? "Scream Tracker sample saved (sample %d)"
+                    : "WAV Sample saved (sample %d)", ListSel + 1);
+}
+
+/* D_SaveInstrument: F4 Alt-O writes the current instrument as .ITI */
+static void ins_save_disk(void)
+{
+    instrument_t *in = cur_ins();
+    char name[16];
+
+    if (!in->DOSFileName[0]) {
+        status("Error: Instrument %d NOT saved! (No Filename?)",
+               ListSel + 1);
+        return;
+    }
+    snprintf(name, sizeof(name), "%.12s", in->DOSFileName);
+    if (RI_SaveITI(in, ListSel + 1, name))
+        status("Instrument saved (instrument %d)", ListSel + 1);
+    else
+        status("Error: Instrument %d NOT saved! (No Filename?)",
+               ListSel + 1);
+}
+
 /* Alt-key dispatch for the F3 sample list; returns 1 when consumed */
 static int handle_sample_altkey(int key)
 {
@@ -2059,11 +2108,9 @@ static int handle_sample_altkey(int key)
     case ITK_ALT_A + ('X'-'A'): smp_op_exchange();     break;
     case ITK_ALT_A + ('Y'-'A'): /* I_CalculateC5Speed: 2.17 stub */
         break;
-    case ITK_ALT_A + ('O'-'A'):
-    case ITK_ALT_A + ('T'-'A'):
-    case ITK_ALT_A + ('W'-'A'):
-        status("Sample disk ops arrive with the sample library (006)");
-        break;
+    case ITK_ALT_A + ('O'-'A'): smp_save_disk(0);      break;
+    case ITK_ALT_A + ('T'-'A'): smp_save_disk(1);      break;
+    case ITK_ALT_A + ('W'-'A'): smp_save_disk(2);      break;
     case ITK_ALT_PLUS:  smp_op_speed(0); break;
     case ITK_ALT_MINUS: smp_op_speed(1); break;
     case ITK_CTRL_PLUS: smp_op_speed(2); break;
@@ -2078,7 +2125,7 @@ static int handle_sample_altkey(int key)
 
 static void draw_samples(void)
 {
-    int i, n = Song.Header.SmpNum ? Song.Header.SmpNum : 1;
+    int i, n = 99;              /* IT lists all 99 slots */
     int rows = 35, top;
     sample_t *s;
 
@@ -2350,9 +2397,7 @@ static int handle_instrument_altkey(int key)
     case ITK_ALT_A + ('U'-'A'):
         status("Update pattern data (Alt-U) not ported yet");
         break;
-    case ITK_ALT_A + ('O'-'A'):
-        status("Instrument disk ops arrive with the library (006)");
-        break;
+    case ITK_ALT_A + ('O'-'A'): ins_save_disk();        break;
     default:
         return 0;
     }
@@ -3068,7 +3113,7 @@ static void act_ins_changed(void)
 
 static void draw_instruments(void)
 {
-    int i, n = Song.Header.InsNum ? Song.Header.InsNum : 1;
+    int i, n = 99;              /* IT lists all 99 slots */
     int top, focusw;
     instrument_t *ins;
     widget_t *w;
@@ -5192,31 +5237,38 @@ static int generic_list_lkey(int key, int n)
     return 0;
 }
 
+static void sample_library_requester(void);     /* feature 006 */
+static void instrument_library_requester(void);
+
 static int sample_list_lkey(int key)
 {
-    return generic_list_lkey(key, Song.Header.SmpNum
-                                  ? Song.Header.SmpNum : 1);
+    if (key == ITK_ENTER) {                 /* IT: Enter = load sample */
+        sample_library_requester();
+        return 1;
+    }
+    return generic_list_lkey(key, 99);
 }
 
 static int instr_list_lkey(int key)
 {
-    return generic_list_lkey(key, Song.Header.InsNum
-                                  ? Song.Header.InsNum : 1);
+    if (key == ITK_ENTER) {                 /* IT: Enter = load instrument */
+        instrument_library_requester();
+        return 1;
+    }
+    return generic_list_lkey(key, 99);
 }
 
 static void sample_list_lclick(int row, int mx, int mpx)
 {
-    int n = Song.Header.SmpNum ? Song.Header.SmpNum : 1;
     (void)mx; (void)mpx;
-    if (row >= 0 && SmpListTop + row < n)
+    if (row >= 0 && SmpListTop + row < 99)
         ListSel = SmpListTop + row;
 }
 
 static void instr_list_lclick(int row, int mx, int mpx)
 {
-    int n = Song.Header.InsNum ? Song.Header.InsNum : 1;
     (void)mx; (void)mpx;
-    if (row >= 0 && InsListTop + row < n)
+    if (row >= 0 && InsListTop + row < 99)
         ListSel = InsListTop + row;
 }
 
@@ -5437,8 +5489,16 @@ static int req_dir_cmp(const void *a, const void *b)
     return strcmp((const char *)a, (const char *)b);
 }
 
+/* 0 = module load/save (F9/F10), 1 = sample library (F3 Enter),
+ * 2 = instrument library (F4 Enter) */
+static int ReqLibMode;
+
 static int has_it_ext(const char *name)
 {
+    if (ReqLibMode == 1)
+        return RIS_KnownExt(name);
+    if (ReqLibMode == 2)
+        return RI_KnownExt(name);
     return Import_KnownExt(name);   /* .IT/.S3M/.XM/.MOD/.MTM/.669 */
 }
 
@@ -5523,6 +5583,96 @@ static void req_scan(void)
     FSel = FTop = DSel = DTop = 0;
 }
 
+static int has_ext_ci(const char *name, const char *ext)
+{
+    size_t nl = strlen(name), el = strlen(ext);
+    size_t i;
+
+    if (nl < el)
+        return 0;
+    for (i = 0; i < el; i++) {
+        char a = name[nl - el + i], b = ext[i];
+        if (a >= 'a' && a <= 'z')
+            a = (char)(a - 32);
+        if (a != b)
+            return 0;
+    }
+    return 1;
+}
+
+/* lazy file-format classification for the info box (the original's
+ * on-cursor D_LoadFileHeader check; names from FormatNames /
+ * SampleFormatNames) */
+static int  ReqInfoIdx = -1;
+static char ReqInfoFmt[40];
+
+static const char *req_sniff_format(void)
+{
+    uint8_t h[1084];
+    size_t got = 0;
+    FILE *f;
+
+    if (ReqInfoIdx == FSel)
+        return ReqInfoFmt;
+    ReqInfoIdx = FSel;
+    snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Unknown format");
+
+    f = fopen(ReqFiles[FSel].name, "rb");
+    if (f) {
+        memset(h, 0, sizeof(h));
+        got = fread(h, 1, sizeof(h), f);
+        fclose(f);
+    }
+    if (got >= 4 && !memcmp(h, "IMPM", 4))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Impulse Tracker");
+    else if (got >= 4 && !memcmp(h, "IMPS", 4))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Impulse Tracker Sample");
+    else if (got >= 4 && !memcmp(h, "IMPI", 4))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt),
+                 "Impulse Tracker Instrument");
+    else if (got >= 21 && !memcmp(h, "Extended Instrument: ", 21))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt),
+                 "Fast Tracker 2 Instrument");
+    else if (got >= 17 && !memcmp(h, "Extended Module: ", 17))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Fast Tracker 2 Module");
+    else if (got >= 0x30 && !memcmp(h + 0x2C, "SCRM", 4))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Scream Tracker 3");
+    else if (got >= 3 && !memcmp(h, "MTM", 3))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "MultiTracker Module");
+    else if (got >= 2 && (!memcmp(h, "if", 2) || !memcmp(h, "JN", 2)))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Composer 669 Module");
+    else if (got >= 48 && !memcmp(h + 44, "PTMF", 4))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Poly Tracker Module");
+    else if (got >= 4 && !memcmp(h, "FAR\xFE", 4))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Farandole Module");
+    else if (got >= 22 && !memcmp(h, "GF1PATCH110\0ID#000002", 22))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt),
+                 "Gravis UltraSound Patch");
+    else if (has_ext_ci(ReqFiles[FSel].name, ".KRZ"))
+        snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Kurzweil Synth File");
+    else if (got >= 1084) {
+        uint8_t *m = h + 1080;
+        if (!memcmp(m, "M.K.", 4) || !memcmp(m, "M!K!", 4))
+            snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "Amiga-ProTracker");
+        else if (!memcmp(m, "FLT4", 4))
+            snprintf(ReqInfoFmt, sizeof(ReqInfoFmt),
+                     "4 Channel Startrekker");
+        else if (!memcmp(m, "OCTA", 4) || !memcmp(m, "CD81", 4))
+            snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "8 Channel MOD");
+        else if (m[0] >= '1' && m[0] <= '9' && !memcmp(m + 1, "CHN", 3))
+            snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "%c Channel MOD",
+                     m[0]);
+        else if (m[0] >= '1' && m[0] <= '9' && m[1] >= '0' &&
+                 m[1] <= '9' && !memcmp(m + 2, "CH", 2))
+            snprintf(ReqInfoFmt, sizeof(ReqInfoFmt), "%c%c Channel MOD",
+                     m[0], m[1]);
+        else if (has_ext_ci(ReqFiles[FSel].name, ".MOD"))
+            snprintf(ReqInfoFmt, sizeof(ReqInfoFmt),
+                     "Old Amiga-MOD format ? ");
+    }
+    return ReqInfoFmt;
+}
+
 static const uint8_t SearchText[] =
     "Search\015\015\015Format\015  Size\015  Date\015  Time";
 static const uint8_t FileText[] = " Filename\015Directory";
@@ -5536,7 +5686,9 @@ static void draw_file_requester(void)
     int i;
 
     Screen_Clear(0x20);
-    draw_chrome(ReqSave ? "Save Module (F10)" : "Load Module (F9)");
+    draw_chrome(ReqLibMode == 1 ? "Load Sample" :
+                ReqLibMode == 2 ? "Load Instrument" :
+                ReqSave ? "Save Module (F10)" : "Load Module (F9)");
 
     Screen_DrawBox(2, 12, 41, 44, 27);          /* FileBox */
     Screen_DrawBox(43, 12, 56, 34, 27);         /* DirBox */
@@ -5558,7 +5710,8 @@ static void draw_file_requester(void)
         drawf(17, 13 + i, a, "%-23.23s", ReqFiles[idx].songname);
     }
     if (ReqNF == 0)
-        Screen_DrawString(3, 13, "(no .it modules here)", 0x03);
+        Screen_DrawString(3, 13, ReqLibMode ? "No files."
+                                            : "(no .it modules here)", 0x03);
 
     /* directories (middle box, 21 rows) */
     if (DSel < DTop) DTop = DSel;
@@ -5579,7 +5732,8 @@ static void draw_file_requester(void)
 
     /* file info */
     if (ReqNF && FSel < ReqNF) {
-        drawf(58, 40, 0x05, "Impulse Tracker");
+        drawf(52, 40, 0x05, "%-25.25s",
+              ReqLibMode ? req_sniff_format() : "Impulse Tracker");
         drawf(58, 41, 0x05, "%09ld", ReqFiles[FSel].size);
     }
 
@@ -5691,6 +5845,300 @@ static void req_do_save(int *done)
     }
 }
 
+/* ===================================================================
+ * Sample / instrument library (feature 006): LSWindow_Enter /
+ * LIWindow_Enter over the requester chrome. Entering a module scans
+ * it into records; entry 0 is the ExitLibraryDirectory row.
+ * =================================================================== */
+#define LIB_MAX     200
+#define CHECK_SLOT  99                  /* sample 100: preview slot */
+
+static slibent_t SLib[LIB_MAX];
+static ilibent_t ILib[LIB_MAX];
+static int LibN;                        /* records in the open library */
+static int LibSel, LibTop;
+static int LibCheckIdx = -1;            /* record loaded into slot 99  */
+static int LibUnused;                   /* UnusedSamples at open (F4)  */
+
+static void lib_release_check(void)
+{
+    ed_lock();
+    free(Song.Smp[CHECK_SLOT].Data);
+    memset(&Song.Smp[CHECK_SLOT], 0, sizeof(sample_t));
+    ed_unlock();
+}
+
+/* note keys audition the selected record through the check slot
+ * (D_PostLoadSampleWindow -> LoadSample(99) + Music_PlaySample) */
+static void lib_preview_key(const slibent_t *e, int idx, int key)
+{
+    int gn = key_to_note(key);
+    sample_t tmp;
+
+    if (gn <= 0)
+        return;
+    if (LibCheckIdx != idx) {
+        memset(&tmp, 0, sizeof(tmp));
+        if (!RIS_LoadSample(e, &tmp))
+            return;
+        stop_song();
+        ed_lock();
+        free(Song.Smp[CHECK_SLOT].Data);
+        Song.Smp[CHECK_SLOT] = tmp;
+        ed_unlock();
+        LibCheckIdx = idx;
+    }
+    ed_lock();
+    Music_PlaySample((uint8_t)(gn - 1), CHECK_SLOT + 1, 40);
+    ed_unlock();
+}
+
+/* load the selected sample record into the current F3 slot (FR-004:
+ * warn when the slot holds data -- a deviation from the original) */
+static int lib_load_sample_entry(const slibent_t *e)
+{
+    sample_t *dst = &Song.Smp[ListSel];
+    sample_t tmp;
+    char msg[64];
+
+    if ((dst->Flags & 1) && dst->Length) {
+        snprintf(msg, sizeof(msg), "Replace sample %d?", ListSel + 1);
+        if (!confirm_box(msg))
+            return 0;
+    }
+    memset(&tmp, 0, sizeof(tmp));
+    if (!RIS_LoadSample(e, &tmp)) {
+        status("Unable to load sample.");
+        return 0;
+    }
+    stop_song();
+    ed_lock();
+    free(dst->Data);
+    *dst = tmp;
+    if (ListSel >= Song.Header.SmpNum)
+        Song.Header.SmpNum = (uint16_t)(ListSel + 1);
+    ed_unlock();
+    status("Sample %d loaded.", ListSel + 1);
+    return 1;
+}
+
+/* load an instrument record into the current F4 slot (LIWindow_Enter
+ * codes 3..6): out-of-slots check first, then the transfer */
+static int lib_load_instrument_entry(const ilibent_t *e)
+{
+    instrument_t *dst = &Song.Ins[ListSel];
+    int occupied = dst->InstrumentName[0] != 0;
+    int k, r;
+    char msg[64];
+
+    for (k = 0; k < 120 && !occupied; k++)
+        if (dst->NoteSampleTable[k * 2 + 1])
+            occupied = 1;
+
+    if (e->NumSamples > LibUnused) {    /* O1_OutOfSamplesList */
+        status("Out of sample space! (%d needed, %d available)",
+               e->NumSamples, LibUnused);
+        return 0;
+    }
+    if (occupied) {
+        snprintf(msg, sizeof(msg), "Replace instrument %d?", ListSel + 1);
+        if (!confirm_box(msg))
+            return 0;
+    }
+
+    stop_song();
+    ed_lock();
+    r = RI_LoadInstrument(e, ListSel);
+    if (r == RI_OK) {
+        int i;
+        if (ListSel >= Song.Header.InsNum)
+            Song.Header.InsNum = (uint16_t)(ListSel + 1);
+        for (i = 99; i > Song.Header.SmpNum; i--) {
+            if (Song.Smp[i - 1].Flags & 1) {
+                Song.Header.SmpNum = (uint16_t)i;
+                break;
+            }
+        }
+    }
+    ed_unlock();
+
+    if (r != RI_OK) {
+        status("Unable to load instrument.");
+        return 0;
+    }
+    LibUnused = RI_UnusedSamples();
+
+    if (!(Song.Header.Flags & ITF_INSTRUMENTS) &&
+        confirm_box("Enable instrument mode?")) {   /* O1_EnableInstrumentMode */
+        ed_lock();
+        Song.Header.Flags |= ITF_INSTRUMENTS;
+        ed_unlock();
+    }
+    status("Instrument %d loaded (%d samples).", ListSel + 1,
+           e->NumSamples);
+    return 1;
+}
+
+static void draw_lib_browser(int inslib, const char *srcname)
+{
+    int rows = 35, i;
+
+    const char *base = srcname, *p;
+
+    for (p = srcname; *p; p++)
+        if (*p == '/' || *p == '\\' || *p == ':')
+            base = p + 1;
+    Screen_Clear(0x20);
+    draw_chrome(inslib ? "Load Instrument" : "Load Sample");
+    drawf(2, 10, 0x20, "In %-13.13s", base);
+    if (inslib)
+        drawf(56, 10, 0x20, "Available Samples: %d", LibUnused);
+    Screen_DrawBox(2, 12, 77, 48, 27);
+
+    if (LibSel < LibTop) LibTop = LibSel;
+    if (LibSel >= LibTop + rows) LibTop = LibSel - rows + 1;
+    if (LibTop < 0) LibTop = 0;
+
+    for (i = 0; i < rows && LibTop + i <= LibN; i++) {
+        int idx = LibTop + i;
+        int y = 13 + i;
+        uint8_t a = (idx == LibSel) ? 0x30 : 0x03;
+
+        drawf(3, y, (idx == LibSel) ? a : 0x02, "%3d", idx + 1);
+        if (idx == 0) {                 /* ExitLibraryDirectory row */
+            int x;
+            for (x = 0; x < 8; x++) {
+                Screen_PutChar(8 + x, y, 154, a);
+                Screen_PutChar(25 + x, y, 154, a);
+            }
+            Screen_DrawString(16, y, "Directory", a);
+        } else if (!inslib) {
+            const slibent_t *e = &SLib[idx - 1];
+            draw_itname(8, y, e->hdr.SampleName, 26, a);
+            drawf(36, y, a, "%-24.24s", RIS_FormatName(e->Format));
+            drawf(62, y, a, "%9u", e->hdr.Length);
+        } else {
+            const ilibent_t *e = &ILib[idx - 1];
+            draw_itname(8, y, e->Name, 26, a);
+            drawf(36, y, a, "%-27.27s", RI_FormatName(e->Format));
+            if (e->NumSamples == 0)
+                drawf(64, y, a, "No Samples");
+            else if (e->NumSamples == 1)
+                drawf(64, y, a, "1 Sample");
+            else
+                drawf(64, y, a, "%d Samples", e->NumSamples);
+        }
+    }
+    Screen_Update();
+}
+
+/* browse an opened library; returns 1 when something was loaded
+ * (leave the requester), 0 = back to the file list */
+static int lib_browse_run(int inslib, const char *srcname)
+{
+    LibSel = 0;                 /* cursor on the Directory row, as IT */
+    LibTop = 0;
+    LibCheckIdx = -1;
+
+    while (Running) {
+        int key;
+
+        draw_lib_browser(inslib, srcname);
+
+        key = Key_Get();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+
+        switch (key) {
+        case ITK_QUIT:
+            Running = 0;
+            return 1;
+        case ITK_ESC:
+        case ITK_BACKSPACE:
+            return 0;
+        case ITK_UP:   if (LibSel > 0) LibSel--; break;
+        case ITK_DOWN: if (LibSel < LibN) LibSel++; break;
+        case ITK_PGUP: LibSel -= 34; if (LibSel < 0) LibSel = 0; break;
+        case ITK_PGDN: LibSel += 34; if (LibSel > LibN) LibSel = LibN;
+                       break;
+        case ITK_HOME: LibSel = 0; break;
+        case ITK_END:  LibSel = LibN; break;
+        case ITK_ENTER:
+            if (LibSel == 0)
+                return 0;               /* the Directory row */
+            if (!inslib) {
+                if (lib_load_sample_entry(&SLib[LibSel - 1]))
+                    return 1;
+            } else {
+                if (lib_load_instrument_entry(&ILib[LibSel - 1]))
+                    return 1;
+            }
+            break;
+        case ITK_MOUSE: {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (m.x >= 3 && m.x <= 76 && m.y >= 13 && m.y <= 47) {
+                int idx = LibTop + (m.y - 13);
+                if (idx <= LibN) {
+                    if (idx == LibSel) {
+                        if (idx == 0)
+                            return 0;
+                        if (!inslib
+                            ? lib_load_sample_entry(&SLib[idx - 1])
+                            : lib_load_instrument_entry(&ILib[idx - 1]))
+                            return 1;
+                    } else {
+                        LibSel = idx;
+                    }
+                }
+            }
+            break; }
+        default:
+            if (!inslib && LibSel > 0)
+                lib_preview_key(&SLib[LibSel - 1], LibSel, key);
+            break;
+        }
+    }
+    return 1;
+}
+
+/* Enter on a file in library mode: standalone sample/instrument files
+ * load directly, containers open as a library (LSWindow_Enter /
+ * LIWindow_Enter dispatch by format code). */
+static void lib_open_source(const char *path, int *done)
+{
+    if (ReqLibMode == 1) {
+        int n = RIS_ScanModule(path, SLib, LIB_MAX);
+
+        if (n < 0) {
+            status("Unknown sample source: %s", path);
+            return;
+        }
+        if (n == 1 && SLib[0].Format == 2 && has_ext_ci(path, ".ITS")) {
+            if (lib_load_sample_entry(&SLib[0]))
+                *done = 1;
+            return;
+        }
+        LibN = n;
+        if (lib_browse_run(0, path))
+            *done = 1;
+    } else {
+        int n = RI_ScanModule(path, ILib, LIB_MAX);
+
+        if (n < 0) {
+            status("Unknown instrument source: %s", path);
+            return;
+        }
+        if (n == 1 && (ILib[0].Format == 3 || ILib[0].Format == 4)) {
+            if (lib_load_instrument_entry(&ILib[0]))
+                *done = 1;
+            return;
+        }
+        LibN = n;
+        if (lib_browse_run(1, path))
+            *done = 1;
+    }
+}
+
 static void req_activate_file(int *done)
 {
     if (ReqNF && FSel < ReqNF) {
@@ -5698,6 +6146,8 @@ static void req_activate_file(int *done)
             snprintf(ReqName, sizeof(ReqName), "%s",
                      ReqFiles[FSel].name);
             req_do_save(done);
+        } else if (ReqLibMode) {
+            lib_open_source(ReqFiles[FSel].name, done);
         } else if (do_load_named(ReqFiles[FSel].name)) {
             *done = 1;
         } else {
@@ -5832,6 +6282,8 @@ static void file_requester_run(int save)
                     req_do_save(&done);
                 } else if (strchr(ReqName, '*') || strchr(ReqName, '?')) {
                     req_scan();
+                } else if (ReqLibMode) {
+                    lib_open_source(ReqName, &done);
                 } else if (do_load_named(ReqName)) {
                     done = 1;
                 } else {
@@ -5858,6 +6310,39 @@ static void save_requester(void)        /* F10 (Glbl_F10 / mode 10) */
     file_requester_run(1);
     memcpy(ReqName, keep, sizeof(keep));
     ReqSave = 0;
+}
+
+/* F3 Enter: the sample library requester (Load Sample screen) */
+static void sample_library_requester(void)
+{
+    char keep[26];
+
+    memcpy(keep, ReqName, sizeof(keep));
+    ReqLibMode = 1;
+    ReqInfoIdx = -1;
+    snprintf(ReqName, sizeof(ReqName), "*.*");
+    file_requester_run(0);
+    ReqLibMode = 0;
+    ReqInfoIdx = -1;
+    memcpy(ReqName, keep, sizeof(keep));
+    lib_release_check();                /* drop the preview sample */
+}
+
+/* F4 Enter: the instrument library requester (Load Instrument) */
+static void instrument_library_requester(void)
+{
+    char keep[26];
+
+    memcpy(keep, ReqName, sizeof(keep));
+    ReqLibMode = 2;
+    ReqInfoIdx = -1;
+    LibUnused = RI_UnusedSamples();     /* D_InitLoadInstruments */
+    snprintf(ReqName, sizeof(ReqName), "*.*");
+    file_requester_run(0);
+    ReqLibMode = 0;
+    ReqInfoIdx = -1;
+    memcpy(ReqName, keep, sizeof(keep));
+    lib_release_check();
 }
 
 /* "Save Current" (Ctrl-S): save to the loaded filename without the
@@ -6435,6 +6920,21 @@ int main(int argc, char **argv)
             } else if (scr == 8) {          /* file requester */
                 req_scan();
                 draw_file_requester();
+            } else if (scr == 10 || scr == 11) { /* library browser */
+                const char *src = getenv("ITED_SHOT_LIB");
+                if (!src)
+                    src = "testdata/itdemo.it";
+                if (scr == 10) {
+                    LibN = RIS_ScanModule(src, SLib, LIB_MAX);
+                } else {
+                    LibN = RI_ScanModule(src, ILib, LIB_MAX);
+                    LibUnused = RI_UnusedSamples();
+                }
+                if (LibN < 0)
+                    LibN = 0;
+                LibSel = LibN ? 1 : 0;
+                LibTop = 0;
+                draw_lib_browser(scr == 11, src);
             } else {
                 redraw();
             }
@@ -6730,6 +7230,242 @@ int main(int argc, char **argv)
             remove(tmp);
             fprintf(stderr, "ITED selftest: [%s]\n",
                     save_ok ? "SAVE OK" : "SAVE FAIL");
+        }
+
+        /* Sample/instrument library (feature 006): rip-vs-full-load
+         * byte equality (through the IT215 decompressor), scans of the
+         * 007 test modules, instrument transfer with note-table remap,
+         * and the .ITS/.ITI disk round-trips. */
+        {
+            int lib_ok = 1;
+            const char *tmp = "st_lib.it";
+            uint8_t keep_fmt = SaveFormat;
+            static slibent_t ents[LIB_MAX];
+            static ilibent_t ients[LIB_MAX];
+
+            do_load_named("testdata/itdemo.it");
+
+            SaveFormat = 3;             /* IT215-compress the samples */
+            commit_current_pattern();
+            if (!Save_ITModule(tmp))
+                lib_ok = 0;
+            SaveFormat = keep_fmt;
+
+            /* 1) rip every sample of the compressed save and compare
+             *    byte-for-byte with the fully-loaded song */
+            if (lib_ok) {
+                int n = RIS_ScanModule(tmp, ents, LIB_MAX), i, j = 0;
+
+                if (n <= 0)
+                    lib_ok = 0;
+                for (i = 0; i < Song.Header.SmpNum && lib_ok; i++) {
+                    sample_t *src = &Song.Smp[i];
+                    sample_t got;
+                    size_t bytes;
+
+                    if (!(src->Flags & 1) || !src->Length)
+                        continue;
+                    if (j >= n) {
+                        lib_ok = 0;
+                        break;
+                    }
+                    memset(&got, 0, sizeof(got));
+                    if (!RIS_LoadSample(&ents[j], &got)) {
+                        lib_ok = 0;
+                        break;
+                    }
+                    bytes = (size_t)src->Length
+                            << ((src->Flags & 2) ? 1 : 0);
+                    if (got.Length != src->Length ||
+                        got.LoopBeg != src->LoopBeg ||
+                        got.LoopEnd != src->LoopEnd ||
+                        got.C5Speed != src->C5Speed ||
+                        got.Vol != src->Vol ||
+                        memcmp(got.SampleName, src->SampleName, 26) ||
+                        !got.Data ||
+                        memcmp(got.Data, src->Data, bytes)) {
+                        fprintf(stderr, "  lib rip mismatch: smp %d\n",
+                                i + 1);
+                        lib_ok = 0;
+                    }
+                    free(got.Data);
+                    j++;
+                }
+            }
+
+            /* 2) every supported sample source scans and rips */
+            {
+                static const char *mods[] = {
+                    "testdata/import_test.s3m", "testdata/import_test.mod",
+                    "testdata/import_test.mtm", "testdata/import_test.669",
+                    "testdata/import_test.xm",  "testdata/lib_test.ptm",
+                    "testdata/lib_test.far",    "testdata/lib_test.krz",
+                    "testdata/lib_test.pat",
+                };
+                size_t mi;
+                for (mi = 0; mi < sizeof(mods) / sizeof(mods[0]); mi++) {
+                    FILE *probe = fopen(mods[mi], "rb");
+                    sample_t got;
+                    int n;
+                    if (!probe)
+                        continue;
+                    fclose(probe);
+                    n = RIS_ScanModule(mods[mi], ents, LIB_MAX);
+                    memset(&got, 0, sizeof(got));
+                    if (n < 1 || !RIS_LoadSample(&ents[0], &got) ||
+                        !got.Data || got.Length == 0) {
+                        fprintf(stderr, "  lib scan failed: %s\n",
+                                mods[mi]);
+                        lib_ok = 0;
+                    }
+                    free(got.Data);
+                }
+            }
+
+            /* 3) .ITS round-trip on a sample with data */
+            {
+                sample_t *src = &Song.Smp[2];   /* itdemo sample 3 */
+                sample_t got;
+                size_t bytes = (size_t)src->Length
+                               << ((src->Flags & 2) ? 1 : 0);
+                int n;
+
+                memset(&got, 0, sizeof(got));
+                if (!RIS_SaveITS(src, "st_lib.its") ||
+                    (n = RIS_ScanModule("st_lib.its", ents, LIB_MAX)) != 1
+                    || ents[0].Format != 2 ||
+                    !RIS_LoadSample(&ents[0], &got) || !got.Data ||
+                    got.Length != src->Length ||
+                    memcmp(got.Data, src->Data, bytes)) {
+                    fprintf(stderr, "  its roundtrip failed\n");
+                    lib_ok = 0;
+                }
+                free(got.Data);
+                remove("st_lib.its");
+            }
+
+            /* 4) instrument paths: synthesize an instrument over sample
+             *    3, save as .ITI, load it back into slot 91 (fresh) and
+             *    compare the remapped sample's data; then rip the same
+             *    instrument out of a re-saved module (in-IT path) and
+             *    the XM instrument out of import_test.xm (XI chain). */
+            {
+                instrument_t *in = &Song.Ins[0];
+                sample_t *src = &Song.Smp[2];
+                size_t bytes = (size_t)src->Length
+                               << ((src->Flags & 2) ? 1 : 0);
+                int k, n, r;
+
+                memcpy(in->DOSFileName, "ST_LIB.ITI\0", 12);
+                snprintf(in->InstrumentName,
+                         sizeof(in->InstrumentName), "lib test");
+                for (k = 0; k < 120; k++) {
+                    in->NoteSampleTable[k * 2] = (uint8_t)k;
+                    in->NoteSampleTable[k * 2 + 1] = 3;
+                }
+                if (Song.Header.InsNum < 1)
+                    Song.Header.InsNum = 1;
+
+                if (!RI_SaveITI(in, 1, "st_lib.iti"))
+                    lib_ok = 0;
+                n = RI_ScanModule("st_lib.iti", ients, LIB_MAX);
+                if (n != 1 || ients[0].Format != 3 ||
+                    ients[0].NumSamples != 1)
+                    lib_ok = 0;
+                else {
+                    ListSel = 90;
+                    ed_lock();
+                    r = RI_LoadInstrument(&ients[0], 90);
+                    ed_unlock();
+                    if (r != RI_OK)
+                        lib_ok = 0;
+                    else {
+                        int slot =
+                            Song.Ins[90].NoteSampleTable[60 * 2 + 1];
+                        sample_t *ns = slot ? &Song.Smp[slot - 1] : NULL;
+                        if (!ns || !ns->Data ||
+                            ns->Length != src->Length ||
+                            memcmp(ns->Data, src->Data, bytes)) {
+                            fprintf(stderr,
+                                    "  iti transfer mismatch\n");
+                            lib_ok = 0;
+                        }
+                    }
+                }
+                remove("st_lib.iti");
+
+                /* in-IT instrument rip */
+                commit_current_pattern();
+                if (!Save_ITModule(tmp))
+                    lib_ok = 0;
+                n = RI_ScanModule(tmp, ients, LIB_MAX);
+                ed_lock();
+                r = (n >= 1 && ients[0].Format == 5)
+                    ? RI_LoadInstrument(&ients[0], 92) : -9;
+                ed_unlock();
+                if (r != RI_OK ||
+                    !Song.Ins[92].NoteSampleTable[60 * 2 + 1]) {
+                    fprintf(stderr, "  in-IT instrument rip failed\n");
+                    lib_ok = 0;
+                }
+
+                /* .XI instrument file (the same conversion chain) */
+                {
+                    FILE *probe = fopen("testdata/lib_test.xi", "rb");
+                    if (probe) {
+                        fclose(probe);
+                        n = RI_ScanModule("testdata/lib_test.xi",
+                                          ients, LIB_MAX);
+                        ed_lock();
+                        r = (n == 1 && ients[0].Format == 4 &&
+                             ients[0].NumSamples == 1)
+                            ? RI_LoadInstrument(&ients[0], 94) : -9;
+                        ed_unlock();
+                        if (r != RI_OK ||
+                            !Song.Ins[94].NoteSampleTable[60 * 2 + 1]) {
+                            fprintf(stderr, "  xi load failed\n");
+                            lib_ok = 0;
+                        } else {
+                            int slot = Song.Ins[94]
+                                       .NoteSampleTable[60 * 2 + 1];
+                            if (!Song.Smp[slot - 1].Data ||
+                                Song.Smp[slot - 1].Length == 0)
+                                lib_ok = 0;
+                        }
+                    }
+                }
+
+                /* in-XM instrument rip (xi_chain) */
+                {
+                    FILE *probe = fopen("testdata/import_test.xm", "rb");
+                    if (probe) {
+                        fclose(probe);
+                        n = RI_ScanModule("testdata/import_test.xm",
+                                          ients, LIB_MAX);
+                        ed_lock();
+                        r = (n >= 1 && ients[0].Format == 6)
+                            ? RI_LoadInstrument(&ients[0], 93) : -9;
+                        ed_unlock();
+                        if (r != RI_OK) {
+                            fprintf(stderr,
+                                    "  in-XM instrument rip failed\n");
+                            lib_ok = 0;
+                        } else {
+                            int slot = Song.Ins[93]
+                                       .NoteSampleTable[60 * 2 + 1];
+                            if (!slot || !Song.Smp[slot - 1].Data)
+                                lib_ok = 0;
+                        }
+                    }
+                }
+            }
+            remove(tmp);
+
+            /* restore a clean itdemo for the remaining blocks */
+            do_load_named("testdata/itdemo.it");
+            ListSel = 0;
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    lib_ok ? "LIB OK" : "LIB FAIL");
         }
 
         /* Verify the F12 Global/Mixing Volume wiring actually reaches the

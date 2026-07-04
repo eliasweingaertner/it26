@@ -269,6 +269,146 @@ def gen_xm(path):
     open(path, 'wb').write(out)
 
 
+def gen_xi(path):
+    """minimal .XI instrument (sample library feature 006)"""
+    out = bytearray()
+    out += b'Extended Instrument: '              # 21
+    out += b'lib test xi'.ljust(22, b' ')        # name @21
+    out += bytes([0x1A])                         # @43
+    out += b'gen_import_tests'.ljust(20, b'\x00')  # tracker @44
+    out += struct.pack('<H', 0x0102)             # version @64
+    assert len(out) == 66
+    out += bytearray(96)                         # note->sample table @66
+    env = bytearray(48)                          # vol env points @162
+    struct.pack_into('<HH', env, 0, 0, 64)
+    struct.pack_into('<HH', env, 4, 40, 32)
+    out += env
+    out += bytearray(48)                         # pan env points @210
+    tail = bytearray(298 - 258)
+    tail[258 - 258] = 2                          # num vol points
+    tail[259 - 258] = 0                          # num pan points
+    tail[266 - 258] = 1                          # vol flags: on
+    struct.pack_into('<H', tail, 272 - 258, 128)   # fadeout
+    struct.pack_into('<H', tail, 296 - 258, 1)     # NoS
+    out += tail
+    assert len(out) == 298
+    sh = bytearray(40)                           # XM sample header
+    struct.pack_into('<I', sh, 0, SR)
+    struct.pack_into('<I', sh, 4, 0)
+    struct.pack_into('<I', sh, 8, SR)
+    sh[12] = 48
+    sh[14] = 1                                   # forward loop, 8 bit
+    sh[15] = 128
+    sh[18:28] = b'xi sample '
+    out += sh
+    raw = sine8(True)                            # delta-encoded signed
+    prev = 0
+    for b in raw:
+        v = b if b < 128 else b - 256
+        out.append((v - prev) & 0xFF)
+        prev = v
+    open(path, 'wb').write(out)
+
+
+def gen_ptm(path):
+    """minimal .PTM (Poly Tracker) -- sample headers @608, 80 bytes"""
+    hdr = bytearray(608)
+    hdr[0:10] = b'IMPORT PTM'
+    hdr[28] = 3                                  # version
+    struct.pack_into('<H', hdr, 32, 1)           # norders?
+    struct.pack_into('<H', hdr, 34, 1)           # nsamples
+    hdr[44:48] = b'PTMF'
+    sh = bytearray(80)
+    data_off = 608 + 80
+    sh[0] = 1 | 0x04                             # sample + loop
+    sh[1:9] = b'PTM.SMP\x00'
+    sh[13] = 48                                  # volume
+    struct.pack_into('<H', sh, 14, 8363)         # C4 speed
+    struct.pack_into('<I', sh, 18, data_off)     # data offset
+    struct.pack_into('<I', sh, 22, SR)           # length (bytes)
+    struct.pack_into('<I', sh, 26, 0)            # loop begin
+    struct.pack_into('<I', sh, 30, SR)           # loop end
+    sh[48:58] = b'ptm sample'
+    sh[76:80] = b'PTMS'
+    # PTM data is signed byte-delta
+    raw = sine8(True)
+    prev = 0
+    delta = bytearray()
+    for b in raw:
+        v = b if b < 128 else b - 256
+        delta.append((v - prev) & 0xFF)
+        prev = v
+    open(path, 'wb').write(bytes(hdr) + bytes(sh) + bytes(delta))
+
+
+def gen_far(path):
+    """minimal .FAR (Farandole): text len 0, zero pattern sizes,
+    sample map + 48-byte header + data"""
+    out = bytearray(869)
+    out[0:4] = b'FAR\xFE'
+    out[4:14] = b'IMPORT FAR'
+    struct.pack_into('<H', out, 96, 0)           # text length
+    # bytes 98..868: order list / pattern sizes, all zero
+    smap = bytearray(8)
+    smap[0] = 1                                  # sample 0 present
+    out += smap
+    sh = bytearray(48)
+    sh[0:10] = b'far sample'
+    struct.pack_into('<I', sh, 32, SR)           # length
+    sh[36] = 0                                   # finetune
+    sh[37] = 48                                  # volume (ignored by IT)
+    struct.pack_into('<I', sh, 38, 0)            # loop start
+    struct.pack_into('<I', sh, 42, SR)           # loop end
+    struct.pack_into('<H', sh, 46, 0x0800)       # loop on (bit 3 hi byte)
+    out += sh
+    out += sine8(True)                           # signed 8-bit
+    open(path, 'wb').write(out)
+
+
+def gen_krz(path):
+    """minimal .KRZ (Kurzweil): 32-byte header, one 0x98 block, 16-bit
+    big-endian data"""
+    frames = SR
+    hdr_blocks = 32 + 1024                       # data starts here
+    out = bytearray(32)
+    struct.pack_into('>I', out, 4, hdr_blocks)   # sample data offset
+    blk = bytearray(1024)
+    blk[4] = 0x98                                # sample object
+    struct.pack_into('>H', blk, 6, 1017)         # block size (rounds to 1024)
+    struct.pack_into('>H', blk, 8, 40)           # header at blk+40+20
+    blk[10:20] = b'krz sample'
+    h = 60                                       # 40 + 20
+    blk[h + 1] = 0x80                            # loop off
+    struct.pack_into('>I', blk, h + 8, 0)        # start
+    struct.pack_into('>I', blk, h + 16, 0)       # loop begin
+    struct.pack_into('>I', blk, h + 20, frames)  # loop end (= length)
+    struct.pack_into('>I', blk, h + 28, 45351)   # period -> ~22050 Hz
+    out += blk
+    for i in range(frames):                      # 16-bit BE sine
+        v = int(20000 * math.sin(2 * math.pi * i / 32))
+        out += struct.pack('>h', v)
+    open(path, 'wb').write(out)
+
+
+def gen_pat(path):
+    """minimal .PAT (Gravis patch): file+instrument+layer headers,
+    one wave"""
+    out = bytearray(239)
+    out[0:22] = b'GF1PATCH110\x00ID#000002\x00'
+    out[129 + 2:129 + 2 + 10] = b'pat instr\x00'
+    out[129 + 63 + 6] = 1                        # wave count
+    w = bytearray(96)
+    w[0:7] = b'wave1\x00\x00'
+    struct.pack_into('<I', w, 8, SR)             # data size
+    struct.pack_into('<I', w, 12, 0)             # loop start
+    struct.pack_into('<I', w, 16, SR)            # loop end (= IT length)
+    struct.pack_into('<H', w, 20, 8363)          # sample rate
+    w[55] = 0x04 | 0x02                          # loop on, unsigned
+    out += w
+    out += sine8(False)                          # unsigned 8-bit
+    open(path, 'wb').write(out)
+
+
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else '.'
     gen_s3m(outdir + '/import_test.s3m')
@@ -276,7 +416,13 @@ def main():
     gen_mtm(outdir + '/import_test.mtm')
     gen_669(outdir + '/import_test.669')
     gen_xm(outdir + '/import_test.xm')
-    print('wrote import_test.{s3m,mod,mtm,669,xm} to', outdir)
+    gen_xi(outdir + '/lib_test.xi')
+    gen_ptm(outdir + '/lib_test.ptm')
+    gen_far(outdir + '/lib_test.far')
+    gen_krz(outdir + '/lib_test.krz')
+    gen_pat(outdir + '/lib_test.pat')
+    print('wrote import_test.{s3m,mod,mtm,669,xm} + '
+          'lib_test.{xi,ptm,far,krz,pat} to', outdir)
 
 
 if __name__ == '__main__':
