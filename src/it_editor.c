@@ -6621,11 +6621,11 @@ static int act_pb_length(void)
 static int act_smp_list(void)
 { Screen = SCR_SAMPLES; ListSel = CurInstr - 1; return 1; }
 static int act_smp_lib(void)
-{ status("Sample library not ported yet."); return 1; }
+{ Screen = SCR_SAMPLES; sample_library_requester(); return 1; }
 static int act_ins_list(void)
 { Screen = SCR_INSTRUMENTS; ListSel = CurInstr - 1; return 1; }
 static int act_ins_lib(void)
-{ status("Instrument library not ported yet."); return 1; }
+{ Screen = SCR_INSTRUMENTS; instrument_library_requester(); return 1; }
 
 /* ---- submenus (coordinates/texts verbatim from IT_OBJ1.ASM) ---- */
 static const menuitem_t FileItems[] = {
