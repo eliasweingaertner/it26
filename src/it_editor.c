@@ -5138,6 +5138,12 @@ static void handle_pattern_key(int key)
     case ']':       if (BaseOctave < 8) BaseOctave++; return;
     case '{':       if (EditStep > 0) EditStep--; return;
     case '}':       if (EditStep < 16) EditStep++; return;
+    case '<': case ';':             /* PEFunction_DecreaseInstrument */
+        if (CurInstr > 0) CurInstr--;
+        return;
+    case '>': case '\'':            /* PEFunction_IncreaseInstrument */
+        if (CurInstr < 99) CurInstr++;
+        return;
     case '-':
         if (CurPattern > 0) { commit_current_pattern();
             load_pattern(CurPattern - 1); } return;
@@ -5164,7 +5170,9 @@ static void handle_pattern_key(int key)
             int gn = key_to_note(key);
             if (gn > 0) {
                 cell->note = (uint8_t)gn; cell->mask |= CM_NOTE;
-                cell->ins = (uint8_t)CurInstr; cell->mask |= CM_INS;
+                /* LastInstrument 0 = none: no instrument written */
+                if (CurInstr) { cell->ins = (uint8_t)CurInstr;
+                                cell->mask |= CM_INS; }
                 jam_note(gn, CurChan);
                 changed = 1;
                 advance_row();
