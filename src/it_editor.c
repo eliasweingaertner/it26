@@ -649,6 +649,16 @@ static int widgets_key(int key)
         case ITK_END:   thumb_set(w, w->max);           return 1;
         default: break;
         }
+        /* typed digits enter a value directly (F_PostThumbBar 2196):
+         * accumulate while it stays within range, else replace */
+        if (key >= '0' && key <= '9') {
+            int cur = thumb_get(w);
+            int acc = cur * 10 + (key - '0');
+            if (acc > w->max)
+                acc = key - '0';
+            thumb_set(w, acc);
+            return 1;
+        }
     } else {
         if (key == ITK_LEFT)  { nav_move(2); return 1; }
         if (key == ITK_RIGHT) { nav_move(3); return 1; }
@@ -6439,6 +6449,92 @@ static int pe_template_stamp(uint8_t noteval)
 static void pe_play_current_note(void) { }  /* T028 */
 static void pe_play_current_row(void)  { }  /* T028 */
 
+/* undo type captions (IT_PE.ASM UndoBufferTypes 300..322) */
+static const char *UndoTypeName[23] = {
+    "Empty",
+    "Undo revert pattern data (Alt-BkSpace)",
+    "Undo transposition up (Alt-Q)",
+    "Undo transposition down (Alt-A)",
+    "Undo block length double (Alt-F)",
+    "Undo block length halve (Alt-G)",
+    "Undo volume amplification (Alt-J)",
+    "Undo volume or panning slide (Alt-K)",
+    "Recover volumes/pannings (2*Alt-K)",
+    "Replace mixed data (Alt-M)",
+    "Replace overwritten data (Alt-O)",
+    "Undo paste data (Alt-P)",
+    "Undo set sample/instrument (Alt-S)",
+    "Undo set volume/panning (Alt-V)",
+    "Replace extra volumes/pannings (Alt-W)",
+    "Undo effect data slide (Alt-X)",
+    "Recover effects/effect data (2*Alt-X)",
+    "Undo swap block (Alt-Y)",
+    "Undo block cut (Alt-Z)",
+    "Remove inserted row(s) (Alt-Insert)",
+    "Replace deleted row(s) (Alt-Delete)",
+    "Redo (Undo)",
+    "Pattern data",
+};
+
+/* Ctrl-Backspace: pick a snapshot from the undo ring and revert to it
+ * (PEFunction_Undo 11461 + O1_UndoList). Reverting pushes the current
+ * state back as a Redo entry (type 21). */
+static void pe_undo_requester(void)
+{
+    int n = 0, i, sel = 0;
+
+    for (i = 0; i < 10; i++)
+        if (UndoRing[i].cells)
+            n++;
+    if (n == 0) {
+        status("Nothing to undo.");
+        return;
+    }
+    for (;;) {
+        int key, y;
+
+        draw_screen();
+        Screen_DrawBox(18, 18, 61, 20 + n + 1, 27);
+        Screen_DrawString(20, 19, "Undo:", 0x20);
+        for (i = 0; i < n; i++) {
+            uint8_t a = (i == sel) ? 0x3A : 0x02;
+            y = 20 + i;
+            if (i == sel)
+                fill(19, y, 41, ' ', a);
+            Screen_DrawString(20, y,
+                UndoTypeName[UndoRing[i].type <= 22 ? UndoRing[i].type : 0],
+                a);
+        }
+        Screen_Update();
+
+        key = Key_Get();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return; }
+        if (key == ITK_UP)   { if (sel > 0) sel--; continue; }
+        if (key == ITK_DOWN) { if (sel < n - 1) sel++; continue; }
+        if (key == ITK_ESC)  return;
+        if (key == ITK_ENTER) break;
+    }
+    /* revert to slot `sel`: copy it out first (snapshot_undo may free
+     * the ring's oldest slot), push current state as Redo, restore */
+    if (UndoRing[sel].pattern == CurPattern) {
+        uint16_t wantrows = UndoRing[sel].rows;
+        size_t nb = (size_t)wantrows * 64 * sizeof(editcell_t);
+        editcell_t *want = (editcell_t *)malloc(nb);
+        if (!want)
+            return;
+        memcpy(want, UndoRing[sel].cells, nb);
+        snapshot_undo(21);                  /* Redo entry */
+        memcpy(Grid, want, nb);
+        CurRows = wantrows;
+        if (CurRow > (int)CurRows - 1) CurRow = (int)CurRows - 1;
+        commit_current_pattern();
+        free(want);
+    } else {
+        status("Undo is for another pattern.");
+    }
+}
+
 static void handle_pattern_key(int key)
 {
     /* LastKeyBoard history (PE_PostPatternEdit 3215..3222) */
@@ -6564,6 +6660,7 @@ static void handle_pattern_key(int key)
     case ITK_ALT_DEL: pe_row_delete(); return;
     case ITK_CTRL_INS: pe_roll_down(); return;
     case ITK_CTRL_DEL: pe_roll_up(); return;
+    case ITK_CTRL_BACKSPACE: pe_undo_requester(); return;
     /* -- edit step (Alt-0..9, PE_PostPatternEdit6 + Alt0) -- */
     case ITK_ALT_0:
         EditStep = 0;
