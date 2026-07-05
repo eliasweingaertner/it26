@@ -409,6 +409,53 @@ def gen_pat(path):
     open(path, 'wb').write(out)
 
 
+def wav_header(nch, rate, bits, dsize, tag=1):
+    """canonical 44-byte RIFF/WAVE header"""
+    ba = nch * bits // 8
+    hdr = b'RIFF' + struct.pack('<I', 36 + dsize) + b'WAVEfmt '
+    hdr += struct.pack('<IHHIIHH', 16, tag, nch, rate, rate * ba, ba, bits)
+    hdr += b'data' + struct.pack('<I', dsize)
+    return hdr
+
+
+def wav_ramp16(i):
+    """deterministic 16-bit ramp; the selftest recomputes this in C"""
+    return (i << 7) - 16384
+
+
+def gen_wav8(path):
+    """mono 8-bit unsigned PCM, 22050 Hz: byte i = (i*7)&0xFF"""
+    data = bytes((i * 7) & 0xFF for i in range(SR))
+    open(path, 'wb').write(wav_header(1, 22050, 8, len(data)) + data)
+
+
+def gen_wav16(path):
+    """mono 16-bit signed PCM, 44100 Hz: the ramp"""
+    data = b''.join(struct.pack('<h', wav_ramp16(i)) for i in range(SR))
+    open(path, 'wb').write(wav_header(1, 44100, 16, len(data)) + data)
+
+
+def gen_wavst(path):
+    """stereo 16-bit PCM, 44100 Hz: left = the ramp, right = ~left --
+    the library loads the left channel only (feature 008)"""
+    data = b''.join(struct.pack('<hh', wav_ramp16(i), ~wav_ramp16(i))
+                    for i in range(SR))
+    open(path, 'wb').write(wav_header(2, 44100, 16, len(data)) + data)
+
+
+def gen_wavf(path):
+    """negative fixture: float WAV (wFormatTag=3) must be refused"""
+    data = b''.join(struct.pack('<f', 0.25) for _ in range(SR))
+    open(path, 'wb').write(wav_header(1, 44100, 32, len(data), tag=3) + data)
+
+
+def gen_wav24(path):
+    """negative fixture: 24-bit PCM must be refused"""
+    data = b''.join(struct.pack('<i', wav_ramp16(i) << 8)[0:3]
+                    for i in range(SR))
+    open(path, 'wb').write(wav_header(1, 44100, 24, len(data)) + data)
+
+
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else '.'
     gen_s3m(outdir + '/import_test.s3m')
@@ -421,8 +468,14 @@ def main():
     gen_far(outdir + '/lib_test.far')
     gen_krz(outdir + '/lib_test.krz')
     gen_pat(outdir + '/lib_test.pat')
+    gen_wav8(outdir + '/lib_test8.wav')
+    gen_wav16(outdir + '/lib_test16.wav')
+    gen_wavst(outdir + '/lib_testst.wav')
+    gen_wavf(outdir + '/lib_testf.wav')
+    gen_wav24(outdir + '/lib_test24.wav')
     print('wrote import_test.{s3m,mod,mtm,669,xm} + '
-          'lib_test.{xi,ptm,far,krz,pat} to', outdir)
+          'lib_test.{xi,ptm,far,krz,pat} + '
+          'lib_test{8,16,st,f,24}.wav to', outdir)
 
 
 if __name__ == '__main__':

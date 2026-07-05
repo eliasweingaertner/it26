@@ -5,7 +5,7 @@
 > code is organised**, and **what to do next**. For the staged editor plan
 > see `EDITOR-PORT-PLAN.md`; for the user-facing overview see `../README.md`.
 
-Last updated: 2026-07-04.
+Last updated: 2026-07-05.
 
 **State in one paragraph:** the engine has been done and verified since
 the start; the editor now covers the full planned surface — the real IT
@@ -14,9 +14,9 @@ instrument *editors* (waveform view, Alt-op set, envelopes, presets),
 F5 info page (all 11 views), F11/F12, message editor, .IT saving with
 the IT214/215 compressor, whole-module import (S3M/XM/MOD/MTM/669),
 and the sample/instrument library (rip samples/instruments from other
-modules, .ITS/.ITI/.XI, Alt-O/T/W saves). All gates green as of
-2026-07-04: determinism ×4 + save roundtrip ×4×3 IDENTICAL, selftest
-reports F4/F5/F3/SAVE/IMPORT/LIB OK. **Deferred / still open** (see §6):
+modules, .ITS/.ITI/.XI, standalone .WAV loading, Alt-O/T/W saves). All
+gates green as of 2026-07-05: determinism ×4 + save roundtrip ×4×3
+IDENTICAL, selftest reports F4/F5/F3/SAVE/IMPORT/LIB OK. **Deferred / still open** (see §6):
 the macOS verification pass (spec 001 T022 — needs a Mac), pattern
 editing depth (roadmap #5) and terminal mouse/Alt keys (roadmap #7) —
 both **have no spec yet**, plus small leftovers: S3M export
@@ -272,6 +272,25 @@ modules in each format (`testdata/import_test.*`); the selftest loads
 each, requires a non-silent 2 s render, and round-trips the S3M
 through the .IT writer — reports `IMPORT OK`.
 
+**Standalone WAV sample loading — DONE (2026-07-05, spec
+`specs/008-wav-sample-loading`):** closes the samples half of the 006
+leftover. `scan_wav` in `src/it_ris.c` ports `D_GetSampleInfo8`
+(IT_D_INF.INC 856): identification checks bytes 8..15 `"WAVEfmt "` +
+the PCM tag only (no `RIFF` check), the `data` chunk is found by the
+original's bounded 3-chunk walk with 16-bit skip arithmetic, only
+8/16-bit integer PCM qualifies, length = min(size, 4177910) in frames,
+C5Speed = the rate's low 16 bits. Records carry the original codes
+5/7 ("8/16 Bit WAV Format"); Enter on a WAV loads it directly (like
+.ITS), note keys preview it. `Load_SampleData` gained the missed
+stereo branch of `D_LoadSampleData` (Cvt bit 5: read interleaved,
+convert, compact) — **deviation: the Left/Right prompt is not ported,
+the left channel is taken silently** (README fidelity notes).
+Fixtures `lib_test{8,16,st,f,24}.wav` come from
+`tools/gen_import_tests.py`; the selftest LIB block verifies scan
+fields, byte-exact rips against the generator's ramps, the
+left-channel pick, refusal of the float/24-bit negatives, and a
+`RIS_SaveWAV` → re-scan → rip round trip.
+
 **Sample & instrument library — DONE (2026-07-04, spec
 `specs/006-cross-module-sample-load`):** `src/it_ris.c` ports
 `IT_D_RIS.INC` + `IT_D_RI.INC` + the record/transfer machinery from
@@ -310,7 +329,9 @@ source files (`testdata/import_test.*` + `testdata/lib_test.{ptm,far,
 krz,pat}`), .ITS and .ITI round-trips, and in-IT / in-XM / .XI
 instrument transfers with remap checks. Capture aids:
 `ITED_SHOT_SCREEN=10/11` render the sample/instrument library browser
-(`ITED_SHOT_LIB=<file>` picks the source, default itdemo).
+(`ITED_SHOT_LIB=<file>` picks the source, default itdemo). Leftovers
+after feature 008: AIFF/TXWave standalone loading, the WAV stereo
+Left/Right prompt, instrument-record preview.
 
 **Not done yet** (see §6): terminal-backend mouse and Alt keys. F4
 leftovers: in-list name editing, Alt-U pattern update. F5 leftover:
@@ -407,8 +428,9 @@ Non-interactive editor checks (no terminal/window/audio needed):
 Test modules live in `testdata/` (`beyond_network.it`, `itdemo.it`,
 `quests_end.it`, `synthscape_filters.it`); the generated import/library
 sources (`import_test.{s3m,mod,mtm,669,xm}`, `lib_test.{xi,ptm,far,krz,
-pat}`) come from `python tools/gen_import_tests.py testdata` and are
-consumed by the selftest's `IMPORT OK` / `LIB OK` blocks.
+pat}`, `lib_test{8,16,st,f,24}.wav`) come from
+`python tools/gen_import_tests.py testdata` and are consumed by the
+selftest's `IMPORT OK` / `LIB OK` blocks.
 
 ---
 
@@ -580,8 +602,10 @@ rough priority order:
    `specs/006-cross-module-sample-load`): see §2. F3/F4 Enter
    requesters, ten sample source formats + .ITS, .ITI/.XI/in-module
    instrument import with slot allocation, check-slot preview,
-   Alt-O/T/W + .ITI saves. Leftovers: WAV/AIFF/TXWave standalone
-   sample loading, instrument-record preview.
+   Alt-O/T/W + .ITI saves. Standalone `.WAV` loading landed 2026-07-05
+   as spec `specs/008-wav-sample-loading` (see §2). Leftovers:
+   AIFF/TXWave standalone sample loading, the WAV stereo Left/Right
+   prompt (left channel taken silently), instrument-record preview.
 
 ### Working agreements when continuing
 - Engine code stays 1:1; if you must touch it, re-run the §4 regression and

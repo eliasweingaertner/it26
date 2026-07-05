@@ -6113,7 +6113,8 @@ static void lib_open_source(const char *path, int *done)
             status("Unknown sample source: %s", path);
             return;
         }
-        if (n == 1 && SLib[0].Format == 2 && has_ext_ci(path, ".ITS")) {
+        if (n == 1 && (SLib[0].Format == 5 || SLib[0].Format == 7 ||
+                       (SLib[0].Format == 2 && has_ext_ci(path, ".ITS")))) {
             if (lib_load_sample_entry(&SLib[0]))
                 *done = 1;
             return;
@@ -7342,6 +7343,111 @@ int main(int argc, char **argv)
                 }
                 free(got.Data);
                 remove("st_lib.its");
+            }
+
+            /* 3b) standalone WAV (feature 008): scan fields, rip
+             *     byte-exact against the generator's deterministic
+             *     ramps (stereo rips the left channel), refuse the
+             *     negative fixtures, and a RIS_SaveWAV -> re-scan ->
+             *     rip round trip. */
+            {
+                sample_t got;
+                int n, k;
+
+                /* mono 8-bit: (k*7)&0xFF unsigned -> ^0x80 signed */
+                n = RIS_ScanModule("testdata/lib_test8.wav", ents,
+                                   LIB_MAX);
+                memset(&got, 0, sizeof(got));
+                if (n != 1 || ents[0].Format != 5 ||
+                    ents[0].hdr.Length != 256 ||
+                    ents[0].hdr.C5Speed != 22050 ||
+                    !RIS_LoadSample(&ents[0], &got) || !got.Data) {
+                    fprintf(stderr, "  wav8 scan/rip failed\n");
+                    lib_ok = 0;
+                } else {
+                    const int8_t *p = (const int8_t *)got.Data;
+                    for (k = 0; k < 256; k++)
+                        if (p[k] != (int8_t)(((k * 7) & 0xFF) ^ 0x80)) {
+                            fprintf(stderr, "  wav8 data mismatch\n");
+                            lib_ok = 0;
+                            break;
+                        }
+                }
+                free(got.Data);
+
+                /* mono 16-bit: the (k<<7)-16384 ramp, signed as-is */
+                n = RIS_ScanModule("testdata/lib_test16.wav", ents,
+                                   LIB_MAX);
+                memset(&got, 0, sizeof(got));
+                if (n != 1 || ents[0].Format != 7 ||
+                    ents[0].hdr.Length != 256 ||
+                    ents[0].hdr.C5Speed != 44100 ||
+                    !RIS_LoadSample(&ents[0], &got) || !got.Data) {
+                    fprintf(stderr, "  wav16 scan/rip failed\n");
+                    lib_ok = 0;
+                } else {
+                    const int16_t *p = (const int16_t *)got.Data;
+                    for (k = 0; k < 256; k++)
+                        if (p[k] != (int16_t)((k << 7) - 16384)) {
+                            fprintf(stderr, "  wav16 data mismatch\n");
+                            lib_ok = 0;
+                            break;
+                        }
+                }
+                free(got.Data);
+
+                /* stereo 16-bit: per-channel frame count, left rip */
+                n = RIS_ScanModule("testdata/lib_testst.wav", ents,
+                                   LIB_MAX);
+                memset(&got, 0, sizeof(got));
+                if (n != 1 || ents[0].Format != 7 ||
+                    ents[0].hdr.Length != 256 ||
+                    (ents[0].hdr.Cvt & 32) == 0 ||
+                    !RIS_LoadSample(&ents[0], &got) || !got.Data ||
+                    got.Length != 256) {
+                    fprintf(stderr, "  wavst scan/rip failed\n");
+                    lib_ok = 0;
+                } else {
+                    const int16_t *p = (const int16_t *)got.Data;
+                    for (k = 0; k < 256; k++)
+                        if (p[k] != (int16_t)((k << 7) - 16384)) {
+                            fprintf(stderr,
+                                    "  wavst left-channel mismatch\n");
+                            lib_ok = 0;
+                            break;
+                        }
+                }
+                free(got.Data);
+
+                /* negatives: float tag / 24-bit must be refused */
+                if (RIS_ScanModule("testdata/lib_testf.wav", ents,
+                                   LIB_MAX) > 0 ||
+                    RIS_ScanModule("testdata/lib_test24.wav", ents,
+                                   LIB_MAX) > 0) {
+                    fprintf(stderr, "  wav negative fixture accepted\n");
+                    lib_ok = 0;
+                }
+
+                /* save -> re-scan -> rip round trip */
+                {
+                    sample_t *src = &Song.Smp[2];   /* itdemo sample 3 */
+                    size_t bytes = (size_t)src->Length
+                                   << ((src->Flags & 2) ? 1 : 0);
+
+                    memset(&got, 0, sizeof(got));
+                    if (!RIS_SaveWAV(src, "st_lib.wav") ||
+                        RIS_ScanModule("st_lib.wav", ents,
+                                       LIB_MAX) != 1 ||
+                        ents[0].Format != ((src->Flags & 2) ? 7 : 5) ||
+                        !RIS_LoadSample(&ents[0], &got) || !got.Data ||
+                        got.Length != src->Length ||
+                        memcmp(got.Data, src->Data, bytes)) {
+                        fprintf(stderr, "  wav roundtrip failed\n");
+                        lib_ok = 0;
+                    }
+                    free(got.Data);
+                    remove("st_lib.wav");
+                }
             }
 
             /* 4) instrument paths: synthesize an instrument over sample

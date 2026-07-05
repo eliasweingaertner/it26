@@ -250,16 +250,20 @@ static int DecompressIT16(reader_t *r, int16_t *dst, uint32_t length,
  * data from a source file image, driven by the header's Flags/Cvt.
  * Flag word (BP in the ASM): 1 = 16-bit, 2 = already signed,
  * 4 = swap bytes (big endian), 8 = delta values, 16 = byte delta
- * (PTM), 8000h = IT-compressed. (32 = TX 12-bit and 64 = stereo
- * prompt are standalone-WAV/TXWave paths, not ported.)
+ * (PTM), 64 = stereo (standalone WAV: read both channels, keep one),
+ * 8000h = IT-compressed. (32 = TX 12-bit is TXWave-only, not ported.)
+ * Stereo deviation: the original prompts Left/Right
+ * (O1_StereoSampleList; right = BP bit 128); this port always takes
+ * the left channel -- see specs/008-wav-sample-loading/research.md R4.
  * Exported for the sample/instrument library (it_ris.c).
  * ---------------------------------------------------------------- */
 int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
 {
     reader_t rr = { filedata, size, 0 };
     reader_t *r = &rr;
-    int is16, compressed, it215, bswap, delta, bytedelta;
+    int is16, compressed, it215, bswap, delta, bytedelta, stereo;
     uint32_t len = s->Length;
+    uint32_t units;
     size_t bytes;
     uint8_t *data;
 
@@ -278,9 +282,13 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
      * it internally, so the pass runs for uncompressed data only */
     delta      = !compressed && (s->Cvt & 0x0C) != 0;
     bytedelta  = !compressed && (s->Cvt & 8) != 0;
+    stereo     = !compressed && (s->Cvt & 32) != 0;
 
-    bytes = (size_t)len << (is16 ? 1 : 0);
-    data = (uint8_t *)calloc(len + 4, is16 ? 2 : 1);
+    /* stereo reads both channels (the ASM doubles EDX again) and
+     * compacts to one after conversion */
+    units = len << (stereo ? 1 : 0);
+    bytes = (size_t)units << (is16 ? 1 : 0);
+    data = (uint8_t *)calloc((size_t)units + 4, is16 ? 2 : 1);
     if (!data)
         return 0;
     s->Data = data;
@@ -300,10 +308,11 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
             memcpy(data, r->data + r->pos, bytes);
         }
 
-        /* order as in the ASM: byte-swap, then delta, then sign */
+        /* order as in the ASM: byte-swap, then delta, then sign --
+         * each pass covers the full (interleaved, if stereo) block */
         if (bswap) {
             uint32_t n;
-            for (n = 0; n < len; n++) {
+            for (n = 0; n < units; n++) {
                 uint8_t t = data[n * 2];
                 data[n * 2] = data[n * 2 + 1];
                 data[n * 2 + 1] = t;
@@ -313,12 +322,12 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
             if (is16 && !bytedelta) {
                 int16_t *p = (int16_t *)data, acc = 0;
                 uint32_t n;
-                for (n = 0; n < len; n++) {
+                for (n = 0; n < units; n++) {
                     acc = (int16_t)(acc + p[n]);
                     p[n] = acc;
                 }
             } else {
-                uint32_t n, cnt = is16 ? len * 2 : len;
+                uint32_t n, cnt = is16 ? units * 2 : units;
                 uint8_t acc = 0;
                 for (n = 0; n < cnt; n++) {
                     acc = (uint8_t)(acc + data[n]);
@@ -330,12 +339,26 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
             if (is16) {
                 int16_t *p = (int16_t *)data;
                 uint32_t n;
-                for (n = 0; n < len; n++)
+                for (n = 0; n < units; n++)
                     p[n] = (int16_t)((uint16_t)p[n] ^ 0x8000);
             } else {
                 uint32_t n;
-                for (n = 0; n < len; n++)
+                for (n = 0; n < units; n++)
                     data[n] = (uint8_t)(data[n] ^ 0x80);
+            }
+        }
+        if (stereo) {
+            /* channel compaction (IT_DISK.ASM 3172..3211): keep every
+             * other sample in place; left starts at 0 (right would
+             * start at +1 -- never selected, see the header comment) */
+            uint32_t n;
+            if (is16) {
+                int16_t *p = (int16_t *)data;
+                for (n = 0; n < len; n++)
+                    p[n] = p[n * 2];
+            } else {
+                for (n = 0; n < len; n++)
+                    data[n] = data[n * 2];
             }
         }
     }

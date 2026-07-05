@@ -17,8 +17,8 @@
  * One entry mirrors a 96-byte DiskDataArea record: an ITS header
  * (hdr; hdr.OffsetInFile = offset of the data inside SrcFile) plus
  * file size, format code and the source path. Format codes follow
- * SampleFormatNames: 2=IT, 3=S3M, 8=XM, 9=PTM, 10=MTM, 11=669,
- * 12=FAR, 14=MOD, 15=KRZ, 16=PAT. */
+ * SampleFormatNames: 2=IT, 3=S3M, 5=WAV 8-bit, 7=WAV 16-bit, 8=XM,
+ * 9=PTM, 10=MTM, 11=669, 12=FAR, 14=MOD, 15=KRZ, 16=PAT. */
 typedef struct slibent_t {
     sample_t hdr;
     uint32_t FileSize;                  /* record +50h */
@@ -26,7 +26,7 @@ typedef struct slibent_t {
     char     SrcFile[264];
 } slibent_t;
 
-/* Scan a module / .KRZ / .PAT / .ITS file into sample records.
+/* Scan a module / .KRZ / .PAT / .ITS / .WAV file into sample records.
  * Returns the number of entries, or -1 if the file is unreadable or
  * not a supported sample source. */
 int RIS_ScanModule(const char *path, slibent_t *ents, int max);
@@ -39,7 +39,7 @@ int RIS_LoadSample(const slibent_t *e, sample_t *dst);
 
 const char *RIS_FormatName(uint8_t fmt);
 
-/* extension filter for the requester (modules + KRZ/PAT/ITS) */
+/* extension filter for the requester (modules + KRZ/PAT/ITS/WAV) */
 int RIS_KnownExt(const char *name);
 
 /* ---- instrument library ------------------------------------------

@@ -614,6 +614,70 @@ static int scan_pat(const uint8_t *d, size_t n, const char *path,
     return cnt;
 }
 
+/* D_GetSampleInfo8 (IT_D_INF.INC 856..1000): standalone WAV file ->
+ * one synthesized ITS record, format 5 (8-bit) / 7 (16-bit).
+ * Identification, quirks kept 1:1 (specs/008 research.md R1/R2):
+ *  - bytes 8..15 must be "WAVEfmt "; the leading "RIFF" is NOT checked;
+ *  - bytes 18..21 must be 00 00 01 00 (fmt-size high word 0, PCM tag);
+ *  - the data chunk is found by a bounded walk of at most 3 chunks
+ *    from 20 + fmt-size low word, advancing low_word(size) + 8 (the
+ *    DOS code skips with a 16-bit read of the 32-bit size);
+ *  - only 8/16 bits per sample qualify; nChannels == 2 -> stereo,
+ *    every other channel count is treated as mono;
+ *  - length = min(size dword, 4177910) bytes -> frames (>>1 per
+ *    16-bit and stereo); C5Speed = the rate's low 16 bits only. */
+static int scan_wav(const uint8_t *d, size_t n, const char *path,
+                    slibent_t *ents)
+{
+    sample_t *s;
+    size_t bp;
+    uint32_t dlen;
+    uint8_t bits;
+    int i, is16, st, found = 0;
+
+    if (n < 16 || memcmp(d + 8, "WAVEfmt ", 8) != 0)
+        return -1;
+    if (b16(d, n, 18) != 0 || b16(d, n, 20) != 1)
+        return -1;
+
+    bp = 24 + (size_t)b16(d, n, 16);    /* first chunk's size field */
+    for (i = 0; i < 3; i++) {
+        if (b32(d, n, bp - 4) == 0x61746164) {  /* 'data' */
+            found = 1;
+            break;
+        }
+        bp += (size_t)b16(d, n, bp) + 8;
+        if (bp >= n)                    /* JC / ran off the file */
+            break;
+    }
+    if (!found)
+        return -1;
+
+    bits = b8(d, n, 34);
+    if (bits != 8 && bits != 16)
+        return -1;
+    is16 = (bits == 16);
+    st = (b16(d, n, 22) == 2);
+
+    dlen = b32(d, n, bp);
+    if (dlen > 4177910)
+        dlen = 4177910;
+
+    s = ent_init(&ents[0], path, (uint8_t)(is16 ? 7 : 5));
+    /* name = the DOS filename, as the synthesis copies it */
+    memset(s->SampleName, 0, 26);
+    memcpy(s->SampleName, s->DOSFileName, 12);
+    s->Vol = 64;
+    s->Flags = (uint8_t)(1 | (is16 ? 2 : 0) | (st ? 4 : 0));
+    s->Cvt = (uint8_t)((is16 ? 1 : 0) | (st ? 32 : 0));
+    s->DfP = 0;
+    s->Length = dlen >> (is16 ? 1 : 0) >> (st ? 1 : 0);
+    s->C5Speed = b16(d, n, 24);
+    s->OffsetInFile = (uint32_t)(bp + 4);
+    ents[0].FileSize = dlen;
+    return 1;
+}
+
 /* ---- format sniffing / dispatch --------------------------------- */
 
 static int mod_sig_channels(const uint8_t *d, size_t n)
@@ -687,6 +751,8 @@ int RIS_ScanModule(const char *path, slibent_t *ents, int max)
         cnt = scan_far(d, n, path, ents, max);
     } else if (n >= 22 && !memcmp(d, "GF1PATCH110\0ID#000002", 22)) {
         cnt = scan_pat(d, n, path, ents, max);
+    } else if (n >= 16 && !memcmp(d + 8, "WAVEfmt ", 8)) {
+        cnt = scan_wav(d, n, path, ents);
     } else if (has_ext(path, ".KRZ")) {
         cnt = scan_krz(d, n, path, ents, max);
     } else if ((ch = mod_sig_channels(d, n)) != 0) {
@@ -732,6 +798,8 @@ const char *RIS_FormatName(uint8_t fmt)
     switch (fmt) {
     case 2:  return "Impulse Tracker Sample";
     case 3:  return "Scream Tracker Sample";
+    case 5:  return "8 Bit WAV Format";
+    case 7:  return "16 Bit WAV Format";
     case 8:  return "Fast Tracker 2 Sample";
     case 9:  return "Poly Tracker Sample";
     case 10: return "Multi Tracker Sample";
@@ -748,7 +816,7 @@ int RIS_KnownExt(const char *name)
 {
     static const char *ext[] = {
         ".IT", ".S3M", ".XM", ".MOD", ".MTM", ".669",
-        ".PTM", ".FAR", ".KRZ", ".PAT", ".ITS", NULL
+        ".PTM", ".FAR", ".KRZ", ".PAT", ".ITS", ".WAV", NULL
     };
     int i;
 

@@ -187,11 +187,20 @@ Sample/instrument library (F3/F4 Enter):
   sample length; the out-of-slots check uses the free-slot count from
   when the requester was opened; instrument import forces each
   transferred sample's default pan off). ULT ripping is commented out
-  in the 2.17 source and is likewise absent here. WAV/AIFF/TXWave
+  in the 2.17 source and is likewise absent here. AIFF/TXWave
   standalone samples are not ported. Deviation from the original: an
   occupied slot asks "Replace sample/instrument N?" before it is
   overwritten (IT overwrites silently); reads are bounds-checked
   rather than trusting DOS scratch buffers.
+- Standalone `.WAV` samples load per the original `D_GetSampleInfo8`
+  identification (only integer PCM with 8/16 bits qualifies, the
+  leading `RIFF` magic is not checked, the `data` chunk is found by
+  the original's bounded 3-chunk walk with its 16-bit skip
+  arithmetic, length capped at 4,177,910 bytes, C5 speed takes the
+  sample rate's low 16 bits only). Deviation: a stereo WAV loads the
+  **left channel silently** — the original pops a "Loading Stereo
+  Sample" Left/Right prompt; the prompt (and the Right choice) is not
+  ported.
 - Note keys preview the selected library entry through IT's check
   slot (sample 100) via the ported `Music_PlaySample`; there is no
   key-release note-off (the port's key layer has no release events).
