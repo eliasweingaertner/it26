@@ -9,17 +9,20 @@ Last updated: 2026-07-05.
 
 **State in one paragraph:** the engine has been done and verified since
 the start; the editor now covers the full planned surface — the real IT
-2.14 UI on Win32/SDL2/terminal backends, pattern editor, F3/F4 sample &
+2.14 UI on Win32/SDL2/terminal backends, a deep pattern editor (block
+ops, edit mask, template/multichannel entry, 10-slot undo, the 9-column
+cursor and the full IT_PE.ASM key layer), F3/F4 sample &
 instrument *editors* (waveform view, Alt-op set, envelopes, presets),
 F5 info page (all 11 views), F11/F12, message editor, .IT saving with
 the IT214/215 compressor, whole-module import (S3M/XM/MOD/MTM/669),
 and the sample/instrument library (rip samples/instruments from other
 modules, .ITS/.ITI/.XI, standalone .WAV loading, Alt-O/T/W saves). All
 gates green as of 2026-07-05: determinism ×4 + save roundtrip ×4×3
-IDENTICAL, selftest reports F4/F5/F3/SAVE/IMPORT/LIB OK. **Deferred / still open** (see §6):
-the macOS verification pass (spec 001 T022 — needs a Mac), pattern
-editing depth (roadmap #5) and terminal mouse/Alt keys (roadmap #7) —
-both **have no spec yet**, plus small leftovers: S3M export
+IDENTICAL, selftest reports F4/F5/F3/SAVE/IMPORT/LIB/PE OK. **Deferred / still open** (see §6):
+the macOS verification pass (spec 001 T022 — needs a Mac) and terminal
+mouse/Alt keys (roadmap #7, **no spec yet**), plus small leftovers:
+the F2 multi-scheme pattern views (Ctrl-0..5) + in-F2 mute/solo +
+pattern-length dialog (feature 009 leftovers), S3M export
 (SaveFormat 1), Alt-U update-pattern-data, Alt-F12 Fourier analyser,
 F4 in-list name editing, instrument-record preview.
 
@@ -271,6 +274,41 @@ path. Verification: `tools/gen_import_tests.py` generates minimal
 modules in each format (`testdata/import_test.*`); the selftest loads
 each, requires a non-silent 2 s render, and round-trips the S3M
 through the .IT writer — reports `IMPORT OK`.
+
+**Pattern editing depth — DONE (2026-07-05, spec
+`specs/009-pattern-editing-depth`):** the remaining F2 surface ported
+1:1 from the `IT_PE.ASM` key table and `PEFunction_*` handlers, in five
+staged commits. The F2 cursor now has the original's **9 columns**
+(`PE_PatternCursorPos0..8`: note, octave digit, ins tens/units, vol
+tens/units, command, param hi/lo) with per-column digit entry, the
+vol-effect letters, the `` ` `` pan toggle and the `PE_GotoNextInput`
+advance dance. **Block ops** (all snapshotting the 10-slot undo ring
+with the original type codes + hold-repeat suppression): Alt-B/E/D/L/U
+marking (normalise-by-swap, repeat-doubles/-widens) + Shift-arrow
+marking; Alt-C/O/P/M copy/overwrite/insert-paste/mix (repeat =
+field-wise SecondBlockMix); Alt-Z wipe, Alt-Y swap (overlap/range
+checks), Alt-F/G double/halve; Alt-Q/A transpose (clamp 0..119),
+Alt-X slide / 2× wipe commands, Alt-J amplify (prompt + Amplification
+memory + PEGetVolume default lookup), Alt-K vol/pan slide, Alt-V/W/S
+block volume/wipe-excess/set-instrument; Ctrl-Ins/Del pattern roll.
+**Entry pipeline:** the `,` edit mask (`EditMask ^ MaskChange[col]`),
+Alt-N multichannel with the `MultiChannelInfo` walk, and Alt-I template
+stamping (Overwrite/Mix-Pattern/Mix-Clipboard/Notes, `:` off) that
+transposes the clipboard onto the entered note. **Row verbs:**
+track-local Ins/Del, all-channel Alt-Ins/Del, Backspace step-back,
+Ctrl-Backspace undo requester (`O1_UndoList`: pick a snapshot, revert
+pushes a Redo entry). **Navigation:** Alt-Up/Down view scroll,
+Ctrl-Home/End row step, Ctrl-arrows, Ctrl-+/- order-follow, Ctrl-F7
+play mark, Ctrl-C centralise, Scroll Lock trace. **Key layer:** the
+`ITK_*` enum gained the Ctrl/Shift/Alt combo codes + shift
+press/release events, translated in the Win32 and SDL2 backends (the
+SDL backend also gained the Alt layer it lacked); the keyjazz map was
+reduced to the original `KeyBoardTable` so `,`/`.`/`;`/`l`/`/` are free.
+Thumbbars take typed digits. Selftest gains `PE OK`: mark→copy→
+overwrite, transpose round-trip, wipe+undo-ring revert byte-equality,
+row insert/delete, mask-suppressed entry, a 2-row template overwrite
+with transpose, and multichannel advancement — all on a scratch
+pattern, leaving the song untouched. Leftovers listed in §6 #5.
 
 **Standalone WAV sample loading — DONE (2026-07-05, spec
 `specs/008-wav-sample-loading`):** closes the samples half of the 006
@@ -587,10 +625,22 @@ rough priority order:
    IT214/IT215 sample compressor, save requester with overwrite
    confirm, Ctrl-S, Shift-F9 message editor, `--roundtrip` gate.
    Leftover: S3M export (SaveFormat 1).
-5. **Editing depth**: block ops (Alt-keys), edit masks, more of
-   `PE_TRANS.INC` behaviour; numeric entry on thumbbars (typed digits).
-   **No spec exists yet** — run the SpecKit `/specify` flow before
-   starting (sources: `IT_PE.ASM` key lists + `PE_TRANS.INC`).
+5. **Pattern editing depth** — ✅ DONE (2026-07-05, spec
+   `specs/009-pattern-editing-depth`): see §2. Block marking + the full
+   Alt-key block-op set, edit mask / multichannel / template entry,
+   the 10-slot typed undo with the Ctrl-Backspace requester, the
+   9-column cursor, navigation depth and thumbbar digit entry, plus the
+   Ctrl/Shift/Alt key codes on the pixel backends. **Leftovers** (see
+   the §2 block + README fidelity notes): the multi-scheme pattern
+   views (Ctrl-0..5 / Ctrl-Shift-1..4 / Alt-T track view — needs the
+   original's multi-view renderer the port lacks), in-F2 mute/solo
+   keys (Alt-F9/F10 family), the pattern-length resize dialog, and
+   some view toggles (row-hilight/tracking/division). MIDI input
+   triggers are out of scope (no MIDI-in). NB the ASM decode corrected
+   two spec assumptions: `PE_TRANS.INC` is the feature-007 format
+   converters (block semantics live in `IT_PE.ASM`), and undo is a
+   10-slot history with a picker, not single-step — see the spec's
+   research.md R0.
 6. **In-depth sample & instrument editors** (`IT_I.ASM`) — ✅ DONE
    (2026-07-03, spec `specs/005-sample-instrument-editors`): see §2.
    Waveform view, loop editing, the full Alt-op set, note-table ops,

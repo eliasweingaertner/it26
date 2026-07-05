@@ -178,6 +178,29 @@ Module import:
   dead code and stays a passthrough) — imported modules match what the
   original IT produced, not a "corrected" conversion.
 
+Pattern editor (F2):
+- The keyjazz map is the original `KeyBoardTable` (Z-row 12 semitones +
+  Q-row 17); an earlier port build also mapped `; , . l /` to notes —
+  that extension is removed so `,` is the edit-mask key and `; '` cycle
+  the instrument, as in IT.
+- Undo is IT's own 10-slot typed history: each destructive block/row op
+  snapshots the whole pattern with a type caption, and Ctrl-Backspace
+  opens the pick-a-snapshot requester (reverting pushes a Redo entry).
+  It is not an unlimited multi-level history — that matches the
+  original, not modern trackers.
+- Block operations, the edit mask, multichannel entry and template
+  stamping follow the `PEFunction_*` handler bodies including their
+  quirks (repeat-key alternate behaviours, PEGetVolume default-volume
+  lookup for Alt-J on empty cells, transpose clamped to C-0..B-9).
+- **Not ported (documented leftovers):** the multi-scheme pattern views
+  (Ctrl-0..5 / Ctrl-Shift-1..4 / Alt-T track view) need the original's
+  multi-view-method renderer, which this port does not have — the grid
+  is always the full 13-column view; the in-F2 mute/solo keys
+  (Alt-F9/F10 family); the pattern-length resize dialog; and MIDI input
+  triggers (no MIDI-in exists). Terminal-backend modifier keys
+  (Ctrl/Alt/Shift combos, shift-marking) are a roadmap-#7 gap — the
+  pixel backends carry the full set.
+
 Sample/instrument library (F3/F4 Enter):
 - Ripping single samples out of IT/S3M/XM/MOD/MTM/669/FAR/PTM/KRZ/PAT
   files and instruments out of IT/XM/.ITI/.XI follows the original
