@@ -122,6 +122,20 @@ enum {
     ITK_ALT_0 = 0x220,      /* .. ITK_ALT_0 + 9  = Alt-9 */
     ITK_ALT_INS = 0x230, ITK_ALT_DEL, ITK_ALT_UP, ITK_ALT_DOWN,
     ITK_ALT_PLUS, ITK_ALT_MINUS, ITK_CTRL_PLUS, ITK_CTRL_MINUS,
+    /* feature 009 (pattern editing depth). Terminal backend produces
+     * none of these (roadmap #7). */
+    ITK_CTRL_UP = 0x240, ITK_CTRL_DOWN, ITK_CTRL_LEFT, ITK_CTRL_RIGHT,
+    ITK_CTRL_HOME, ITK_CTRL_END, ITK_CTRL_PGUP, ITK_CTRL_PGDN,
+    ITK_CTRL_INS, ITK_CTRL_DEL, ITK_CTRL_BACKSPACE, ITK_SCROLL_LOCK,
+    ITK_ALT_F9, ITK_ALT_F10, ITK_CTRL_F7,
+    ITK_SHIFT_UP = 0x250, ITK_SHIFT_DOWN, ITK_SHIFT_LEFT,
+    ITK_SHIFT_RIGHT, ITK_SHIFT_PGUP, ITK_SHIFT_PGDN,
+    ITK_SHIFT_HOME, ITK_SHIFT_END,
+    ITK_CTRL_0 = 0x260,     /* .. ITK_CTRL_0 + 5 = Ctrl-5 */
+    ITK_CTRL_SHIFT_1 = 0x268, /* .. +3 = Ctrl-Shift-4 */
+    /* plain Shift press/release events (IT_PE.ASM scan 2Ah/36h
+     * handlers; drive F2 shift-marking) */
+    ITK_SHIFT_PRESS = 0x270, ITK_SHIFT_RELEASE,
     ITK_QUIT = 0x300,       /* window closed (pixel backend) */
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };
@@ -144,6 +158,10 @@ typedef struct screen_cell_t {
     uint8_t ch;
     uint8_t attr;
 } screen_cell_t;
+
+/* read back one cell of the draw buffer (PE_HilightCursor-style
+ * attribute rewrites; feature 009) */
+screen_cell_t Screen_GetCell(int x, int y);
 
 typedef struct screen_backend_t {
     int  (*init)(void);

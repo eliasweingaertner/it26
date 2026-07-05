@@ -51,6 +51,14 @@ void Screen_PutChar(int x, int y, uint8_t ch, uint8_t attr)
     }
 }
 
+screen_cell_t Screen_GetCell(int x, int y)
+{
+    screen_cell_t empty = { 0, 0 };
+    if ((unsigned)x < SCREEN_W && (unsigned)y < SCREEN_H)
+        return Back[y][x];
+    return empty;
+}
+
 void Screen_DrawString(int x, int y, const char *s, uint8_t attr)
 {
     while (*s)
@@ -307,6 +315,12 @@ void Screen_DumpPlain(void *vfp)
 
 /* ====================================================================
  * VT/ANSI truecolor terminal backend (fallback; primary on POSIX)
+ *
+ * Modifier limitation (roadmap #7): this backend produces none of the
+ * ITK Alt/Ctrl/Shift combo codes nor the shift press/release events
+ * (feature 009) -- a raw tty does not report modifier state without
+ * xterm modifyOtherKeys/kitty protocols. The editor treats missing
+ * combos as simply never pressed.
  * ==================================================================== */
 
 static screen_cell_t TermFront[SCREEN_H][SCREEN_W];

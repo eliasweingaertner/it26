@@ -72,7 +72,50 @@ static int      Screen = SCR_PATTERN;
 static editcell_t Grid[MAX_PATROWS * 64];
 static uint16_t  CurPattern = 0;
 static uint16_t  CurRows = 64;
-static int       CurRow = 0, CurChan = 0, CurCol = 0; /* col 0..3 */
+static int       CurRow = 0, CurChan = 0;
+/* cursor column, the original's 9 positions (PE_PatternCursorPos0..8):
+ * 0 note, 1 octave digit, 2/3 ins tens/units, 4/5 vol tens/units,
+ * 6 command, 7/8 param hi/lo */
+static int       CurCol = 0;
+
+/* ==== feature 009: pattern editing depth (IT_PE.ASM 213..345,
+ * 862..957) -- names/initial values mirror the ASM ==== */
+static uint8_t   EditMask = 3;          /* bit0 ins, bit1 vol, bit2 cmd */
+static const uint8_t MaskChange[9] = { 0, 0, 1, 1, 2, 2, 4, 4, 4 };
+static uint8_t   MultiChannelInfo[64];
+static int       BlockMark = 0;         /* 1 = block marked */
+static int       BlockLeft, BlockTop, BlockRight, BlockBottom;
+static int       BlockAnchorChan, BlockAnchorRow;
+static int       BlockReset = 0, NoteEntered = 0, ShiftHeld = 0;
+static editcell_t *ClipData = NULL;     /* BlockDataArea (0 = empty) */
+static int       ClipChans = 0, ClipRows = 0;
+static int       Template = 0;          /* 0 off, 1 overwrite,
+                                         * 2 mix-pattern, 3 mix-clip,
+                                         * 4 notes only */
+static int       Amplification = 100;   /* Alt-J prompt memory */
+static int       FastVolumeAmp = 67;    /* FastVolumeAmplification */
+static uint8_t   PEConfig = 0xE8;       /* CentraliseCursor byte: bit0
+                                         * centralise, bit1 hilight row,
+                                         * bit2 fast volume changes */
+static uint8_t   VolumePan = 0;         /* 0x80 = entering pannings */
+static uint8_t   CommandToValue = 0;    /* cursor moves onto values */
+/* Last* entry memory (ASM note values: 0..119, 253 = none) */
+static uint8_t   LastNote = 60;
+static uint8_t   LastVolume = 0xFF;
+static uint8_t   LastCommand = 0, LastCommandValue = 0;
+static int       PlayMarkPattern = 0, PlayMarkRow = 0, PlayMarkOn = 0;
+static int       LastKeys[3];           /* LastKeyBoard1..3 history */
+typedef struct undoslot_t {             /* UndoBuffer: 10 snapshots */
+    editcell_t *cells;
+    uint16_t    rows;
+    uint16_t    pattern;
+    uint8_t     type;                   /* 0..22, UndoBufferTypes */
+} undoslot_t;
+static undoslot_t UndoRing[10];
+static editcell_t *ScratchData = NULL;  /* Alt-0 store/restore */
+static int       ScratchRows = 0;
+static int       TracePlayback = 0;
+static int       ViewTracking = 0;
 static int       TopRow = 0, LeftChan = 0;
 static int       BaseOctave = 4;
 static int       EditStep = 1;
@@ -939,14 +982,14 @@ static void draw_pattern(void)
     for (screeny = 0; screeny < 32; screeny++) {
         int row = TopRow + screeny;
         int y = 15 + screeny;
-        uint8_t rowattr;
+        uint8_t base;
 
         if (row > maxrow)
             break;
 
-        rowattr = 0x06;
-        if (row % row_hilight_2() == 0)      rowattr = 0xE6;
-        else if (row % row_hilight_1() == 0) rowattr = 0xF6;
+        base = 0x06;
+        if (row % row_hilight_2() == 0)      base = 0xE6;
+        else if (row % row_hilight_1() == 0) base = 0xF6;
 
         draw3num(1, y, row, 0x20);          /* row number gutter */
 
@@ -954,6 +997,17 @@ static void draw_pattern(void)
             int c = LeftChan + ch;
             int x = 5 + 14*ch;
             const editcell_t *cell = &Grid[row * 64 + c];
+            uint8_t rowattr = base;
+
+            /* PE_SelectColour (IT_PE.ASM 8856): marked block cells get
+             * 96h on hilighted rows / 86h otherwise; the cursor row
+             * gets 16h when the row-hilight toggle is on */
+            if (BlockMark &&
+                c >= BlockLeft && c <= BlockRight &&
+                row >= BlockTop && row <= BlockBottom)
+                rowattr = (uint8_t)((base & 0x80) ? 0x96 : 0x86);
+            else if (row == CurRow && (PEConfig & 2))
+                rowattr = 0x16;
 
             draw_note(x, y, cell, rowattr);
             Screen_PutChar(x + 3, y, ' ', rowattr);
@@ -978,34 +1032,21 @@ static void draw_pattern(void)
         }
     }
 
-    /* cursor: attr 30h on the active field (PE_PrePatternEdit) */
+    /* cursor: PE_HilightCursor (IT_PE.ASM 8918) -- keep the drawn
+     * character, rewrite the attribute to (attr & 8) | 30h. The 9
+     * columns sit at cell offsets 0..2 (note, 3 wide), 2 (octave),
+     * 4, 5, 7, 8, 10, 11, 12. */
     if (CurRow >= TopRow && CurRow < TopRow + 32 &&
         CurChan >= LeftChan && CurChan < LeftChan + PE_CHANNELS) {
-        static const int fieldoff[4] = { 0, 4, 7, 10 };
-        static const int fieldw[4]   = { 3, 2, 2, 3 };
+        static const int fieldoff[9] = { 0, 2, 4, 5, 7, 8, 10, 11, 12 };
+        static const int fieldw[9]   = { 3, 1, 1, 1, 1, 1, 1, 1, 1 };
         int x = 5 + 14*(CurChan - LeftChan) + fieldoff[CurCol];
         int y = 15 + (CurRow - TopRow);
-        const editcell_t *cell = &Grid[CurRow * 64 + CurChan];
 
-        for (i = 0; i < fieldw[CurCol]; i++)
-            Screen_PutChar(x + i, y, 0, 0x30);
-        /* re-draw the field content in cursor colours */
-        if (CurCol == 0) {
-            draw_note(x, y, cell, 0x30);
-        } else if (CurCol == 1) {
-            if (cell->mask & CM_INS)
-                drawf(x, y, 0x30, "%02d", cell->ins % 100);
-            else
-                fill(x, y, 2, 173, 0x30);
-        } else if (CurCol == 2) {
-            draw_volume(x, y, cell, 0x30);
-        } else {
-            if (cell->mask & CM_CMD)
-                Screen_PutChar(x, y, (uint8_t)('A' + cell->cmd - 1), 0x30);
-            else
-                Screen_PutChar(x, y, '.', 0x30);
-            drawf(x + 1, y, 0x30, "%02X",
-                  (cell->mask & CM_CMD) ? cell->cmdval : 0);
+        for (i = 0; i < fieldw[CurCol]; i++) {
+            screen_cell_t sc = Screen_GetCell(x + i, y);
+            Screen_PutChar(x + i, y, sc.ch,
+                           (uint8_t)((sc.attr & 8) | 0x30));
         }
     }
 
@@ -5009,10 +5050,12 @@ static void redraw(void)
  * =================================================================== */
 static int key_to_note(int key)
 {
+    /* exactly the original KeyBoardTable (IT_PE.ASM 254..261):
+     * Z-row 12 semitones + Q-row 17. No ; , . l / extension --
+     * those keys carry their original bindings (feature 009). */
     static const struct { char k; int semitone, oct; } map[] = {
         {'z',0,0},{'s',1,0},{'x',2,0},{'d',3,0},{'c',4,0},{'v',5,0},
         {'g',6,0},{'b',7,0},{'h',8,0},{'n',9,0},{'j',10,0},{'m',11,0},
-        {',',12,0},{'l',13,0},{'.',14,0},{';',15,0},{'/',16,0},
         {'q',0,1},{'2',1,1},{'w',2,1},{'3',3,1},{'e',4,1},{'r',5,1},
         {'5',6,1},{'t',7,1},{'6',8,1},{'y',9,1},{'7',10,1},{'u',11,1},
         {'i',12,1},{'9',13,1},{'o',14,1},{'0',15,1},{'p',16,1},
@@ -5079,22 +5122,6 @@ static void cell_clear(editcell_t *c)
     memset(c, 0, sizeof(*c));
 }
 
-static void rows_shift_up(int chan, int fromrow)   /* Del */
-{
-    int r;
-    for (r = fromrow; r < (int)CurRows - 1; r++)
-        Grid[r * 64 + chan] = Grid[(r + 1) * 64 + chan];
-    cell_clear(&Grid[((int)CurRows - 1) * 64 + chan]);
-}
-
-static void rows_shift_down(int chan, int fromrow) /* Ins */
-{
-    int r;
-    for (r = (int)CurRows - 1; r > fromrow; r--)
-        Grid[r * 64 + chan] = Grid[(r - 1) * 64 + chan];
-    cell_clear(&Grid[fromrow * 64 + chan]);
-}
-
 static int hexval(int k)
 {
     if (k >= '0' && k <= '9') return k - '0';
@@ -5103,37 +5130,779 @@ static int hexval(int k)
     return -1;
 }
 
-static void advance_row(void)
+/* ==== cell field accessors: map the explicit-mask editcell_t onto
+ * the ASM 5-byte cell (note 253 = none, ins 0 = none, vol 255 = none;
+ * a command cell is "empty" when cmd and value are both 0) ==== */
+static uint8_t cn_get(const editcell_t *c)      /* ASM note value */
 {
-    CurRow += EditStep;
-    if (CurRow >= (int)CurRows) CurRow = CurRows - 1;
+    if (!(c->mask & CM_NOTE))
+        return 253;
+    return (c->note >= 1 && c->note <= 120) ? (uint8_t)(c->note - 1)
+                                            : c->note;
 }
+static void cn_set(editcell_t *c, uint8_t v)
+{
+    if (v == 253) {
+        c->mask &= (uint8_t)~CM_NOTE;
+        c->note = 0;
+    } else {
+        c->mask |= CM_NOTE;
+        c->note = (v <= 120) ? (uint8_t)(v + 1) : v;
+    }
+}
+static uint8_t ci_get(const editcell_t *c)
+{
+    return (c->mask & CM_INS) ? c->ins : 0;
+}
+static void ci_set(editcell_t *c, uint8_t v)
+{
+    c->ins = v;
+    if (v) c->mask |= CM_INS;
+    else { c->mask &= (uint8_t)~CM_INS; c->ins = 0; }
+}
+static uint8_t cv_get(const editcell_t *c)
+{
+    return (c->mask & CM_VOL) ? c->vol : 0xFF;
+}
+static void cv_set(editcell_t *c, uint8_t v)
+{
+    c->vol = v;
+    if (v != 0xFF) c->mask |= CM_VOL;
+    else { c->mask &= (uint8_t)~CM_VOL; c->vol = 0; }
+}
+static void cc_fixmask(editcell_t *c)
+{
+    if (c->cmd || c->cmdval) c->mask |= CM_CMD;
+    else                     c->mask &= (uint8_t)~CM_CMD;
+}
+static void cc_setcmd(editcell_t *c, uint8_t cmd)
+{
+    if (!(c->mask & CM_CMD)) c->cmdval = 0;
+    c->cmd = cmd;
+    cc_fixmask(c);
+}
+static void cc_setval(editcell_t *c, uint8_t val)
+{
+    if (!(c->mask & CM_CMD)) c->cmd = 0;
+    c->cmdval = val;
+    cc_fixmask(c);
+}
+static uint8_t cc_getval(const editcell_t *c)
+{
+    return (c->mask & CM_CMD) ? c->cmdval : 0;
+}
+static int cc_empty(const editcell_t *c)        /* word [cell+3] == 0 */
+{
+    return !(c->mask & CM_CMD) || (c->cmd == 0 && c->cmdval == 0);
+}
+
+static editcell_t *cellat(int row, int chan)
+{
+    return &Grid[row * 64 + chan];
+}
+
+/* ==== undo ring (PE_AddToUndoBuffer, IT_PE.ASM 11319): 10 slots,
+ * newest first; each is a full snapshot of the current pattern ==== */
+static void snapshot_undo(uint8_t type)
+{
+    undoslot_t s;
+    size_t n = (size_t)CurRows * 64;
+    int i;
+
+    s.cells = (editcell_t *)malloc(n * sizeof(editcell_t));
+    if (!s.cells)
+        return;                         /* original flashes + skips */
+    memcpy(s.cells, Grid, n * sizeof(editcell_t));
+    s.rows = (uint16_t)CurRows;
+    s.pattern = CurPattern;
+    s.type = type;
+
+    free(UndoRing[9].cells);            /* release oldest */
+    for (i = 9; i > 0; i--)
+        UndoRing[i] = UndoRing[i - 1];
+    UndoRing[0] = s;
+}
+
+/* ==== movement (PEFunction_* 3358..3752) ==== */
+static int pe_skip(void) { return EditStep ? EditStep : 1; }
+
+static void pe_move_up(void)
+{
+    int r = CurRow - pe_skip();
+    if (r >= 0)
+        CurRow = r;                     /* no move if it would go < 0 */
+}
+static void pe_move_down(void)
+{
+    int r = CurRow + pe_skip();
+    if (r <= (int)CurRows - 1)
+        CurRow = r;
+}
+static void pe_move_left(void)
+{
+    int col = CurCol - 1;
+    if (col < 0) {
+        if (CurChan == 0)
+            return;
+        CurChan--;
+        col = 8;
+        if (CommandToValue && cc_empty(cellat(CurRow, CurChan)))
+            col = 6;
+    }
+    CurCol = col;
+}
+static void pe_move_right(void)
+{
+    int col = CurCol + 1;
+    if (col > 6) {
+        int wrap = 0;
+        if (CommandToValue && cc_empty(cellat(CurRow, CurChan)))
+            wrap = 1;
+        else if (col >= 9)
+            wrap = 1;
+        if (wrap) {
+            if (CurChan + 1 >= 64)
+                return;
+            CurChan++;
+            col = 0;
+        }
+    }
+    CurCol = col;
+}
+static void pe_page(int dir, int hilight)   /* PgUp/PgDn chains */
+{
+    int bl = hilight ? hilight : 16;
+    int row = CurRow;
+    int maxrow = (int)CurRows - 1;
+
+    if (dir < 0) {
+        if (maxrow - pe_skip() < row) { /* near-bottom snap quirk */
+            row = ((row - 1) / bl) * bl;
+            if (row < 0) row = 0;
+        } else {
+            row -= bl;
+            if (row < 0) row = 0;
+        }
+    } else {
+        row += bl;
+        if (row > maxrow) row = maxrow;
+    }
+    CurRow = row;
+}
+static void pe_centralise(void)             /* PE_CentraliseCursor */
+{
+    TopRow = CurRow - 16;
+    if (TopRow < 0) TopRow = 0;
+}
+static void pe_home(void)                   /* cascade */
+{
+    if (CurCol != 0)        CurCol = 0;
+    else if (CurChan != 0)  CurChan = 0;
+    else                    CurRow = 0;
+}
+static void pe_end(void)
+{
+    int last = Music_GetLastChannel();
+    if (CurCol != 8)            CurCol = 8;
+    else if (CurChan != last)   CurChan = last;
+    else                        CurRow = (int)CurRows - 1;
+}
+static void pe_chan_left(void)              /* PEFunction_AltLeft */
+{
+    if (CurChan > 0)
+        CurChan--;
+}
+static void pe_chan_right(void)             /* PEFunction_AltRight */
+{
+    if (CurChan < 63)
+        CurChan++;
+}
+static void pe_shift_pgup_mv(void)          /* ShiftPgUp (3634) */
+{
+    pe_page(-1, row_hilight_2());
+    pe_centralise();
+}
+static void pe_shift_pgdn_mv(void)
+{
+    pe_page(+1, row_hilight_2());
+    pe_centralise();
+}
+static void pe_backspace(void)
+{
+    int row = CurRow - EditStep;
+    int chan = CurChan;
+
+    if (row >= 0) {
+        CurRow = row;
+        if (MultiChannelInfo[chan]) {   /* previous enabled channel */
+            int start = chan, wrapped = 0;
+            do {
+                chan--;
+                if (chan < 0) {
+                    if (row == 0)
+                        return;
+                    wrapped++;
+                    chan &= 63;
+                }
+                if (chan == start)
+                    break;
+            } while (!MultiChannelInfo[chan]);
+            CurChan = chan;
+            if (EditStep == 0 && wrapped && row != 0)
+                CurRow = row - 1;
+        } else if (EditStep == 0) {
+            chan--;
+            if (chan < 0) {
+                if (row == 0)
+                    return;
+                row--;
+                chan &= 63;
+            }
+            CurRow = row;
+            CurChan = chan;
+        }
+    }
+}
+
+/* PE_GotoNextInput (4087): cursor-column dance + row/channel advance */
+static void pe_goto_next_input(int full)
+{
+    int advance = 1;
+
+    if (full) {
+        switch (CurCol) {
+        case 0: case 1:                     break;
+        case 2: CurCol = 3; advance = 0;    break;
+        case 3: CurCol = 2;                 break;
+        case 4: CurCol = 5; advance = 0;    break;
+        case 5: CurCol = 4;                 break;
+        case 6: if (CommandToValue) { CurCol = 7; advance = 0; }
+                break;
+        case 7: CurCol = 8; advance = 0;    break;
+        default:                            /* 8 */
+            if (CommandToValue) CurCol = 6;
+            else                CurCol = 7;
+            break;
+        }
+        if (!advance)
+            return;
+    }
+    {
+        int row = CurRow + EditStep;
+        int chan = CurChan;
+
+        if (row > (int)CurRows - 1)
+            return;
+        CurRow = row;
+        if (CurCol == 0 && MultiChannelInfo[chan]) {
+            int start = chan, wraps = 0;
+            do {
+                chan++;
+                if (chan > 63)
+                    wraps++;
+                chan &= 63;
+                if (chan == start)
+                    break;
+            } while (!MultiChannelInfo[chan]);
+            CurChan = chan;
+            if (EditStep == 0 && wraps)
+                pe_move_down();             /* SkipValue 0: wrap descends */
+        } else if (EditStep == 0) {
+            int c = CurChan + 1, r = CurRow;
+            if (c > 63) {
+                if (r >= (int)CurRows - 1)
+                    return;
+                r++;
+            }
+            c &= 63;
+            CurRow = r;
+            CurChan = c;
+        }
+    }
+}
+
+/* template width quirk: with template mode on and a 1-row clipboard,
+ * the wipe/insert/delete verbs cover the clipboard's width */
+static int pe_template_width(void)
+{
+    if (Template && CurCol == 0 && ClipData && ClipRows == 1)
+        return ClipChans;
+    return 1;
+}
+
+/* WipeNote (4019): write a note value + wipe mask-enabled fields */
+static void pe_wipe_note(uint8_t noteval)
+{
+    int w = pe_template_width();
+    int idx = CurRow * 64 + CurChan;
+    int lim = (int)CurRows * 64;
+    int i;
+
+    for (i = 0; i < w && idx + i < lim; i++) {
+        editcell_t *c = &Grid[idx + i];
+        cn_set(c, noteval);
+        if (EditMask & 1) ci_set(c, 0);
+        if (EditMask & 2) cv_set(c, 0xFF);
+        if (EditMask & 4) { c->cmd = 0; c->cmdval = 0; cc_fixmask(c); }
+    }
+    LastNote = noteval;
+    commit_current_pattern();
+    if (ShiftHeld) {                        /* CHORDENTRY */
+        int keep = EditStep;
+        EditStep = 0;
+        NoteEntered = 1;
+        pe_goto_next_input(1);
+        EditStep = keep;
+    } else
+        pe_goto_next_input(1);
+}
+
+static void jam_cell(const editcell_t *c, int chan)
+{
+    uint8_t n[5];
+    if (PlayMode != 0)
+        return;
+    n[0] = cn_get(c);
+    n[1] = ci_get(c);
+    n[2] = cv_get(c);
+    n[3] = (uint8_t)((c->mask & CM_CMD) ? c->cmd : 0);
+    n[4] = cc_getval(c);
+    ed_lock();
+    Music_PlayNote((uint16_t)chan, n, 32);
+    ed_unlock();
+}
+
+static int pe_template_stamp(uint8_t noteval);  /* feature 009 US2 */
+
+/* PE_NewNote4 (4668): write note + mask-enabled Last* fields, play */
+static void pe_new_note(uint8_t noteval)
+{
+    editcell_t *c = cellat(CurRow, CurChan);
+
+    if (Template && pe_template_stamp(noteval))
+        return;
+
+    LastNote = noteval;
+    cn_set(c, noteval);
+    if (EditMask & 1) ci_set(c, (uint8_t)CurInstr);
+    if (EditMask & 2) cv_set(c, LastVolume);
+    if (EditMask & 4) {
+        c->cmd = LastCommand;
+        c->cmdval = LastCommandValue;
+        cc_fixmask(c);
+    }
+    jam_cell(c, CurChan);
+    commit_current_pattern();
+    if (ShiftHeld) {                        /* CHORDENTRY */
+        int keep = EditStep;
+        EditStep = 0;
+        NoteEntered = 1;
+        pe_goto_next_input(1);
+        EditStep = keep;
+    } else
+        pe_goto_next_input(1);
+}
+
+static void pe_play_current_note(void);     /* US4 (8538/8575) */
+static void pe_play_current_row(void);
+
+/* the 9 cursor-column character handlers (PE_PatternCursorPos0..8) */
+static int pe_col_key(int key)
+{
+    editcell_t *c = cellat(CurRow, CurChan);
+
+    switch (CurCol) {
+    case 0: {                               /* note */
+        int gn = key_to_note(key);
+        if (gn > 0) {
+            int noteval = gn - 1;
+            if (noteval <= 119)
+                pe_new_note((uint8_t)noteval);
+            return 1;
+        }
+        switch (key) {
+        case '.':           pe_wipe_note(253); return 1;
+        case '1': case '!': pe_wipe_note(254); return 1;
+        case '`': case '~': pe_wipe_note(255); return 1;
+        case ' ':           pe_new_note(LastNote); return 1;
+        case '4': case '$': pe_play_current_note(); return 1;
+        case '8':           pe_play_current_row(); return 1;
+        default:            return 0;
+        }
+    }
+    case 1: {                               /* octave digit */
+        if (key >= '0' && key <= '9') {
+            uint8_t n = cn_get(c);
+            if (n <= 120) {                 /* incl. the 120 quirk */
+                cn_set(c, (uint8_t)(n % 12 + (key - '0') * 12));
+                commit_current_pattern();
+            }
+            pe_goto_next_input(1);
+            return 1;
+        }
+        return 0;
+    }
+    case 2: case 3: {                       /* ins tens / units */
+        if (key == ' ') {
+            ci_set(c, (uint8_t)CurInstr);
+        } else if (key == '.') {
+            ci_set(c, 0);
+        } else if (key >= '0' && key <= '9') {
+            uint8_t old = ci_get(c);
+            uint8_t v = (CurCol == 2)
+                ? (uint8_t)((key - '0') * 10 + old % 10)
+                : (uint8_t)(old / 10 * 10 + (key - '0'));
+            CurInstr = v;                   /* LastInstrument */
+            ci_set(c, v);
+            commit_current_pattern();
+            pe_goto_next_input(1);
+            return 1;
+        } else
+            return 0;
+        commit_current_pattern();
+        pe_goto_next_input(0);
+        return 1;
+    }
+    case 4: case 5: {                       /* vol tens / units */
+        if (key == '`') {                   /* PE_VolumePan */
+            VolumePan ^= 0x80;
+            status(VolumePan ? "Panning control set"
+                             : "Volume control set");
+            return 1;
+        }
+        if (key == ' ') {
+            cv_set(c, LastVolume);
+        } else if (key == '.') {
+            cv_set(c, 0xFF);
+        } else if (key >= '0' && key <= '9') {
+            uint8_t raw = cv_get(c);
+            uint8_t old = (uint8_t)(raw == 0xFF ? 0 : raw);
+            uint8_t v;
+            old &= 0x7F;
+            if (old >= 65)
+                old = (uint8_t)(old - 65);
+            if (CurCol == 4) {
+                v = (uint8_t)((key - '0') * 10 + old % 10);
+                if (v > 64) v = 64;
+                v |= VolumePan;
+            } else {
+                v = (uint8_t)(old / 10 * 10 + (key - '0'));
+                if (raw != 0xFF && (raw & 0x7F) > 64) {
+                    /* keep the effect class when editing its digit */
+                    v = (uint8_t)(v + 65);
+                    if (raw & 0x80)
+                        v = (uint8_t)(v + 128);
+                } else {
+                    if (v > 64) v = 64;
+                    v |= VolumePan;
+                }
+            }
+            LastVolume = v;
+            cv_set(c, v);
+            commit_current_pattern();
+            pe_goto_next_input(1);
+            return 1;
+        } else if (CurCol == 4 &&
+                   ((key >= 'a' && key <= 'h') ||
+                    (key >= 'A' && key <= 'H'))) {
+            /* volume-effect letters on the tens column */
+            uint8_t raw = cv_get(c);
+            uint8_t old = (uint8_t)(raw == 0xFF ? 0 : raw);
+            uint8_t units, v;
+            int letter = (key >= 'a') ? key - 'a' : key - 'A';
+            old &= 0x7F;
+            if (old >= 65)
+                old = (uint8_t)(old - 65);
+            units = (uint8_t)(old % 10);
+            v = (uint8_t)(letter * 10);
+            if (v >= 60)
+                v = (uint8_t)(v + 128 - 60);
+            v = (uint8_t)(v + 65 + units);
+            LastVolume = v;
+            cv_set(c, v);
+            commit_current_pattern();
+            pe_goto_next_input(1);
+            return 1;
+        } else
+            return 0;
+        LastVolume = cv_get(c);
+        commit_current_pattern();
+        pe_goto_next_input(0);
+        return 1;
+    }
+    case 6: {                               /* command letter */
+        uint8_t cmd;
+        if (key == ' ')
+            cmd = LastCommand;
+        else if (key == '.')
+            cmd = 0;
+        else {
+            int lk = (key >= 'a' && key <= 'z') ? key - 32 : key;
+            if (lk < 'A' || lk > 'Z')
+                return 0;
+            cmd = (uint8_t)(lk - '@');
+        }
+        LastCommand = cmd;
+        cc_setcmd(c, cmd);
+        commit_current_pattern();
+        pe_goto_next_input(1);
+        return 1;
+    }
+    case 7: case 8: {                       /* param hi / lo nibble */
+        uint8_t val;
+        if (key == '.') {
+            val = 0;
+        } else if (key == ' ') {
+            val = LastCommandValue;
+        } else {
+            int h = hexval(key);
+            if (h < 0)
+                return 0;
+            val = (CurCol == 7)
+                ? (uint8_t)((cc_getval(c) & 0x0F) | (h << 4))
+                : (uint8_t)((cc_getval(c) & 0xF0) | h);
+            LastCommandValue = val;
+            cc_setval(c, val);
+            commit_current_pattern();
+            pe_goto_next_input(1);
+            return 1;
+        }
+        LastCommandValue = val;
+        cc_setval(c, val);
+        commit_current_pattern();
+        pe_goto_next_input(0);
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+/* ==== track / row verbs (PEFunction_Insert/Delete 4805/4733,
+ * RowInsert/RowDelete 4937/4882) ==== */
+static void pe_track_delete(void)
+{
+    int w = pe_template_width();
+    int i, idx;
+    int lim = (int)CurRows * 64;
+
+    for (i = 0; i < w; i++) {
+        int base = CurRow * 64 + CurChan + i;
+        if (base >= lim)
+            break;
+        for (idx = base; idx + 64 < lim; idx += 64)
+            Grid[idx] = Grid[idx + 64];
+        cell_clear(&Grid[idx]);
+    }
+    commit_current_pattern();
+}
+static void pe_track_insert(void)
+{
+    int w = pe_template_width();
+    int i, idx;
+    int lim = (int)CurRows * 64;
+
+    for (i = 0; i < w; i++) {
+        int base = CurRow * 64 + CurChan + i;
+        if (base >= lim)
+            break;
+        for (idx = ((lim - 1 - base) / 64) * 64 + base; idx > base;
+             idx -= 64)
+            Grid[idx] = Grid[idx - 64];
+        cell_clear(&Grid[base]);
+    }
+    commit_current_pattern();
+}
+static void pe_row_delete(void)             /* Alt-Del, undo type 20 */
+{
+    int r;
+    if (LastKeys[1] != ITK_ALT_DEL)         /* repeat suppression */
+        snapshot_undo(20);
+    for (r = CurRow; r < (int)CurRows - 1; r++)
+        memcpy(&Grid[r * 64], &Grid[(r + 1) * 64],
+               64 * sizeof(editcell_t));
+    memset(&Grid[((int)CurRows - 1) * 64], 0, 64 * sizeof(editcell_t));
+    commit_current_pattern();
+}
+static void pe_row_insert(void)             /* Alt-Ins, undo type 19 */
+{
+    int r;
+    if (LastKeys[1] != ITK_ALT_INS)
+        snapshot_undo(19);
+    for (r = (int)CurRows - 1; r > CurRow; r--)
+        memcpy(&Grid[r * 64], &Grid[(r - 1) * 64],
+               64 * sizeof(editcell_t));
+    memset(&Grid[CurRow * 64], 0, 64 * sizeof(editcell_t));
+    commit_current_pattern();
+}
+
+/* ==== marking (5555..5700, 5994, 7093) ==== */
+static void mark_begin_chain(int chan, int row)
+{
+    if (!BlockMark) {
+        BlockMark = 1;
+        BlockLeft = BlockRight = chan;
+        BlockTop = BlockBottom = row;
+        return;
+    }
+    if (chan > BlockRight) {
+        BlockLeft = BlockRight;
+        BlockRight = chan;
+    } else
+        BlockLeft = chan;
+    if (row > BlockBottom) {
+        BlockTop = BlockBottom;
+        BlockBottom = row;
+    } else
+        BlockTop = row;
+}
+static void mark_end_chain(int chan, int row)
+{
+    if (!BlockMark) {
+        BlockMark = 1;
+        BlockLeft = BlockRight = chan;
+        BlockTop = BlockBottom = row;
+        return;
+    }
+    if (chan < BlockLeft) {
+        BlockRight = BlockLeft;
+        BlockLeft = chan;
+    } else
+        BlockRight = chan;
+    if (row < BlockTop) {
+        BlockBottom = BlockTop;
+        BlockTop = row;
+    } else
+        BlockBottom = row;
+}
+static void pe_alt_d(void)                  /* mark bar / double it */
+{
+    if (LastKeys[1] == ITK_ALT_A + ('D' - 'A') && BlockMark) {
+        int len = (BlockBottom - BlockTop + 1) * 2;
+        int bot = BlockTop + len - 1;
+        if (bot > (int)CurRows - 1)
+            bot = (int)CurRows - 1;
+        BlockBottom = bot;
+        return;
+    }
+    BlockTop = CurRow;
+    BlockLeft = BlockRight = CurChan;
+    BlockBottom = CurRow + row_hilight_2() - 1;
+    if (BlockBottom > (int)CurRows - 1)
+        BlockBottom = (int)CurRows - 1;
+    BlockMark = 1;
+}
+static void pe_alt_l(void)                  /* mark track / widen */
+{
+    if (LastKeys[1] == ITK_ALT_A + ('L' - 'A') && BlockMark) {
+        BlockLeft = 0;
+        BlockRight = 63;
+        return;
+    }
+    BlockMark = 1;
+    BlockLeft = BlockRight = CurChan;
+    BlockTop = 0;
+    BlockBottom = (int)CurRows - 1;
+}
+
+/* shifted movement extends the mark from the shift anchor
+ * (PE_PostPatternEditShift, 3237..3296) */
+static void pe_shift_move(void (*mover)(void))
+{
+    int orow = CurRow, ochan = CurChan;
+
+    mover();
+    if (orow == CurRow && ochan == CurChan)
+        return;
+    if (BlockReset) {
+        BlockReset = 0;
+        BlockMark = 0;
+    }
+    mark_begin_chain(BlockAnchorChan, BlockAnchorRow);
+    mark_end_chain(CurChan, CurRow);
+}
+
+/* stubs filled by later 009 stories */
+static int pe_template_stamp(uint8_t noteval)
+{
+    (void)noteval;
+    return 0;                               /* T019: PE_Template */
+}
+static void pe_play_current_note(void) { }  /* T028 */
+static void pe_play_current_row(void)  { }  /* T028 */
 
 static void handle_pattern_key(int key)
 {
-    editcell_t *cell = &Grid[CurRow * 64 + CurChan];
-    int changed = 0;
+    /* LastKeyBoard history (PE_PostPatternEdit 3215..3222) */
+    LastKeys[2] = LastKeys[1];
+    LastKeys[1] = LastKeys[0];
+    LastKeys[0] = key;
 
     switch (key) {
-    case ITK_UP:    if (CurRow > 0) CurRow--; return;
-    case ITK_DOWN:  if (CurRow < (int)CurRows - 1) CurRow++; return;
-    case ITK_LEFT:
-        if (CurCol > 0) CurCol--;
-        else if (CurChan > 0) { CurChan--; CurCol = 3; }
+    /* -- shift press/release: marking anchor + chord entry -- */
+    case ITK_SHIFT_PRESS:
+        BlockAnchorChan = CurChan;
+        BlockAnchorRow = CurRow;
+        BlockReset = 1;
+        NoteEntered = 0;
+        ShiftHeld = 1;
         return;
-    case ITK_RIGHT:
-        if (CurCol < 3) CurCol++;
-        else if (CurChan < 63) { CurChan++; CurCol = 0; }
+    case ITK_SHIFT_RELEASE:
+        ShiftHeld = 0;
+        if (NoteEntered) {                  /* chord entry ends */
+            CurChan = BlockAnchorChan;
+            CurRow = BlockAnchorRow;
+            NoteEntered = 0;
+            pe_goto_next_input(1);
+        }
         return;
-    case ITK_TAB:   if (CurChan < 63) CurChan++; CurCol = 0; return;
-    case ITK_SHIFT_TAB: if (CurChan > 0) CurChan--; CurCol = 0; return;
-    case ITK_PGUP:  CurRow -= 16; if (CurRow < 0) CurRow = 0; return;
-    case ITK_PGDN:  CurRow += 16; if (CurRow >= (int)CurRows)
-                        CurRow = CurRows - 1; return;
-    case ITK_HOME:  CurRow = 0; return;
-    case ITK_END:   CurRow = CurRows - 1; return;
-    case ITK_INS:   rows_shift_down(CurChan, CurRow); changed = 1; break;
-    case ITK_DEL:   rows_shift_up(CurChan, CurRow); changed = 1; break;
+    /* -- movement -- */
+    case ITK_UP:    pe_move_up(); return;
+    case ITK_DOWN:  pe_move_down(); return;
+    case ITK_LEFT:  pe_move_left(); return;
+    case ITK_RIGHT: pe_move_right(); return;
+    case ITK_PGUP:  pe_page(-1, row_hilight_2()); return;
+    case ITK_PGDN:  pe_page(+1, row_hilight_2()); return;
+    case ITK_HOME:  pe_home(); return;
+    case ITK_END:   pe_end(); return;
+    case ITK_TAB:
+        if (CurChan < 63) { CurCol = 0; CurChan++; }
+        return;
+    case ITK_SHIFT_TAB:
+        if (CurCol == 0) { if (CurChan > 0) CurChan--; }
+        CurCol = 0;
+        return;
+    case ITK_BACKSPACE: pe_backspace(); return;
+    /* -- shifted movement extends the mark; Shift-Left/Right move a
+     * whole channel (the key table routes them to AltLeft/AltRight),
+     * Shift-PgUp/PgDn also centralise (3634/3646) -- */
+    case ITK_SHIFT_UP:    pe_shift_move(pe_move_up); return;
+    case ITK_SHIFT_DOWN:  pe_shift_move(pe_move_down); return;
+    case ITK_SHIFT_LEFT:  pe_shift_move(pe_chan_left); return;
+    case ITK_SHIFT_RIGHT: pe_shift_move(pe_chan_right); return;
+    case ITK_SHIFT_HOME:  pe_shift_move(pe_home); return;
+    case ITK_SHIFT_END:   pe_shift_move(pe_end); return;
+    case ITK_SHIFT_PGUP:  pe_shift_move(pe_shift_pgup_mv); return;
+    case ITK_SHIFT_PGDN:  pe_shift_move(pe_shift_pgdn_mv); return;
+    /* -- marking -- */
+    case ITK_ALT_A + ('B' - 'A'):
+        mark_begin_chain(CurChan, CurRow); return;
+    case ITK_ALT_A + ('E' - 'A'):
+        mark_end_chain(CurChan, CurRow); return;
+    case ITK_ALT_A + ('D' - 'A'): pe_alt_d(); return;
+    case ITK_ALT_A + ('L' - 'A'): pe_alt_l(); return;
+    case ITK_ALT_A + ('U' - 'A'): BlockMark = 0; return;
+    /* -- row / track verbs -- */
+    case ITK_INS:   pe_track_insert(); return;
+    case ITK_DEL:   pe_track_delete(); return;
+    case ITK_ALT_INS: pe_row_insert(); return;
+    case ITK_ALT_DEL: pe_row_delete(); return;
+    /* -- edit step (Alt-0..9, PE_PostPatternEdit6 + Alt0) -- */
+    case ITK_ALT_0:
+        EditStep = 0;
+        status("Cursor step set to 0");
+        return;
+    /* -- octave / step / pattern / instrument keys (existing) -- */
     case '[':       if (BaseOctave > 0) BaseOctave--; return;
     case ']':       if (BaseOctave < 8) BaseOctave++; return;
     case '{':       if (EditStep > 0) EditStep--; return;
@@ -5144,80 +5913,44 @@ static void handle_pattern_key(int key)
     case '>': case '\'':            /* PEFunction_IncreaseInstrument */
         if (CurInstr < 99) CurInstr++;
         return;
-    case '-':
-        if (CurPattern > 0) { commit_current_pattern();
-            load_pattern(CurPattern - 1); } return;
-    case '=':
+    case ',':                       /* PEFunction_SetMask (3752) */
+        EditMask ^= MaskChange[CurCol];
+        return;
+    case ITK_ENTER: {               /* PEFunction_PickUp (3857) */
+        editcell_t *c = cellat(CurRow, CurChan);
+        if (Template != 4)
+            Template = 0;
+        LastNote = cn_get(c);
+        if (ci_get(c))
+            CurInstr = ci_get(c);
+        LastVolume = cv_get(c);
+        LastCommand = (uint8_t)((c->mask & CM_CMD) ? c->cmd : 0);
+        LastCommandValue = cc_getval(c);
+        return;
+    }
+    case '-': case '+': case '=':
         commit_current_pattern();
-        load_pattern(CurPattern + 1 < MAX_PATTERNS ? CurPattern+1
-                                                   : CurPattern);
+        if (key == '-') {
+            if (CurPattern > 0)
+                load_pattern(CurPattern - 1);
+        } else {
+            if (CurPattern + 1 < MAX_PATTERNS)
+                load_pattern(CurPattern + 1);
+        }
         return;
     default: break;
     }
 
-    if (!changed && CurCol == 0) {
-        if (key == '1') {
-            cell->note = GNOTE_CUT; cell->mask |= CM_NOTE;
-            if (CurInstr) { cell->ins = (uint8_t)CurInstr;
-                            cell->mask |= CM_INS; }
-            changed = 1; advance_row();
-        } else if (key == '`') {
-            cell->note = GNOTE_OFF; cell->mask |= CM_NOTE;
-            changed = 1; advance_row();
-        } else if (key == '.') {
-            cell->mask &= (uint8_t)~CM_NOTE; changed = 1;
-        } else {
-            int gn = key_to_note(key);
-            if (gn > 0) {
-                cell->note = (uint8_t)gn; cell->mask |= CM_NOTE;
-                /* LastInstrument 0 = none: no instrument written */
-                if (CurInstr) { cell->ins = (uint8_t)CurInstr;
-                                cell->mask |= CM_INS; }
-                jam_note(gn, CurChan);
-                changed = 1;
-                advance_row();
-            }
-        }
-    } else if (!changed && CurCol == 1) {
-        if (key >= '0' && key <= '9') {
-            uint8_t cur = (cell->mask & CM_INS) ? cell->ins : 0;
-            cur = (uint8_t)(((cur * 10) + (key - '0')) % 100);
-            cell->ins = cur; cell->mask |= CM_INS;
-            CurInstr = cur ? cur : CurInstr;
-            changed = 1; advance_row();
-        } else if (key == '.') {
-            cell->mask &= (uint8_t)~CM_INS; changed = 1;
-        }
-    } else if (!changed && CurCol == 2) {
-        if (key >= '0' && key <= '9') {
-            int v = (cell->mask & CM_VOL) ? cell->vol : 0;
-            v = (v * 10 + (key - '0')) % 100;
-            if (v > 64) v = 64;
-            cell->vol = (uint8_t)v; cell->mask |= CM_VOL;
-            changed = 1; advance_row();
-        } else if (key == '.') {
-            cell->mask &= (uint8_t)~CM_VOL; changed = 1;
-        }
-    } else if (!changed && CurCol == 3) {
-        int lk = (key >= 'a' && key <= 'z') ? key - 32 : key;
-        if (lk >= 'A' && lk <= 'Z') {
-            cell->cmd = (uint8_t)(lk - 'A' + 1); cell->mask |= CM_CMD;
-            changed = 1;
-        } else {
-            int h = hexval(key);
-            if (h >= 0) {
-                cell->cmdval = (uint8_t)((cell->cmdval << 4) | h);
-                cell->mask |= CM_CMD;
-                changed = 1; advance_row();
-            } else if (key == '.') {
-                cell->mask &= (uint8_t)~CM_CMD; cell->cmdval = 0;
-                changed = 1;
-            }
-        }
+    /* Alt-1..9 set the cursor step (PE_PostPatternEdit6) */
+    if (key >= ITK_ALT_0 + 1 && key <= ITK_ALT_0 + 9) {
+        EditStep = key - ITK_ALT_0;
+        status("Cursor step set to %d", EditStep);
+        return;
     }
 
-    if (changed)
-        commit_current_pattern();
+    /* plain characters go to the cursor-column handler */
+    if (key >= 32 && key < 127)
+        pe_col_key(key);
 }
 
 /* ===================================================================
@@ -6735,9 +7468,13 @@ static void pattern_click(void)
         int off = (m.x - 5) % 14;
 
         if (row < (int)CurRows && ch < 64) {
+            /* 9 cursor columns at cell offsets 0..2 (note), 2
+             * (octave), 4, 5, 7, 8, 10, 11, 12 */
+            static const int colmap[14] =
+                { 0, 0, 1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 8, 8 };
             CurRow = row;
             CurChan = ch;
-            CurCol = (off <= 3) ? 0 : (off <= 6) ? 1 : (off <= 9) ? 2 : 3;
+            CurCol = colmap[off];
         }
     }
 }
@@ -6984,11 +7721,18 @@ int main(int argc, char **argv)
             ITK_F4, ITK_UP, ITK_TAB, ITK_ENTER,
             ITK_F2,
             'z','s','x','d','c', ITK_DOWN, '1', ITK_DOWN, '`',
-            ITK_RIGHT, '0','5', ITK_RIGHT, '4','0',
-            ITK_RIGHT, 'a','0','4',
+            /* 9-column cursor (feature 009): ins tens/units, vol
+             * tens/units, command, param nibbles */
+            ITK_RIGHT, ITK_RIGHT, '0','5',
+            ITK_RIGHT, ITK_RIGHT, '4','0',
+            ITK_RIGHT, ITK_RIGHT, 'a', ITK_RIGHT, '0','4',
             ITK_TAB, 'q','w','e','r','t',
             ITK_SHIFT_TAB,
             ']','[','}','{',
+            ',', ',',                       /* mask toggle + restore */
+            ITK_ALT_A + 1, ITK_DOWN, ITK_ALT_A + 4,     /* Alt-B/E */
+            ITK_ALT_A + 20,                             /* Alt-U */
+            ITK_ALT_INS, ITK_ALT_DEL,       /* row verbs + undo push */
             ITK_INS, ITK_DEL, ITK_PGDN, ITK_PGUP, ITK_HOME, ITK_END,
             '=', '-',
             ITK_F6, ITK_F8, ITK_F5, ITK_F8,

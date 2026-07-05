@@ -111,11 +111,111 @@ static void PumpEvents(void)
         case SDL_KEYDOWN: {
             SDL_Keycode kc = e.key.keysym.sym;
             SDL_Keymod  mod = SDL_GetModState();
+            if (kc == SDLK_LSHIFT || kc == SDLK_RSHIFT) {
+                if (!e.key.repeat)
+                    PushKey(ITK_SHIFT_PRESS);
+                break;
+            }
             if (kc == SDLK_TAB) {
                 PushKey((mod & KMOD_SHIFT) ? ITK_SHIFT_TAB : ITK_TAB);
-            } else if ((mod & KMOD_CTRL) && kc == SDLK_q) {
-                PushKey(0x11);              /* Ctrl-Q, as Win32 WM_CHAR */
-            } else {
+                break;
+            }
+            if (kc == SDLK_F9 && (mod & KMOD_SHIFT)) {
+                PushKey(ITK_SHIFT_F9);
+                break;
+            }
+            if (kc == SDLK_SCROLLLOCK) {
+                PushKey(ITK_SCROLL_LOCK);
+                break;
+            }
+            if (mod & KMOD_ALT) {           /* Alt combos (parity with
+                                             * the Win32 backend) */
+                if (kc >= SDLK_a && kc <= SDLK_z) {
+                    PushKey(ITK_ALT_A + (int)(kc - SDLK_a));
+                    break;
+                }
+                if (kc >= SDLK_0 && kc <= SDLK_9) {
+                    PushKey(ITK_ALT_0 + (int)(kc - SDLK_0));
+                    break;
+                }
+                switch (kc) {
+                case SDLK_INSERT: PushKey(ITK_ALT_INS);   break;
+                case SDLK_DELETE: PushKey(ITK_ALT_DEL);   break;
+                case SDLK_UP:     PushKey(ITK_ALT_UP);    break;
+                case SDLK_DOWN:   PushKey(ITK_ALT_DOWN);  break;
+                case SDLK_F9:     PushKey(ITK_ALT_F9);    break;
+                case SDLK_F10:    PushKey(ITK_ALT_F10);   break;
+                case SDLK_PLUS: case SDLK_EQUALS: case SDLK_KP_PLUS:
+                    PushKey(ITK_ALT_PLUS);  break;
+                case SDLK_MINUS: case SDLK_KP_MINUS:
+                    PushKey(ITK_ALT_MINUS); break;
+                default: break;
+                }
+                break;
+            }
+            if (mod & KMOD_CTRL) {
+                int shifted = (mod & KMOD_SHIFT) != 0;
+                if (kc == SDLK_q) {
+                    PushKey(0x11);          /* Ctrl-Q, as Win32 WM_CHAR */
+                    break;
+                }
+                if (kc == SDLK_PLUS || kc == SDLK_EQUALS ||
+                    kc == SDLK_KP_PLUS) {
+                    PushKey(ITK_CTRL_PLUS);
+                    break;
+                }
+                if (kc == SDLK_MINUS || kc == SDLK_KP_MINUS) {
+                    PushKey(ITK_CTRL_MINUS);
+                    break;
+                }
+                if (shifted && kc >= SDLK_1 && kc <= SDLK_4) {
+                    PushKey(ITK_CTRL_SHIFT_1 + (int)(kc - SDLK_1));
+                    break;
+                }
+                if (!shifted && kc >= SDLK_0 && kc <= SDLK_5) {
+                    PushKey(ITK_CTRL_0 + (int)(kc - SDLK_0));
+                    break;
+                }
+                switch (kc) {
+                case SDLK_UP:       PushKey(ITK_CTRL_UP);        break;
+                case SDLK_DOWN:     PushKey(ITK_CTRL_DOWN);      break;
+                case SDLK_LEFT:     PushKey(ITK_CTRL_LEFT);      break;
+                case SDLK_RIGHT:    PushKey(ITK_CTRL_RIGHT);     break;
+                case SDLK_HOME:     PushKey(ITK_CTRL_HOME);      break;
+                case SDLK_END:      PushKey(ITK_CTRL_END);       break;
+                case SDLK_PAGEUP:   PushKey(ITK_CTRL_PGUP);      break;
+                case SDLK_PAGEDOWN: PushKey(ITK_CTRL_PGDN);      break;
+                case SDLK_INSERT:   PushKey(ITK_CTRL_INS);       break;
+                case SDLK_DELETE:   PushKey(ITK_CTRL_DEL);       break;
+                case SDLK_BACKSPACE:PushKey(ITK_CTRL_BACKSPACE); break;
+                case SDLK_F7:       PushKey(ITK_CTRL_F7);        break;
+                default:
+                    if (kc >= SDLK_a && kc <= SDLK_z)
+                        PushKey((int)(kc - SDLK_a) + 1); /* Ctrl-A..Z */
+                    break;
+                }
+                break;
+            }
+            if (mod & KMOD_SHIFT) {
+                switch (kc) {
+                case SDLK_UP:       PushKey(ITK_SHIFT_UP);    break;
+                case SDLK_DOWN:     PushKey(ITK_SHIFT_DOWN);  break;
+                case SDLK_LEFT:     PushKey(ITK_SHIFT_LEFT);  break;
+                case SDLK_RIGHT:    PushKey(ITK_SHIFT_RIGHT); break;
+                case SDLK_PAGEUP:   PushKey(ITK_SHIFT_PGUP);  break;
+                case SDLK_PAGEDOWN: PushKey(ITK_SHIFT_PGDN);  break;
+                case SDLK_HOME:     PushKey(ITK_SHIFT_HOME);  break;
+                case SDLK_END:      PushKey(ITK_SHIFT_END);   break;
+                default: {
+                    int k = MapSDLKey(kc);
+                    if (k != ITK_NONE)
+                        PushKey(k);
+                    break;              /* else SDL_TEXTINPUT */
+                }
+                }
+                break;
+            }
+            {
                 int k = MapSDLKey(kc);
                 if (k != ITK_NONE)
                     PushKey(k);
@@ -123,6 +223,11 @@ static void PumpEvents(void)
             }
             break;
         }
+        case SDL_KEYUP:
+            if (e.key.keysym.sym == SDLK_LSHIFT ||
+                e.key.keysym.sym == SDLK_RSHIFT)
+                PushKey(ITK_SHIFT_RELEASE);
+            break;
         case SDL_TEXTINPUT: {
             const char *p = e.text.text;
             for (; *p; ++p) {

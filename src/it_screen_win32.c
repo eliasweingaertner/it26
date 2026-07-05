@@ -87,6 +87,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
+        if (wp == VK_SHIFT) {           /* shift press event (2Ah/36h) */
+            if (!(lp & (1u << 30)))     /* suppress autorepeat */
+                PushKey(ITK_SHIFT_PRESS);
+            return 0;
+        }
         if (wp == VK_TAB) {
             PushKey((GetKeyState(VK_SHIFT) & 0x8000) ? ITK_SHIFT_TAB
                                                      : ITK_TAB);
@@ -94,6 +99,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (wp == VK_F9 && (GetKeyState(VK_SHIFT) & 0x8000)) {
             PushKey(ITK_SHIFT_F9);      /* message editor */
+            return 0;
+        }
+        if (wp == VK_SCROLL) {
+            PushKey(ITK_SCROLL_LOCK);
             return 0;
         }
         /* Alt combos (WM_SYSKEYDOWN with the menu key held) */
@@ -111,6 +120,8 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_DELETE: PushKey(ITK_ALT_DEL);  return 0;
             case VK_UP:     PushKey(ITK_ALT_UP);   return 0;
             case VK_DOWN:   PushKey(ITK_ALT_DOWN); return 0;
+            case VK_F9:     PushKey(ITK_ALT_F9);   return 0;
+            case VK_F10:    PushKey(ITK_ALT_F10);  return 0;
             case VK_OEM_PLUS: case VK_ADD:
                 PushKey(ITK_ALT_PLUS);  return 0;
             case VK_OEM_MINUS: case VK_SUBTRACT:
@@ -118,8 +129,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             default: break;
             }
         }
-        /* Ctrl +/- (no WM_CHAR is generated for these) */
+        /* Ctrl combos (no WM_CHAR is generated for these) */
         if (GetKeyState(VK_CONTROL) & 0x8000) {
+            int shifted = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             if (wp == VK_OEM_PLUS || wp == VK_ADD) {
                 PushKey(ITK_CTRL_PLUS);
                 return 0;
@@ -127,6 +139,43 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             if (wp == VK_OEM_MINUS || wp == VK_SUBTRACT) {
                 PushKey(ITK_CTRL_MINUS);
                 return 0;
+            }
+            if (shifted && wp >= '1' && wp <= '4') {
+                PushKey(ITK_CTRL_SHIFT_1 + (int)(wp - '1'));
+                return 0;
+            }
+            if (!shifted && wp >= '0' && wp <= '5') {
+                PushKey(ITK_CTRL_0 + (int)(wp - '0'));
+                return 0;
+            }
+            switch (wp) {
+            case VK_UP:     PushKey(ITK_CTRL_UP);        return 0;
+            case VK_DOWN:   PushKey(ITK_CTRL_DOWN);      return 0;
+            case VK_LEFT:   PushKey(ITK_CTRL_LEFT);      return 0;
+            case VK_RIGHT:  PushKey(ITK_CTRL_RIGHT);     return 0;
+            case VK_HOME:   PushKey(ITK_CTRL_HOME);      return 0;
+            case VK_END:    PushKey(ITK_CTRL_END);       return 0;
+            case VK_PRIOR:  PushKey(ITK_CTRL_PGUP);      return 0;
+            case VK_NEXT:   PushKey(ITK_CTRL_PGDN);      return 0;
+            case VK_INSERT: PushKey(ITK_CTRL_INS);       return 0;
+            case VK_DELETE: PushKey(ITK_CTRL_DEL);       return 0;
+            case VK_BACK:   PushKey(ITK_CTRL_BACKSPACE); return 0;
+            case VK_F7:     PushKey(ITK_CTRL_F7);        return 0;
+            default: break;
+            }
+        }
+        /* Shift combos (movement keys report distinct codes) */
+        if (GetKeyState(VK_SHIFT) & 0x8000) {
+            switch (wp) {
+            case VK_UP:     PushKey(ITK_SHIFT_UP);    return 0;
+            case VK_DOWN:   PushKey(ITK_SHIFT_DOWN);  return 0;
+            case VK_LEFT:   PushKey(ITK_SHIFT_LEFT);  return 0;
+            case VK_RIGHT:  PushKey(ITK_SHIFT_RIGHT); return 0;
+            case VK_PRIOR:  PushKey(ITK_SHIFT_PGUP);  return 0;
+            case VK_NEXT:   PushKey(ITK_SHIFT_PGDN);  return 0;
+            case VK_HOME:   PushKey(ITK_SHIFT_HOME);  return 0;
+            case VK_END:    PushKey(ITK_SHIFT_END);   return 0;
+            default: break;
             }
         }
         {
@@ -138,6 +187,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;                          /* let WM_CHAR deliver ASCII */
     }
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        if (wp == VK_SHIFT)
+            PushKey(ITK_SHIFT_RELEASE);
+        break;
     case WM_CHAR:
         if (wp >= 32 && wp < 127)
             PushKey((int)wp);
