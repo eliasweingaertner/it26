@@ -363,9 +363,13 @@ cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC
 ```
 `/std:c11` is **required** (for `_Static_assert`); `/D_CRT_SECURE_NO_WARNINGS`
 silences CRT warnings. The editor needs `user32.lib gdi32.lib` (pixel
-backend). Swap the trailing sources + `/Fe` for `itplay.exe`
-(`src\main.c` instead of the four editor files) or `test_pattern.exe`
-(`tests\test_pattern.c`). CMake (VS BuildTools ships cmake+ninja; plain
+backend). For `itplay.exe` / `test_pattern.exe`, swap the trailing
+sources + `/Fe`: `src\main.c` (or `tests\test_pattern.c`) plus the
+engine files `it_music.c it_effects.c it_tables.c it_driver.c
+it_load.c it_pattern.c` **and `it_save.c`** — since feature 004 the
+loader references `Save_LoadTime`/`IT_MessageData` from `it_save.c`,
+so both non-editor targets need it (no editor files, no
+user32/gdi32). CMake (VS BuildTools ships cmake+ninja; plain
 `cmake` is not on PATH — run inside a vcvars64 shell with `-G Ninja`)
 builds all three targets.
 

@@ -6418,11 +6418,13 @@ static void song_defaults(void)
     Song.Header.GV = 128;
     Song.Header.MV = 48;
     Song.Header.Sep = 128;
-    Song.Header.Flags = ITF_STEREO | ITF_INSTRUMENTS;
+    /* pristine SongData values (IT_MDATA.ASM line 9: Flags = 9 --
+     * stereo + linear slides, sample mode; pans all 32) */
+    Song.Header.Flags = ITF_STEREO | ITF_LINEAR_SLIDES;
     memset(Song.Orders, 255, sizeof(Song.Orders));
     Song.Orders[0] = 0;
     for (i = 0; i < 64; i++) {
-        Song.Header.ChnlPan[i] = (i & 1) ? 48 : 16;
+        Song.Header.ChnlPan[i] = 32;
         Song.Header.ChnlVol[i] = 64;
     }
 }
