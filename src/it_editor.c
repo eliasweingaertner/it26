@@ -957,9 +957,14 @@ static void draw_pattern(void)
     int ch, i, screeny;
     int maxrow = (int)CurRows - 1;
 
-    /* TopRow window (PE_DrawPatternEditNormal) */
-    if (TopRow > CurRow) TopRow = CurRow;
-    if (TopRow + 32 <= CurRow) TopRow = CurRow - 31;
+    /* TopRow window (PE_DrawPatternEditNormal); centralise mode
+     * (PEConfig bit 0) pins the cursor to the middle */
+    if (PEConfig & 1) {
+        TopRow = CurRow - 16;
+    } else {
+        if (TopRow > CurRow) TopRow = CurRow;
+        if (TopRow + 32 <= CurRow) TopRow = CurRow - 31;
+    }
     if (TopRow > maxrow - 31) TopRow = maxrow - 31;
     if (TopRow < 0) TopRow = 0;
 
@@ -5307,6 +5312,8 @@ static void pe_end(void)
     else if (CurChan != last)   CurChan = last;
     else                        CurRow = (int)CurRows - 1;
 }
+static int PEOrder = 0;                     /* Order cursor (nav) */
+
 static void pe_chan_left(void)              /* PEFunction_AltLeft */
 {
     if (CurChan > 0)
@@ -5316,6 +5323,60 @@ static void pe_chan_right(void)             /* PEFunction_AltRight */
 {
     if (CurChan < 63)
         CurChan++;
+}
+static void pe_alt_up(void)                 /* AltUp view scroll (10438) */
+{
+    if (TopRow > 0) {
+        TopRow--;
+        if (CurRow - TopRow >= 32)
+            CurRow--;
+    }
+}
+static void pe_alt_down(void)               /* AltDown view scroll (10461) */
+{
+    int nt = TopRow + 1;
+    if ((int)CurRows - 1 - nt >= 31) {
+        TopRow = nt;
+        if (nt > CurRow)
+            CurRow = nt;
+    }
+}
+static void pe_ctrl_home(void)              /* one row up (10410) */
+{
+    if (CurRow > 0) CurRow--;
+}
+static void pe_ctrl_end(void)               /* one row down (10424) */
+{
+    if (CurRow < (int)CurRows - 1) CurRow++;
+}
+static void pe_goto_pattern(int pat)
+{
+    if (pat < 0) pat = 0;
+    if (pat > 199) pat = 199;
+    commit_current_pattern();
+    load_pattern((uint16_t)pat);
+    if (CurRow > (int)CurRows - 1) CurRow = (int)CurRows - 1;
+}
+static void pe_next_order(void)             /* NextOrderPattern (8364) */
+{
+    if (PEOrder < 0xFF && Song.Orders[PEOrder + 1] < 200)
+        PEOrder++;
+    if (Song.Orders[PEOrder] < 200)
+        pe_goto_pattern(Song.Orders[PEOrder]);
+}
+static void pe_last_order(void)             /* LastOrderPattern (8326) */
+{
+    if (PEOrder > 0 && Song.Orders[PEOrder - 1] < 200)
+        PEOrder--;
+    if (Song.Orders[PEOrder] < 200)
+        pe_goto_pattern(Song.Orders[PEOrder]);
+}
+static void pe_set_play_mark(void)          /* Ctrl-F7 (11095) */
+{
+    PlayMarkPattern = CurPattern;
+    PlayMarkRow = CurRow;
+    PlayMarkOn = 1;
+    status("Play mark set.");
 }
 static void pe_shift_pgup_mv(void)          /* ShiftPgUp (3634) */
 {
@@ -6293,12 +6354,88 @@ static void pe_shift_move(void (*mover)(void))
     mark_end_chain(CurChan, CurRow);
 }
 
-/* stubs filled by later 009 stories */
+/* PE_Template (4555): stamp the clipboard at the cursor, transposing
+ * every note so the clipboard's first note becomes the entered note.
+ * Overwrite (1) replaces cells; Mix-Pattern (2) keeps existing fields;
+ * Mix-Clipboard (3) and Notes-Only (4) prefer clipboard/notes. */
 static int pe_template_stamp(uint8_t noteval)
 {
-    (void)noteval;
-    return 0;                               /* T019: PE_Template */
+    int offset, r, c;
+    const editcell_t *first;
+
+    if (!ClipData) {
+        status("No block data in memory.");
+        return 1;
+    }
+    first = &ClipData[0];
+    if (!(first->mask & CM_NOTE) || first->note < 1 || first->note > 120) {
+        status("Template's first note must be a note.");
+        return 1;
+    }
+    offset = (int)noteval - (first->note - 1);
+
+    for (r = 0; r < ClipRows; r++) {
+        int drow = CurRow + r;
+        if (drow > (int)CurRows - 1)
+            break;
+        for (c = 0; c < ClipChans; c++) {
+            int dch = CurChan + c;
+            editcell_t *d, t;
+            const editcell_t *s;
+            if (dch > 63)
+                break;
+            d = &Grid[drow * 64 + dch];
+            s = &ClipData[r * ClipChans + c];
+            t = *s;
+            /* transpose real notes, clamp out-of-range to none */
+            if ((t.mask & CM_NOTE) && t.note >= 1 && t.note <= 120) {
+                int nn = (t.note - 1) + offset;
+                if (nn < 0 || nn > 119) { t.mask &= (uint8_t)~CM_NOTE;
+                                          t.note = 0; }
+                else t.note = (uint8_t)(nn + 1);
+            }
+            switch (Template) {
+            case 1: *d = t; break;              /* overwrite */
+            case 4:                             /* notes only */
+                if (t.mask & CM_NOTE) { d->note = t.note;
+                    d->mask = (uint8_t)((d->mask & ~CM_NOTE) |
+                                        (t.mask & CM_NOTE)); }
+                break;
+            case 2:                             /* mix, pattern wins */
+                if (!(d->mask & CM_NOTE) && (t.mask & CM_NOTE))
+                    { d->note = t.note; d->mask |= CM_NOTE; }
+                if (!(d->mask & CM_INS) && (t.mask & CM_INS))
+                    { d->ins = t.ins; d->mask |= CM_INS; }
+                if (!(d->mask & CM_VOL) && (t.mask & CM_VOL))
+                    { d->vol = t.vol; d->mask |= CM_VOL; }
+                if (!(d->mask & CM_CMD) && (t.mask & CM_CMD))
+                    { d->cmd = t.cmd; d->cmdval = t.cmdval;
+                      d->mask |= CM_CMD; }
+                break;
+            default:                            /* 3: clipboard wins */
+                if (t.mask & CM_NOTE) { d->note = t.note;
+                    d->mask = (uint8_t)((d->mask & ~CM_NOTE) | CM_NOTE); }
+                if (t.mask & CM_INS)  { d->ins = t.ins; d->mask |= CM_INS; }
+                if (t.mask & CM_VOL)  { d->vol = t.vol; d->mask |= CM_VOL; }
+                if (t.mask & CM_CMD)  { d->cmd = t.cmd; d->cmdval = t.cmdval;
+                                        d->mask |= CM_CMD; }
+                break;
+            }
+        }
+    }
+    commit_current_pattern();
+    if (ClipRows == 1)                          /* play the stamped row */
+        jam_cell(cellat(CurRow, CurChan), CurChan);
+    if (EditStep)
+        pe_goto_next_input(1);
+    else {
+        CurRow += ClipRows;
+        if (CurRow > (int)CurRows - 1)
+            CurRow = (int)CurRows - 1;
+    }
+    return 1;
 }
+
 static void pe_play_current_note(void) { }  /* T028 */
 static void pe_play_current_row(void)  { }  /* T028 */
 
@@ -6336,6 +6473,28 @@ static void handle_pattern_key(int key)
     case ITK_PGDN:  pe_page(+1, row_hilight_2()); return;
     case ITK_HOME:  pe_home(); return;
     case ITK_END:   pe_end(); return;
+    /* -- channel / view movement (Alt/Ctrl arrows) -- */
+    case ITK_ALT_UP:    pe_alt_up();    return;
+    case ITK_ALT_DOWN:  pe_alt_down();  return;
+    case ITK_CTRL_LEFT: pe_chan_left(); return;   /* ViewLeft ~ chan */
+    case ITK_CTRL_RIGHT:pe_chan_right();return;
+    case ITK_CTRL_HOME: pe_ctrl_home(); return;
+    case ITK_CTRL_END:  pe_ctrl_end();  return;
+    /* -- pattern / order navigation -- */
+    case ITK_CTRL_PLUS:  pe_next_order(); return;
+    case ITK_CTRL_MINUS: pe_last_order(); return;
+    case ITK_CTRL_F7:    pe_set_play_mark(); return;
+    /* -- view/entry toggles -- */
+    case 0x03:                          /* Ctrl-C: centralise cursor */
+        PEConfig ^= 1;
+        status((PEConfig & 1) ? "Centralise cursor enabled"
+                              : "Centralise cursor disabled");
+        return;
+    case ITK_SCROLL_LOCK:               /* ToggleTrace */
+        TracePlayback ^= 1;
+        status(TracePlayback ? "Playback tracing enabled"
+                             : "Playback tracing disabled");
+        return;
     case ITK_TAB:
         if (CurChan < 63) { CurCol = 0; CurChan++; }
         return;
@@ -6379,6 +6538,25 @@ static void handle_pattern_key(int key)
     case ITK_ALT_A + ('V' - 'A'): pe_block_volume(); return;
     case ITK_ALT_A + ('W' - 'A'): pe_wipe_excess_volumes(); return;
     case ITK_ALT_A + ('S' - 'A'): pe_alt_s(); return;
+    /* -- entry pipeline toggles -- */
+    case ITK_ALT_A + ('N' - 'A'):           /* multichannel toggle */
+        MultiChannelInfo[CurChan] ^= 1;
+        status(MultiChannelInfo[CurChan]
+               ? "Multichannel enabled for this channel"
+               : "Multichannel disabled for this channel");
+        return;
+    case ITK_ALT_A + ('I' - 'A'):           /* ToggleTemplate (8660) */
+        if (++Template > 4) Template = 0;
+        status(Template == 0 ? "Template mode off"
+             : Template == 1 ? "Template, Overwrite"
+             : Template == 2 ? "Template, Mix - Pattern data precedence"
+             : Template == 3 ? "Template, Mix - Clipboard data precedence"
+                             : "Template, Notes only");
+        return;
+    case ':':                               /* TemplateOff (8682) */
+        Template = 0;
+        status("Template mode off");
+        return;
     /* -- row / track verbs -- */
     case ITK_INS:   pe_track_insert(); return;
     case ITK_DEL:   pe_track_delete(); return;
@@ -8915,6 +9093,36 @@ int main(int argc, char **argv)
             if (Grid[10 * 64].mask & CM_INS)
                 pe_ok = 0;
             EditMask = 3;
+
+            /* template stamp: build a 2-row clip (C-5, D-5), copy it,
+             * then template-overwrite anchored on E-5 -> the stamp
+             * transposes so the first note becomes E-5 */
+            CurRow = 20; CurChan = 0; CurCol = 0; CurInstr = 3;
+            pe_new_note(60);                /* row 20: C-5 */
+            CurRow = 21;
+            pe_new_note(62);                /* row 21: D-5 */
+            BlockMark = 1; BlockLeft = BlockRight = 0;
+            BlockTop = 20; BlockBottom = 21;
+            pe_block_copy();
+            Template = 1;                   /* overwrite */
+            CurRow = 30; CurChan = 0; CurCol = 0;
+            pe_template_stamp(64);          /* anchor E-5 (=64) */
+            if (Grid[30 * 64].note != 65 || /* E-5 stored = 64+1 */
+                Grid[31 * 64].note != 67)   /* D-5 -> F#-5 (+2) */
+                pe_ok = 0;
+            Template = 0;
+
+            /* multichannel: enable ch0+ch2, note entry from ch0 lands,
+             * cursor advances to the next enabled channel */
+            memset(MultiChannelInfo, 0, sizeof(MultiChannelInfo));
+            MultiChannelInfo[0] = MultiChannelInfo[2] = 1;
+            CurRow = 40; CurChan = 0; CurCol = 0;
+            EditStep = 0;
+            pe_new_note(48);
+            if (CurChan != 2)               /* advanced past ch1 */
+                pe_ok = 0;
+            EditStep = 1;
+            memset(MultiChannelInfo, 0, sizeof(MultiChannelInfo));
 
             free(ClipData); ClipData = NULL;
             free(UndoRing[0].cells);
