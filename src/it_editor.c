@@ -5805,6 +5805,477 @@ static void pe_alt_l(void)                  /* mark track / widen */
     BlockBottom = (int)CurRows - 1;
 }
 
+/* ==== block operations (IT_PE.ASM 6038..8538) ====
+ * All operate on the unpacked Grid (row*64+chan stride) and commit
+ * once at the end, matching the ASM handler bodies 1:1. The
+ * no-block-marked / no-clipboard paths flash the original's status
+ * strings. Cell fields use the editcell accessors above. */
+static int block_marked(void)
+{
+    if (!BlockMark) {
+        status("No block is marked.");
+        return 0;
+    }
+    return 1;
+}
+static int clip_present(void)
+{
+    if (!ClipData) {
+        status("No block data in memory.");
+        return 0;
+    }
+    return 1;
+}
+
+static void pe_block_copy(void)             /* Alt-C (6580) */
+{
+    int w, h, r, c;
+
+    if (!block_marked())
+        return;
+    w = BlockRight - BlockLeft + 1;
+    h = BlockBottom - BlockTop + 1;
+    free(ClipData);
+    ClipData = (editcell_t *)malloc((size_t)w * h * sizeof(editcell_t));
+    if (!ClipData) {
+        ClipChans = ClipRows = 0;
+        status("Out of memory for block.");
+        return;
+    }
+    ClipChans = w;
+    ClipRows = h;
+    for (r = 0; r < h; r++)
+        for (c = 0; c < w; c++)
+            ClipData[r * w + c] =
+                Grid[(BlockTop + r) * 64 + BlockLeft + c];
+}
+
+static void pe_wipe_block(void)             /* Alt-Z (6038), type 18 */
+{
+    int r, c;
+
+    if (!block_marked())
+        return;
+    if (LastKeys[1] == ITK_ALT_A + ('Z' - 'A'))
+        return;                             /* repeat = no-op */
+    snapshot_undo(18);
+    if (!Template)                          /* copy to clipboard first */
+        pe_block_copy();
+    for (r = BlockTop; r <= BlockBottom; r++)
+        for (c = BlockLeft; c <= BlockRight; c++)
+            cell_clear(&Grid[r * 64 + c]);
+    commit_current_pattern();
+}
+
+static void pe_block_overwrite(void)        /* Alt-O (6707), type 10 */
+{
+    int r, c;
+
+    if (!clip_present())
+        return;
+    if (LastKeys[1] != ITK_ALT_A + ('O' - 'A'))
+        snapshot_undo(10);
+    for (r = 0; r < ClipRows; r++) {
+        int drow = CurRow + r;
+        if (drow > (int)CurRows - 1)
+            break;
+        for (c = 0; c < ClipChans; c++) {
+            int dch = CurChan + c;
+            if (dch > 63)
+                break;
+            Grid[drow * 64 + dch] = ClipData[r * ClipChans + c];
+        }
+    }
+    commit_current_pattern();
+}
+
+static void pe_block_paste(void)            /* Alt-P (6782), type 11 */
+{
+    int r, c;
+
+    if (!clip_present())
+        return;
+    if (LastKeys[1] != ITK_ALT_A + ('P' - 'A'))
+        snapshot_undo(11);
+    /* insert-paste: within each pasted column, shift existing rows
+     * down by the clipboard height, then drop the clipboard in */
+    for (c = 0; c < ClipChans; c++) {
+        int dch = CurChan + c;
+        if (dch > 63)
+            break;
+        for (r = (int)CurRows - 1; r >= CurRow + ClipRows; r--)
+            Grid[r * 64 + dch] = Grid[(r - ClipRows) * 64 + dch];
+        for (r = 0; r < ClipRows; r++) {
+            int drow = CurRow + r;
+            if (drow > (int)CurRows - 1)
+                break;
+            Grid[drow * 64 + dch] = ClipData[r * ClipChans + c];
+        }
+    }
+    commit_current_pattern();
+}
+
+static void pe_block_mix(void)              /* Alt-M (7007), type 9 */
+{
+    int r, c, second;
+
+    if (!clip_present())
+        return;
+    /* first Alt-M mixes whole empty cells; a repeat switches to the
+     * field-by-field SecondBlockMix (6898) */
+    second = (LastKeys[1] == ITK_ALT_A + ('M' - 'A') &&
+              LastKeys[2] != ITK_ALT_A + ('M' - 'A'));
+    if (!second)
+        snapshot_undo(9);
+    for (r = 0; r < ClipRows; r++) {
+        int drow = CurRow + r;
+        if (drow > (int)CurRows - 1)
+            break;
+        for (c = 0; c < ClipChans; c++) {
+            int dch = CurChan + c;
+            editcell_t *d;
+            const editcell_t *s;
+            if (dch > 63)
+                break;
+            d = &Grid[drow * 64 + dch];
+            s = &ClipData[r * ClipChans + c];
+            if (!second) {                  /* mix only fully-empty cells */
+                if (d->mask == 0 && d->note == 0)
+                    *d = *s;
+            } else {                        /* per-field: fill blanks */
+                if (!(d->mask & CM_NOTE) && (s->mask & CM_NOTE)) {
+                    d->note = s->note; d->mask |= CM_NOTE;
+                }
+                if (!(d->mask & CM_INS) && (s->mask & CM_INS)) {
+                    d->ins = s->ins; d->mask |= CM_INS;
+                }
+                if (!(d->mask & CM_VOL) && (s->mask & CM_VOL)) {
+                    d->vol = s->vol; d->mask |= CM_VOL;
+                }
+                if (!(d->mask & CM_CMD) && (s->mask & CM_CMD)) {
+                    d->cmd = s->cmd; d->cmdval = s->cmdval;
+                    d->mask |= CM_CMD;
+                }
+            }
+        }
+    }
+    commit_current_pattern();
+}
+
+static void pe_block_swap(void)             /* Alt-Y (6430), type 17 */
+{
+    int w, h, r, c;
+
+    if (!block_marked())
+        return;
+    w = BlockRight - BlockLeft + 1;
+    h = BlockBottom - BlockTop + 1;
+    /* cursor must be outside the marked block and the swap target
+     * must fit the pattern */
+    if (CurChan + w - 1 < BlockLeft || CurChan > BlockRight ||
+        CurRow + h - 1 < BlockTop || CurRow > BlockBottom) {
+        /* no overlap -- ok */
+    } else {
+        status("Cursor overlaps the marked block.");
+        return;
+    }
+    if (CurChan + w > 64 || CurRow + h > (int)CurRows) {
+        status("Swap block is out of range.");
+        return;
+    }
+    snapshot_undo(17);
+    for (r = 0; r < h; r++)
+        for (c = 0; c < w; c++) {
+            editcell_t *a = &Grid[(BlockTop + r) * 64 + BlockLeft + c];
+            editcell_t *b = &Grid[(CurRow + r) * 64 + CurChan + c];
+            editcell_t t = *a; *a = *b; *b = t;
+        }
+    commit_current_pattern();
+}
+
+static void pe_block_halve(void)            /* Alt-G (6240), type 5 */
+{
+    int w, h, r, c;
+
+    if (!block_marked())
+        return;
+    snapshot_undo(5);
+    w = BlockRight - BlockLeft + 1;
+    h = BlockBottom - BlockTop + 1;
+    for (r = 0; r < h; r++) {
+        int drow = BlockTop + r;
+        for (c = 0; c < w; c++) {
+            editcell_t *d = &Grid[drow * 64 + BlockLeft + c];
+            int srow = BlockTop + r * 2;
+            if (srow <= BlockBottom)
+                *d = Grid[srow * 64 + BlockLeft + c];
+            else
+                cell_clear(d);
+        }
+    }
+    commit_current_pattern();
+}
+
+static void pe_block_double(void)           /* Alt-F (6326), type 4 */
+{
+    int w, h, r, c;
+
+    if (!block_marked())
+        return;
+    snapshot_undo(4);
+    w = BlockRight - BlockLeft + 1;
+    h = BlockBottom - BlockTop + 1;
+    /* walk output rows top..bottom of the block from the bottom up so
+     * the in-place spread doesn't clobber unread source rows */
+    for (r = h - 1; r >= 0; r--) {
+        for (c = 0; c < w; c++) {
+            int orow = BlockTop + r;
+            editcell_t *d = &Grid[orow * 64 + BlockLeft + c];
+            if (r & 1)
+                cell_clear(d);              /* odd output rows blank */
+            else
+                *d = Grid[(BlockTop + r / 2) * 64 + BlockLeft + c];
+        }
+    }
+    commit_current_pattern();
+}
+
+static void pe_roll_up(void)                /* Ctrl-Del (6104) */
+{
+    int w, r, c;
+    editcell_t *tmp;
+
+    if (!block_marked())
+        return;
+    if (BlockBottom == BlockTop)
+        return;
+    w = BlockRight - BlockLeft + 1;
+    tmp = (editcell_t *)malloc((size_t)w * sizeof(editcell_t));
+    if (!tmp)
+        return;
+    for (c = 0; c < w; c++)
+        tmp[c] = Grid[BlockTop * 64 + BlockLeft + c];
+    for (r = BlockTop; r < BlockBottom; r++)
+        for (c = 0; c < w; c++)
+            Grid[r * 64 + BlockLeft + c] =
+                Grid[(r + 1) * 64 + BlockLeft + c];
+    for (c = 0; c < w; c++)
+        Grid[BlockBottom * 64 + BlockLeft + c] = tmp[c];
+    free(tmp);
+    commit_current_pattern();
+}
+
+static void pe_roll_down(void)              /* Ctrl-Ins (6172) */
+{
+    int w, r, c;
+    editcell_t *tmp;
+
+    if (!block_marked())
+        return;
+    if (BlockBottom == BlockTop)
+        return;
+    w = BlockRight - BlockLeft + 1;
+    tmp = (editcell_t *)malloc((size_t)w * sizeof(editcell_t));
+    if (!tmp)
+        return;
+    for (c = 0; c < w; c++)
+        tmp[c] = Grid[BlockBottom * 64 + BlockLeft + c];
+    for (r = BlockBottom; r > BlockTop; r--)
+        for (c = 0; c < w; c++)
+            Grid[r * 64 + BlockLeft + c] =
+                Grid[(r - 1) * 64 + BlockLeft + c];
+    for (c = 0; c < w; c++)
+        Grid[BlockTop * 64 + BlockLeft + c] = tmp[c];
+    free(tmp);
+    commit_current_pattern();
+}
+
+/* transpose one cell's note by +/-1 with the ASM's clamps */
+static void transpose_cell(editcell_t *c, int up)
+{
+    if (!(c->mask & CM_NOTE))
+        return;
+    if (c->note < 1 || c->note > 120)       /* specials skip */
+        return;
+    if (up) {
+        if (c->note <= 119)                 /* asmnote < 119 */
+            c->note++;
+    } else {
+        if (c->note >= 2)                   /* asmnote > 0 */
+            c->note--;
+    }
+}
+static void pe_semi(int up)                 /* Alt-Q/Alt-A (7119/7193) */
+{
+    int r, c;
+    int self = up ? (ITK_ALT_A + ('Q' - 'A'))
+                  : (ITK_ALT_A + ('A' - 'A'));
+
+    if (LastKeys[1] != self)
+        snapshot_undo(up ? 2 : 3);
+    if (!BlockMark) {
+        transpose_cell(cellat(CurRow, CurChan), up);
+    } else {
+        for (r = BlockTop; r <= BlockBottom; r++)
+            for (c = BlockLeft; c <= BlockRight; c++)
+                transpose_cell(&Grid[r * 64 + c], up);
+    }
+    commit_current_pattern();
+}
+
+/* Alt-X: first press slides effect values across the block
+ * (interpolate top..bottom per column), a repeat wipes commands */
+static void pe_slide_commands(void)         /* type 15 */
+{
+    int w, h, r, c;
+
+    if (BlockBottom == BlockTop)
+        return;
+    snapshot_undo(15);
+    w = BlockRight - BlockLeft + 1;
+    h = BlockBottom - BlockTop;
+    for (c = 0; c < w; c++) {
+        editcell_t *top = &Grid[BlockTop * 64 + BlockLeft + c];
+        editcell_t *bot = &Grid[BlockBottom * 64 + BlockLeft + c];
+        int v0 = cc_getval(top), v1 = cc_getval(bot);
+        for (r = 1; r < h; r++) {
+            editcell_t *d = &Grid[(BlockTop + r) * 64 + BlockLeft + c];
+            int v = v0 + (v1 - v0) * r / h;
+            cc_setval(d, (uint8_t)v);
+        }
+    }
+    commit_current_pattern();
+}
+static void pe_wipe_commands(void)          /* Alt-X (7355), type 16 */
+{
+    int r, c, wipe;
+
+    if (!block_marked())
+        return;
+    wipe = (LastKeys[1] == ITK_ALT_A + ('X' - 'A'));
+    if (!wipe) {
+        pe_slide_commands();
+        return;
+    }
+    if (LastKeys[2] != ITK_ALT_A + ('X' - 'A'))
+        snapshot_undo(16);
+    for (r = BlockTop; r <= BlockBottom; r++)
+        for (c = BlockLeft; c <= BlockRight; c++) {
+            editcell_t *d = &Grid[r * 64 + c];
+            d->cmd = 0; d->cmdval = 0;
+            d->mask &= (uint8_t)~CM_CMD;
+        }
+    commit_current_pattern();
+}
+
+/* default volume of a cell's note (PEGetVolume 5761): the sample's
+ * default volume, resolved through instrument mode when active */
+static int cell_default_volume(const editcell_t *c)
+{
+    int smp = -1;
+    if (!(c->mask & CM_NOTE) || c->note < 1 || c->note > 120)
+        return -1;
+    if (!(c->mask & CM_INS) || c->ins == 0)
+        return -1;
+    if (Song.Header.Flags & ITF_INSTRUMENTS) {
+        const instrument_t *in = &Song.Ins[c->ins - 1];
+        int note = c->note - 1;
+        smp = in->NoteSampleTable[note * 2 + 1];
+    } else
+        smp = c->ins;
+    if (smp < 1 || smp > 99)
+        return -1;
+    return Song.Smp[smp - 1].Vol;
+}
+static void pe_volume_amp(void)             /* Alt-J (7418), type 6 */
+{
+    int r, c, amp;
+
+    if (!block_marked())
+        return;
+    if (PEConfig & 4)                       /* fast volume mode */
+        amp = FastVolumeAmp;
+    else {
+        long v;
+        if (Amplification > 200)
+            Amplification = 200;
+        v = prompt_number("Amplify to (%):",
+                          (unsigned long)Amplification, 1000);
+        if (v < 0)
+            return;
+        amp = (int)v;
+        Amplification = amp;
+    }
+    snapshot_undo(6);
+    for (r = BlockTop; r <= BlockBottom; r++)
+        for (c = BlockLeft; c <= BlockRight; c++) {
+            editcell_t *d = &Grid[r * 64 + c];
+            int v = cv_get(d);
+            if (v == 0xFF)                  /* pull the default vol */
+                v = cell_default_volume(d);
+            if (v < 0 || v > 64)            /* skip pans / vol-effects */
+                continue;
+            v = v * amp / 100;
+            if (v > 64) v = 64;
+            cv_set(d, (uint8_t)v);
+        }
+    commit_current_pattern();
+}
+
+static void pe_block_volume(void)           /* Alt-V (8417), type 13 */
+{
+    int r, c;
+
+    if (!block_marked())
+        return;
+    if (LastKeys[1] != ITK_ALT_A + ('V' - 'A'))
+        snapshot_undo(13);
+    for (r = BlockTop; r <= BlockBottom; r++)
+        for (c = BlockLeft; c <= BlockRight; c++)
+            cv_set(&Grid[r * 64 + c], LastVolume);
+    commit_current_pattern();
+}
+
+static void pe_wipe_excess_volumes(void)    /* Alt-W (8474), type 14 */
+{
+    int r, c;
+
+    if (!block_marked())
+        return;
+    if (LastKeys[1] == ITK_ALT_A + ('W' - 'A'))
+        return;
+    snapshot_undo(14);
+    for (r = BlockTop; r <= BlockBottom; r++)
+        for (c = BlockLeft; c <= BlockRight; c++) {
+            editcell_t *d = &Grid[r * 64 + c];
+            /* wipe volume where the cell has no instrument and no
+             * real note (>= NONOTE) */
+            if ((d->mask & CM_INS) && d->ins)
+                continue;
+            if ((d->mask & CM_NOTE) && d->note >= 1 && d->note <= 120)
+                continue;
+            cv_set(d, 0xFF);
+        }
+    commit_current_pattern();
+}
+
+static void pe_alt_s(void)                  /* Alt-S (5700), type 12 */
+{
+    int r, c;
+
+    if (!block_marked())
+        return;
+    if (LastKeys[1] != ITK_ALT_A + ('S' - 'A'))
+        snapshot_undo(12);
+    for (r = BlockTop; r <= BlockBottom; r++)
+        for (c = BlockLeft; c <= BlockRight; c++) {
+            editcell_t *d = &Grid[r * 64 + c];
+            if ((d->mask & CM_NOTE) && d->note >= 1 && d->note <= 120)
+                ci_set(d, (uint8_t)CurInstr);   /* only cells with a note */
+        }
+    commit_current_pattern();
+}
+
 /* shifted movement extends the mark from the shift anchor
  * (PE_PostPatternEditShift, 3237..3296) */
 static void pe_shift_move(void (*mover)(void))
@@ -5892,11 +6363,29 @@ static void handle_pattern_key(int key)
     case ITK_ALT_A + ('D' - 'A'): pe_alt_d(); return;
     case ITK_ALT_A + ('L' - 'A'): pe_alt_l(); return;
     case ITK_ALT_A + ('U' - 'A'): BlockMark = 0; return;
+    /* -- block operations -- */
+    case ITK_ALT_A + ('C' - 'A'): pe_block_copy(); return;
+    case ITK_ALT_A + ('O' - 'A'): pe_block_overwrite(); return;
+    case ITK_ALT_A + ('P' - 'A'): pe_block_paste(); return;
+    case ITK_ALT_A + ('M' - 'A'): pe_block_mix(); return;
+    case ITK_ALT_A + ('Z' - 'A'): pe_wipe_block(); return;
+    case ITK_ALT_A + ('Y' - 'A'): pe_block_swap(); return;
+    case ITK_ALT_A + ('F' - 'A'): pe_block_double(); return;
+    case ITK_ALT_A + ('G' - 'A'): pe_block_halve(); return;
+    case ITK_ALT_A + ('Q' - 'A'): pe_semi(1); return;
+    case ITK_ALT_A + ('A' - 'A'): pe_semi(0); return;
+    case ITK_ALT_A + ('X' - 'A'): pe_wipe_commands(); return;
+    case ITK_ALT_A + ('J' - 'A'): pe_volume_amp(); return;
+    case ITK_ALT_A + ('V' - 'A'): pe_block_volume(); return;
+    case ITK_ALT_A + ('W' - 'A'): pe_wipe_excess_volumes(); return;
+    case ITK_ALT_A + ('S' - 'A'): pe_alt_s(); return;
     /* -- row / track verbs -- */
     case ITK_INS:   pe_track_insert(); return;
     case ITK_DEL:   pe_track_delete(); return;
     case ITK_ALT_INS: pe_row_insert(); return;
     case ITK_ALT_DEL: pe_row_delete(); return;
+    case ITK_CTRL_INS: pe_roll_down(); return;
+    case ITK_CTRL_DEL: pe_roll_up(); return;
     /* -- edit step (Alt-0..9, PE_PostPatternEdit6 + Alt0) -- */
     case ITK_ALT_0:
         EditStep = 0;
@@ -8344,6 +8833,96 @@ int main(int argc, char **argv)
             if (mi >= 0) { redraw(); FocusIdx[SCR_VARS] = mi;
                            handle_global(ITK_LEFT); }
             gv_wired = (GlobalVolume == Song.Header.GV);
+        }
+
+        /* Pattern editing depth (feature 009): drive marking + the
+         * block ops on a scratch pattern and assert cell contents,
+         * plus an undo revert byte-equality check. Operates on a fresh
+         * high pattern so the loaded song is left untouched. */
+        {
+            int pe_ok = 1;
+            uint16_t keep = CurPattern;
+            editcell_t *snap;
+            size_t n;
+
+            Screen = SCR_PATTERN;
+            commit_current_pattern();
+            load_pattern(200);              /* empty scratch pattern */
+            n = (size_t)CurRows * 64;
+            CurRow = CurChan = CurCol = 0;
+            BlockMark = 0; free(ClipData); ClipData = NULL;
+
+            /* enter a C-5 note+instrument at (0,0), copy the 1x1 block,
+             * paste-overwrite it at row 4, verify it landed */
+            CurInstr = 5;
+            pe_new_note(60);                /* writes note, advances */
+            CurRow = 0;
+            mark_begin_chain(0, 0);
+            mark_end_chain(0, 0);
+            pe_block_copy();
+            if (!ClipData || ClipChans != 1 || ClipRows != 1)
+                pe_ok = 0;
+            CurRow = 4;
+            pe_block_overwrite();
+            if (!(Grid[4 * 64].mask & CM_NOTE) ||
+                Grid[4 * 64].note != 61)    /* stored note = value+1 */
+                pe_ok = 0;
+
+            /* transpose the copied cell up a semitone via Alt-Q on a
+             * 1-cell mark, then back down */
+            CurRow = 4; CurChan = 0;
+            BlockMark = 1; BlockLeft = BlockRight = 0;
+            BlockTop = BlockBottom = 4;
+            pe_semi(1);
+            if (Grid[4 * 64].note != 62)
+                pe_ok = 0;
+            pe_semi(0);
+            if (Grid[4 * 64].note != 61)
+                pe_ok = 0;
+
+            /* undo revert: snapshot, wipe the block, revert, compare */
+            snap = (editcell_t *)malloc(n * sizeof(editcell_t));
+            memcpy(snap, Grid, n * sizeof(editcell_t));
+            pe_wipe_block();                /* pushes undo type 18 */
+            if (Grid[4 * 64].mask & CM_NOTE) /* really cleared? */
+                pe_ok = 0;
+            if (UndoRing[0].cells && UndoRing[0].type == 18) {
+                memcpy(Grid, UndoRing[0].cells,
+                       (size_t)UndoRing[0].rows * 64 * sizeof(editcell_t));
+                if (memcmp(Grid, snap, n * sizeof(editcell_t)) != 0)
+                    pe_ok = 0;
+            } else
+                pe_ok = 0;
+            free(snap);
+
+            /* row insert/delete round-trip on the whole pattern */
+            CurRow = 0;
+            cn_set(&Grid[0], 40);
+            pe_row_insert();                /* row 0 blanked, note -> 1 */
+            if ((Grid[0].mask & CM_NOTE) ||
+                !(Grid[64].mask & CM_NOTE))
+                pe_ok = 0;
+            pe_row_delete();
+            if (!(Grid[0].mask & CM_NOTE) || Grid[0].note != 41)
+                pe_ok = 0;
+
+            /* mask: clear bit 0 (ins) and confirm note entry skips it */
+            EditMask = 3;
+            CurRow = 10; CurChan = 0; CurCol = 0;
+            EditMask ^= MaskChange[2];      /* toggle ins bit via col 2 */
+            /* MaskChange[2] == 1 -> EditMask bit0 cleared */
+            pe_new_note(50);
+            if (Grid[10 * 64].mask & CM_INS)
+                pe_ok = 0;
+            EditMask = 3;
+
+            free(ClipData); ClipData = NULL;
+            free(UndoRing[0].cells);
+            memset(UndoRing, 0, sizeof(UndoRing));
+            load_pattern(keep);
+            CurRow = CurChan = CurCol = 0;
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    pe_ok ? "PE OK" : "PE FAIL");
         }
 
         commit_current_pattern();
