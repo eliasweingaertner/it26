@@ -138,6 +138,7 @@ void Music_InitStereo(void);
 void Music_InitMuteTable(void);
 void Music_ToggleChannel(uint16_t Channel);
 void Music_SoloChannel(uint16_t Channel);
+void Music_UnmuteAll(void);
 void Music_ToggleReverse(void);
 uint16_t Music_GetLastChannel(void);
 void Music_NextOrder(void);

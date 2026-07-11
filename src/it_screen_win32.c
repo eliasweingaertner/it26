@@ -122,6 +122,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_DOWN:   PushKey(ITK_ALT_DOWN); return 0;
             case VK_F9:     PushKey(ITK_ALT_F9);   return 0;
             case VK_F10:    PushKey(ITK_ALT_F10);  return 0;
+            case VK_OEM_5:  PushKey(ITK_ALT_BACKSLASH); return 0;
             case VK_OEM_PLUS: case VK_ADD:
                 PushKey(ITK_ALT_PLUS);  return 0;
             case VK_OEM_MINUS: case VK_SUBTRACT:
@@ -161,6 +162,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_DELETE: PushKey(ITK_CTRL_DEL);       return 0;
             case VK_BACK:   PushKey(ITK_CTRL_BACKSPACE); return 0;
             case VK_F7:     PushKey(ITK_CTRL_F7);        return 0;
+            case VK_F2:     PushKey(ITK_CTRL_F2);        return 0;
+            case 'H':       PushKey(0x08);               return 0;
+                            /* Ctrl-H (row hilight); WM_CHAR drops 08h */
             default: break;
             }
         }
@@ -177,6 +181,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_END:    PushKey(ITK_SHIFT_END);   return 0;
             default: break;
             }
+        }
+        if (wp == VK_DIVIDE) {          /* keypad '/', scan 135h */
+            PushKey(ITK_KP_DIVIDE);
+            return 0;
         }
         {
             int k = MapVKey(wp);

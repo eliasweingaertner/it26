@@ -145,6 +145,8 @@ static void PumpEvents(void)
                 case SDLK_DOWN:   PushKey(ITK_ALT_DOWN);  break;
                 case SDLK_F9:     PushKey(ITK_ALT_F9);    break;
                 case SDLK_F10:    PushKey(ITK_ALT_F10);   break;
+                case SDLK_BACKSLASH:
+                    PushKey(ITK_ALT_BACKSLASH); break;
                 case SDLK_PLUS: case SDLK_EQUALS: case SDLK_KP_PLUS:
                     PushKey(ITK_ALT_PLUS);  break;
                 case SDLK_MINUS: case SDLK_KP_MINUS:
@@ -189,6 +191,7 @@ static void PumpEvents(void)
                 case SDLK_DELETE:   PushKey(ITK_CTRL_DEL);       break;
                 case SDLK_BACKSPACE:PushKey(ITK_CTRL_BACKSPACE); break;
                 case SDLK_F7:       PushKey(ITK_CTRL_F7);        break;
+                case SDLK_F2:       PushKey(ITK_CTRL_F2);        break;
                 default:
                     if (kc >= SDLK_a && kc <= SDLK_z)
                         PushKey((int)(kc - SDLK_a) + 1); /* Ctrl-A..Z */
@@ -213,6 +216,10 @@ static void PumpEvents(void)
                     break;              /* else SDL_TEXTINPUT */
                 }
                 }
+                break;
+            }
+            if (kc == SDLK_KP_DIVIDE) { /* keypad '/', scan 135h */
+                PushKey(ITK_KP_DIVIDE);
                 break;
             }
             {

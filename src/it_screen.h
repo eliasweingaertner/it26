@@ -81,6 +81,11 @@ void Screen_GenerateCharacters(int first, int wchars, int hchars,
  * font bank B is reclaimed by the next Screen_GenerateCharacters. */
 void Screen_DefineSmallNumbers(void);
 
+/* S_InvertCursor: redefine font-A char 246 as the glyph at (x,y) with
+ * the masked pixel columns inverted and show it there in attr 30h (the
+ * packed-cell pattern cursor; feature 010). */
+void Screen_InvertCursor(int x, int y, uint8_t mask);
+
 /* OR bits into a cell's attribute byte (the original hilights the
  * playing row on the info page by Or-ing 0E0h over the drawn cells). */
 void Screen_OrAttr(int x, int y, uint8_t bits);
@@ -127,7 +132,10 @@ enum {
     ITK_CTRL_UP = 0x240, ITK_CTRL_DOWN, ITK_CTRL_LEFT, ITK_CTRL_RIGHT,
     ITK_CTRL_HOME, ITK_CTRL_END, ITK_CTRL_PGUP, ITK_CTRL_PGDN,
     ITK_CTRL_INS, ITK_CTRL_DEL, ITK_CTRL_BACKSPACE, ITK_SCROLL_LOCK,
-    ITK_ALT_F9, ITK_ALT_F10, ITK_CTRL_F7,
+    ITK_ALT_F9, ITK_ALT_F10, ITK_CTRL_F7, ITK_CTRL_F2,
+    /* feature 010: Alt-'\' (UnmuteAll, 12Bh) and the keypad slash
+     * (MuteNext, scan 135h -- distinct from the free main-row '/') */
+    ITK_ALT_BACKSLASH = 0x238, ITK_KP_DIVIDE,
     ITK_SHIFT_UP = 0x250, ITK_SHIFT_DOWN, ITK_SHIFT_LEFT,
     ITK_SHIFT_RIGHT, ITK_SHIFT_PGUP, ITK_SHIFT_PGDN,
     ITK_SHIFT_HOME, ITK_SHIFT_END,

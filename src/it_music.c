@@ -2392,6 +2392,18 @@ void Music_InitMuteTable(void)
     SoloInstrument = 0xFF;
 }
 
+/* Music_UnmuteAll (IT_MUSIC.ASM 6392): jumps straight to the
+ * Music_SoloChannel3 loop -- re-toggle every channel the mute table
+ * remembers as user-muted. */
+void Music_UnmuteAll(void)
+{
+    int i;
+
+    for (i = 63; i >= 0; i--)
+        if (MuteChannelTable[i] == 1)
+            Music_ToggleChannel((uint16_t)i);
+}
+
 /* Music_SoloChannel (IT_MUSIC.ASM 6403): if the target is the only
  * unmuted channel, restore every channel muted via the mute table
  * (Music_UnmuteAll path); otherwise mute everything but the target. */

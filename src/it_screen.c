@@ -203,13 +203,36 @@ void Screen_DefineSmallNumbers(void)
 
 /* ---- rasterizer: cells -> 640x400 RGB (the authentic output) --------- */
 
+static uint8_t FontAInvert[8];          /* font-A char 246 (S_InvertCursor) */
+static int InvertOn;
+
 static const uint8_t *GlyphBitmap(uint8_t ch)
 {
+    if (InvertOn && ch == 246)
+        return FontAInvert;
     if (SmallNumbersOn && ch >= 226 && ch <= 245)
         return FontASmall[ch - 226];
     if (ch >= IT_CHARDEF_FIRST && ch < IT_CHARDEF_FIRST + IT_CHARDEF_COUNT)
         return IT_CharDefs[ch - IT_CHARDEF_FIRST];
     return IT_FontROM[ch];
+}
+
+/* S_InvertCursor (IT_S.ASM 1633): rebuild font-A char 246 as the glyph
+ * currently shown at (x,y) with the pixel columns selected by `mask`
+ * inverted, then display char 246 attr 30h there. Used by the pattern
+ * editor's cursor on packed (font-B / G0..H9 / char-184) cells: the
+ * unmasked half renders in cursor colours, the masked half keeps its
+ * normal look. */
+void Screen_InvertCursor(int x, int y, uint8_t mask)
+{
+    screen_cell_t c = Screen_GetCell(x, y);
+    const uint8_t *g = (c.attr & 0x08) ? FontB[c.ch] : GlyphBitmap(c.ch);
+    int row;
+
+    for (row = 0; row < 8; row++)
+        FontAInvert[row] = (uint8_t)(g[row] ^ mask);
+    InvertOn = 1;
+    Screen_PutChar(x, y, 246, 0x30);
 }
 
 void Screen_Rasterize(uint32_t *px)
