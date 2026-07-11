@@ -10112,6 +10112,101 @@ int main(int argc, char **argv)
                     pe2_ok ? "PE2 OK" : "PE2 FAIL");
         }
 
+        /* Terminal input parser (feature 011): drive the shared byte
+         * parser directly -- no tty needed, platform-neutral. */
+        {
+            int t_ok = 1, got;
+            it_mouse_t m;
+            static const struct { const char *seq; int key; } tk[] = {
+                { "\x1b" "b",       ITK_ALT_A + 1 },        /* Alt-B  */
+                { "\x1b" "3",       ITK_ALT_0 + 3 },
+                { "\x1b" "\\",      ITK_ALT_BACKSLASH },
+                { "\x1b[1;5C",      ITK_CTRL_RIGHT },
+                { "\x1b[1;2A",      ITK_SHIFT_UP },
+                { "\x1b[1;5H",      ITK_CTRL_HOME },
+                { "\x1b[5;5~",      ITK_CTRL_PGUP },
+                { "\x1b[6;2~",      ITK_SHIFT_PGDN },
+                { "\x1b[3;3~",      ITK_ALT_DEL },
+                { "\x1b[2;5~",      ITK_CTRL_INS },
+                { "\x1b[20;2~",     ITK_SHIFT_F9 },
+                { "\x1b[20;3~",     ITK_ALT_F9 },
+                { "\x1b[21;3~",     ITK_ALT_F10 },
+                { "\x1b[18;5~",     ITK_CTRL_F7 },
+                { "\x1b[1;5Q",      ITK_CTRL_F2 },
+                { "\x1b[27;5;51~",  ITK_CTRL_0 + 3 },   /* mOK Ctrl-3 */
+                { "\x1b[51;5u",     ITK_CTRL_0 + 3 },   /* CSI-u form */
+                { "\x1b[52;6u",     ITK_CTRL_SHIFT_1 + 3 },
+                { "\x1b[33;6u",     ITK_CTRL_SHIFT_1 }, /* shifted '!' */
+                { "\x1b[27;5;127~", ITK_CTRL_BACKSPACE },
+                { "\x1b[A",         ITK_UP },
+                { "\x1bOP",         ITK_F1 },
+                { "\x1b[15~",       ITK_F5 },
+                { "\x1b[24~",       ITK_F12 },
+                { "\x1b[Z",         ITK_SHIFT_TAB },
+                { "q",              'q' },
+                { "\x14",           0x14 },             /* Ctrl-T */
+                { "\x7f",           ITK_BACKSPACE },
+            };
+            size_t ti;
+
+            for (ti = 0; ti < sizeof(tk) / sizeof(tk[0]); ti++) {
+                got = Screen_TermFeedTest((const uint8_t *)tk[ti].seq,
+                                          (int)strlen(tk[ti].seq), 0);
+                if (got != tk[ti].key ||
+                    Screen_TermFeedTest(NULL, 0, 0) != ITK_NONE)
+                    t_ok = 0;
+            }
+            /* bare ESC resolves only via the pump's grace flush */
+            if (Screen_TermFeedTest((const uint8_t *)"\x1b", 1, 0)
+                    != ITK_NONE)
+                t_ok = 0;
+            if (Screen_TermFeedTest(NULL, 0, 1) != ITK_ESC)
+                t_ok = 0;
+            /* sequence split across two polls */
+            if (Screen_TermFeedTest((const uint8_t *)"\x1b[1;", 4, 0)
+                    != ITK_NONE)
+                t_ok = 0;
+            if (Screen_TermFeedTest((const uint8_t *)"5D", 2, 0)
+                    != ITK_CTRL_LEFT)
+                t_ok = 0;
+            /* junk: unknown CSI final, unmapped Alt, UTF-8 tail byte */
+            if (Screen_TermFeedTest((const uint8_t *)"\x1b[9X", 4, 0)
+                    != ITK_NONE ||
+                Screen_TermFeedTest((const uint8_t *)"\x1b#", 2, 0)
+                    != ITK_NONE ||
+                Screen_TermFeedTest((const uint8_t *)"\x90", 1, 0)
+                    != ITK_NONE)
+                t_ok = 0;
+            /* SGR mouse: press -> ITK_MOUSE + state, drag moves with
+             * the button held, release drops it; wheel is consumed */
+            if (Screen_TermFeedTest((const uint8_t *)"\x1b[<0;10;5M",
+                                    10, 0) != ITK_MOUSE)
+                t_ok = 0;
+            Screen_TermMouseTest(&m);
+            if (m.x != 9 || m.y != 4 || m.b != 1 || m.px != 76)
+                t_ok = 0;
+            if (Screen_TermFeedTest((const uint8_t *)"\x1b[<32;12;6M",
+                                    11, 0) != ITK_NONE)
+                t_ok = 0;
+            Screen_TermMouseTest(&m);
+            if (m.x != 11 || m.y != 5 || m.b != 1)
+                t_ok = 0;
+            if (Screen_TermFeedTest((const uint8_t *)"\x1b[<0;12;6m",
+                                    10, 0) != ITK_NONE)
+                t_ok = 0;
+            Screen_TermMouseTest(&m);
+            if (m.b != 0)
+                t_ok = 0;
+            if (Screen_TermFeedTest((const uint8_t *)"\x1b[<64;1;1M",
+                                    10, 0) != ITK_NONE)
+                t_ok = 0;
+            Screen_TermMouseTest(&m);
+            if (m.x != 11 || m.y != 5)          /* wheel didn't move it */
+                t_ok = 0;
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    t_ok ? "TERM OK" : "TERM FAIL");
+        }
+
         commit_current_pattern();
         fprintf(stderr, "ITED selftest: completed %zu actions, "
                 "pattern %u, %u rows, cursor r%d c%d col%d, "

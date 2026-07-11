@@ -63,7 +63,11 @@ palette and bevel glyphs — via the Win32 backend on Windows and the SDL2
 backend on Linux/macOS (built when SDL2 is present; see Building). Set
 `ITED_TERM=1` to force the truecolor terminal backend instead, which is
 also the automatic fallback when no display is available (resize your
-terminal to at least 80x50).
+terminal to at least 80x50). On POSIX the terminal backend carries the
+full input surface: Alt/Ctrl/Shift key combos via the xterm encodings
+(ESC prefix, modified CSI, `modifyOtherKeys`) and mouse via SGR
+reporting — clicking, dragging thumbbars and pattern-grid clicks work
+over SSH.
 
 ## Editor (`ited`)
 
@@ -124,8 +128,8 @@ The in-depth sample/instrument editors (waveform view, Alt-key ops,
 envelopes), the F5 info page views, the message editor, saving (.IT
 writer with the IT215 compressor), module import (S3M/XM/MOD/MTM/669)
 and the sample/instrument library (rip from other modules) are all
-ported; remaining gaps are listed in `docs/HANDOFF.md` §6 (pattern
-block ops, terminal mouse/Alt keys, S3M export, Alt-F12 Fourier).
+ported; remaining gaps are listed in `docs/HANDOFF.md` §6 (S3M export,
+Alt-F12 Fourier, small F3/F4 polish items).
 
 ## Fidelity notes (deviations from the DOS binary)
 
@@ -162,11 +166,12 @@ Info page (F5):
   frame, scaled by the channel's final volume). They are ported exactly.
   `Display_SampleDots` is commented out of the 2.17 mode table and is
   excluded here too.
-- The port's key layer has no Alt modifier yet, so the Alt-only F5
-  combos have portable stand-ins: Ctrl-U/Ctrl-D = Alt-Up/Alt-Down
-  (window resize), 'r' = Alt-R (reverse output), 's' = Alt-S (stereo
-  toggle). The shifted-letter aliases (Q/S/G/V/I) are as in the
-  original. Alt-F12 (Fourier spectrum analyser) is not ported.
+- The F5 Alt combos predate the key layer's Alt support (feature 009),
+  so their portable stand-ins remain as aliases: Ctrl-U/Ctrl-D =
+  Alt-Up/Alt-Down (window resize), 'r' = Alt-R (reverse output),
+  's' = Alt-S (stereo toggle). The shifted-letter aliases (Q/S/G/V/I)
+  are as in the original. Alt-F12 (Fourier spectrum analyser) is not
+  ported.
 - The velocity-bar scan is bounds-clamped to the sample data (the
   original scans raw DOS memory for transient mixer offsets).
 
@@ -212,9 +217,16 @@ Pattern editor (F2):
   in `ited.cfg`; the original kept them in IT.CFG's Pattern segment.
 - **Not ported (documented leftovers):** MIDI input triggers (no
   MIDI-in exists); the Ctrl-V default-volume display toggle.
-  Terminal-backend modifier keys (Ctrl/Alt/Shift combos,
-  shift-marking) are a roadmap-#7 gap — the pixel backends carry the
-  full set.
+- The POSIX terminal backend decodes the full modifier surface since
+  feature 011 (ESC-prefix Alt, xterm modified CSI, `modifyOtherKeys`
+  level 1 for Ctrl-digits) plus SGR mouse (button-event tracking; px/py
+  approximate to the cell centre, so terminal thumbbar drags move in
+  8-pixel steps). Terminal limitations: no Shift press/release events
+  (F2 chord entry is pixel-backend-only; Shift-arrow marking works),
+  and keypad `/` is indistinguishable from `/` (use `?` or Alt-F9 for
+  muting). The Windows console (`ITED_TERM=1` on Windows) decodes the
+  conio scan-code combos but has no mouse — the Win32 window is the
+  primary backend there.
 
 Sample/instrument library (F3/F4 Enter):
 - Ripping single samples out of IT/S3M/XM/MOD/MTM/669/FAR/PTM/KRZ/PAT
@@ -253,8 +265,8 @@ Sample editor (F3):
   speed) is a stub in the 2.17 source and stays one here.
 - Loop/speed numeric fields edit through a value prompt instead of the
   original's inline digit entry.
-- The Alt modifier works on the Win32 backend only (the terminal
-  backend has no Alt reporting yet).
+- The Alt modifier works on all backends (pixel backends natively;
+  the terminal via ESC-prefix decoding since feature 011).
 
 Save (F10) / message editor:
 - The `.IT` writer and the IT 2.14/2.15 sample compressor are ported

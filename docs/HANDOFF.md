@@ -19,12 +19,15 @@ instrument *editors* (waveform view, Alt-op set, envelopes, presets),
 F5 info page (all 11 views), F11/F12, message editor, .IT saving with
 the IT214/215 compressor, whole-module import (S3M/XM/MOD/MTM/669),
 and the sample/instrument library (rip samples/instruments from other
-modules, .ITS/.ITI/.XI, standalone .WAV loading, Alt-O/T/W saves). All
+modules, .ITS/.ITI/.XI, standalone .WAV loading, Alt-O/T/W saves).
+The terminal backend carries the full modifier + mouse input surface
+since feature 011 (roadmap #7 closed). All
 gates green as of 2026-07-11: determinism ×4 + save roundtrip ×4×3
-IDENTICAL, selftest reports F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2 OK.
+IDENTICAL (Windows AND Linux/WSL), selftest reports
+F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2/TERM OK on both platforms.
 **Deferred / still open** (see §6):
-the macOS verification pass (spec 001 T022 — needs a Mac) and terminal
-mouse/Alt keys (roadmap #7, spec next in queue), plus small leftovers:
+the macOS verification pass (spec 001 T022 — needs a Mac), plus small
+leftovers:
 S3M export (SaveFormat 1), Alt-U update-pattern-data, Alt-F12 Fourier
 analyser, F4 in-list name editing, instrument-record preview, Ctrl-V
 default-volume display.
@@ -351,6 +354,32 @@ with undo-ring byte checks, key-driven mute/solo engine-state
 assertions (module mute states respected), view-table mutations,
 width-overflow revert, and a mixed-scheme redraw/cursor walk.
 
+**Terminal-backend input — DONE (2026-07-11, spec
+`specs/011-terminal-input`, roadmap #7):** the VT terminal backend's
+input was rewritten around a platform-neutral incremental byte parser
+(`Term_FeedByte` state machine in it_screen.c: GROUND/ESC/CSI/SS3,
+key FIFO + it_mouse_t mirror), compiled on every platform and driven
+headless by the selftest `TERM` block (`Screen_TermFeedTest`/
+`Screen_TermMouseTest` hooks in it_screen.h). POSIX decodes: ESC-prefix
+Alt (letters/digits/`\`/`+`/`-`), xterm modified CSI (Shift/Alt/Ctrl ×
+arrows/Home/End/PgUp/PgDn/Ins/Del/F1..F12, incl. Ctrl-F2 `CSI 1;5Q`,
+Ctrl-F7 `18;5~`, Alt-F9/F10 `20;3~`/`21;3~`, Shift-F9 `20;2~`),
+modifyOtherKeys level 1 + CSI-u (`27;m;c~` and `c;mu` → Ctrl-0..5,
+Ctrl-Shift-1..4 incl. shifted `!@#$` forms, Ctrl-plus/minus,
+Ctrl-Backspace), and SGR mouse (`?1002h?1006h`; press → ITK_MOUSE +
+b=1, drag = motion bit 32 position updates, release clears b; wheel and
+non-left buttons consumed; px/py = cell centre ×8+4). Modes enabled in
+Term_Init, restored in Term_UnInit (`>4;0m`, `?1006l?1002l`). A lone
+ESC resolves via a one-poll grace in the POSIX pump (Term_Pump shares
+key + mouse). POSIX byte rules: 0x7F=Backspace, 0x08=Ctrl-H. Windows
+console (`ITED_TERM=1`): conio scan-code table extended (Alt letters
+via scan rows 16..50, Alt digits 120..129, Ctrl/Alt grey keys,
+Shift/Ctrl/Alt F-keys, 0x7F=Ctrl-Backspace); no console mouse (Win32
+window is primary). Verified: selftest incl. TERM OK on Windows and
+Linux (WSL Ubuntu, gcc 9.4), determinism ×4 IDENTICAL on both.
+Limitations documented in README: no shift press/release events, no
+keypad-`/` distinction, 8-pixel thumbbar granularity in terminals.
+
 **Standalone WAV sample loading — DONE (2026-07-05, spec
 `specs/008-wav-sample-loading`):** closes the samples half of the 006
 leftover. `scan_wav` in `src/it_ris.c` ports `D_GetSampleInfo8`
@@ -412,7 +441,7 @@ instrument transfers with remap checks. Capture aids:
 after feature 008: AIFF/TXWave standalone loading, the WAV stereo
 Left/Right prompt, instrument-record preview.
 
-**Not done yet** (see §6): terminal-backend mouse and Alt keys. F4
+**Not done yet** (see §6): F4
 leftovers: in-list name editing, Alt-U pattern update. F5 leftover:
 Alt-F12 Fourier spectrum analyser (SPECTRUMANALYSER build,
 `IT_FOUR.ASM`). S3M save (SaveFormat 1) not ported. No preview for
@@ -699,9 +728,16 @@ rough priority order:
    Waveform view, loop editing, the full Alt-op set, note-table ops,
    envelope presets, plus the Alt key layer. Leftover: Alt-U pattern
    update. The deferred disk saves landed with feature 006.
-7. **Terminal-backend mouse** (xterm SGR mouse reporting) and
-   **terminal Alt keys** (ESC-prefix sequences) if wanted; the editor
-   side is backend-agnostic already. **No spec exists yet.**
+7. **Terminal-backend mouse + modifier keys** — ✅ DONE (2026-07-11,
+   spec `specs/011-terminal-input`): see §2. The POSIX terminal decodes
+   ESC-prefix Alt, xterm modified CSI, modifyOtherKeys/CSI-u and SGR
+   mouse through a platform-neutral incremental parser (selftest
+   `TERM OK` block drives it headless); the Windows console got the
+   conio scan-code combos (no mouse there). Verified on Linux via WSL
+   (full selftest + determinism ×4 IDENTICAL). Limitations (README):
+   no ITK_SHIFT_PRESS/RELEASE (chord entry pixel-only), keypad `/`
+   indistinguishable from `/`, terminal px/py at cell-centre
+   granularity.
 8. **Module format import (S3M/XM/MOD/MTM/669)** — ✅ DONE
    (2026-07-03, spec `specs/007-module-format-import`): see §2.
 9. **Sample/instrument library** (rip from other modules,
