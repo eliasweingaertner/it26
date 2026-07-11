@@ -115,8 +115,31 @@ static undoslot_t UndoRing[10];
 static editcell_t *ScratchData = NULL;  /* Alt-0 store/restore */
 static int       ScratchRows = 0;
 static int       TracePlayback = 0;
-static int       ViewTracking = 0;
+static int       ViewTracking = 0;      /* ViewChannelTracking (891) */
 static int       TopRow = 0, LeftChan = 0;
+/* ---- feature 010: pattern-length dialog + multi-scheme views ---- */
+static uint16_t  PatternSetLength = 64; /* IT_PE.ASM 349; persists across
+                                         * dialog invocations (the original
+                                         * re-prime is commented out) */
+static uint16_t  PatternLengthStart = 0, PatternLengthEnd = 0;  /* 350/351 */
+static uint16_t  ViewChannels[100];     /* 890: (method<<8)|channel entries,
+                                         * 0xFFFF-terminated; all-0xFFFF =
+                                         * default full view */
+static uint8_t   ViewDivision = 1;      /* 888: char-168 divider column */
+static int       ViewWidth = 0;         /* 889 (derived by pe_check_width) */
+static int       NumChansEdit = 5;      /* NumChannelsEdit (880) */
+/* ViewMethodInfo (910..924): per-method cell widths */
+static const int ViewMethodWidth[5] = { 13, 10, 7, 3, 2 };
+/* CursorPositions (855..860): per-method cursor-column x offsets
+ * (methods 0..2), then the ViewNote/ViewTiny rows consumed by the
+ * hilight path (rows 3..4; first byte = cursor attr base) */
+static const uint8_t CursorPositions[5][9] = {
+    { 0, 2, 4, 5, 7, 8, 10, 11, 12 },
+    { 0, 2, 3, 4, 5, 6, 7, 8, 9 },
+    { 0, 2, 3, 3, 4, 4, 5, 6, 6 },
+    { 0x20, 2, 1, 2, 1, 2, 0, 1, 2 },
+    { 0x10, 1, 0, 1, 0, 1, 0, 1, 1 },
+};
 static int       BaseOctave = 4;
 static int       EditStep = 1;
 static int       CurInstr = 1;
@@ -905,8 +928,6 @@ static void draw_chrome(const char *title)
 /* ===================================================================
  * Pattern editor (F2) -- layout/colours from PE_DrawPatternEdit
  * =================================================================== */
-#define PE_CHANNELS 5                   /* NumChannelsEdit default view */
-
 static uint8_t row_hilight_1(void)      /* beat */
 {
     uint8_t h = (uint8_t)(Song.Header.PHiligt & 0xFF);
@@ -940,7 +961,10 @@ static void draw_note(int x, int y, const editcell_t *c, uint8_t attr)
     }
 }
 
-/* volume column display incl. effect letters / pan colour (fg 2) */
+/* volume column display incl. effect letters / pan colour (fg 2).
+ * The effect test mirrors the ASM exactly: (v & 7Fh) - 65 must be
+ * non-negative BEFORE the bit-7 +60 offset is applied (pannings are
+ * 128..192 and must fall through to the pan path). */
 static void draw_volume(int x, int y, const editcell_t *c, uint8_t attr)
 {
     uint8_t v;
@@ -951,8 +975,10 @@ static void draw_volume(int x, int y, const editcell_t *c, uint8_t attr)
     }
     v = c->vol;
     if (v >= 65) {
-        int eff = (v & 0x7F) - 65 + ((v & 0x80) ? 60 : 0);
+        int eff = (v & 0x7F) - 65;
         if (eff >= 0) {
+            if (v & 0x80)
+                eff += 60;
             drawf(x, y, attr, "%c%d", 'A' + eff / 10, eff % 10);
             return;
         }
@@ -962,10 +988,377 @@ static void draw_volume(int x, int y, const editcell_t *c, uint8_t attr)
     drawf(x, y, attr, "%02d", v % 100);
 }
 
+/* ViewNote/ViewTiny volume cell: effect letters keep the base attr,
+ * plain volume dims to attr-4, pannings to attr-5 (IT_PE.ASM
+ * ViewNoteNoVEffect / ViewTinyNoVEffect). */
+static void draw_volume_small(int x, int y, uint8_t v, uint8_t a)
+{
+    if (v >= 65) {
+        int eff = (v & 0x7F) - 65;
+        if (eff >= 0) {
+            if (v & 0x80)
+                eff += 60;
+            drawf(x, y, a, "%c%d", 'A' + eff / 10, eff % 10);
+            return;
+        }
+        a = (uint8_t)(a - 5);                   /* panning */
+        v &= 0x7F;
+    } else {
+        a = (uint8_t)(a - 4);
+    }
+    drawf(x, y, a, "%02d", v % 100);
+}
+
+/* Draw_2Note (IT_PE_V.INC 59): two-cell note -- lowercase letter for
+ * naturals, uppercase for sharps, then the octave digit. */
+static void draw_note2(int x, int y, const editcell_t *c, uint8_t attr)
+{
+    uint8_t n = (c->mask & CM_NOTE) ? c->note : GNOTE_EMPTY;
+
+    if (n == GNOTE_EMPTY) {
+        fill(x, y, 2, 173, attr);
+    } else if (n == GNOTE_CUT) {
+        fill(x, y, 2, '^', attr);
+    } else if (n == GNOTE_OFF) {
+        fill(x, y, 2, 205, attr);
+    } else if (n == GNOTE_FADE) {
+        fill(x, y, 2, '~', attr);
+    } else {
+        int v = n - 1;
+        uint8_t l = (uint8_t)NoteNameChars[(v % 12) * 2];
+        if (NoteNameChars[(v % 12) * 2 + 1] == '-')
+            l = (uint8_t)(l + 'a' - 'A');
+        Screen_PutChar(x,     y, l, attr);
+        Screen_PutChar(x + 1, y, (uint8_t)('0' + v / 12), attr);
+    }
+}
+
+/* PE_SelectColour (IT_PE.ASM 8856) + the inline default-channel path
+ * (2585..2647): base row colour, block-mark override (view columns get
+ * 96h/86h, the default channels 93h/83h), Ctrl-H cursor-row hilight. */
+static uint8_t pe_select_colour(int row, int chan, int viewproc)
+{
+    uint8_t a = 0x06;
+
+    if (row % row_hilight_2() == 0)      a = 0xE6;
+    else if (row % row_hilight_1() == 0) a = 0xF6;
+
+    if (BlockMark &&
+        chan >= BlockLeft && chan <= BlockRight &&
+        row >= BlockTop && row <= BlockBottom) {
+        if (viewproc)
+            return (uint8_t)((a & 0x80) ? 0x96 : 0x86);
+        return (uint8_t)((a & 0x80) ? 0x93 : 0x83);
+    }
+    if (row == CurRow && (PEConfig & 2))
+        return 0x16;
+    return a;
+}
+
+/* one 13-wide cell: ViewFull (IT_PE.ASM 9074) == the default-channel
+ * body in PE_DrawPatternEdit */
+static void draw_cell_full(int x, int y, const editcell_t *cell, uint8_t a)
+{
+    draw_note(x, y, cell, a);
+    Screen_PutChar(x + 3, y, ' ', a);
+    if (cell->mask & CM_INS)
+        drawf(x + 4, y, a, "%02d", cell->ins % 100);
+    else
+        fill(x + 4, y, 2, 173, a);
+    Screen_PutChar(x + 6, y, ' ', a);
+    draw_volume(x + 7, y, cell, a);
+    Screen_PutChar(x + 9, y, ' ', a);
+    if (cell->mask & CM_CMD)
+        Screen_PutChar(x + 10, y, (uint8_t)('A' + cell->cmd - 1), a);
+    else
+        Screen_PutChar(x + 10, y, '.', a);
+    drawf(x + 11, y, a, "%02X", (cell->mask & CM_CMD) ? cell->cmdval : 0);
+}
+
+/* ViewCompress (9209), 10 wide: full fields, no spaces; instrument,
+ * command and value dim to attr-4 */
+static void draw_cell_compress(int x, int y, const editcell_t *cell,
+                               uint8_t a)
+{
+    uint8_t a4 = (uint8_t)(a - 4);
+
+    draw_note(x, y, cell, a);
+    if (cell->mask & CM_INS)
+        drawf(x + 3, y, a4, "%02d", cell->ins % 100);
+    else
+        fill(x + 3, y, 2, 173, a4);
+    draw_volume(x + 5, y, cell, a);
+    if (cell->mask & CM_CMD)
+        Screen_PutChar(x + 7, y, (uint8_t)('A' + cell->cmd - 1), a4);
+    else
+        Screen_PutChar(x + 7, y, '.', a4);
+    drawf(x + 8, y, a4, "%02X", (cell->mask & CM_CMD) ? cell->cmdval : 0);
+}
+
+/* ViewAllSmall (9342), 7 wide: all fields, the numeric ones packed
+ * into single cells via font bank B (attr bit 3; char = tens<<4|ones)
+ * and the G/H volume effects via the small font-A glyphs 226..245 */
+static void draw_cell_allsmall(int x, int y, const editcell_t *cell,
+                               uint8_t a)
+{
+    uint8_t a4 = (uint8_t)(a - 4);
+
+    draw_note(x, y, cell, a);
+
+    if (cell->mask & CM_INS) {
+        int v = cell->ins % 100;
+        Screen_PutChar(x + 3, y, (uint8_t)(((v / 10) << 4) | (v % 10)),
+                       (uint8_t)(a + 4));
+    } else {
+        Screen_PutChar(x + 3, y, 184, a4);
+    }
+
+    if (!(cell->mask & CM_VOL)) {
+        Screen_PutChar(x + 4, y, 184, a);
+    } else {
+        uint8_t v = cell->vol;
+        int eff = (v & 0x7F) - 65;
+        if (eff >= 0) {
+            if (v & 0x80)               /* Gx/Hx -> small glyph */
+                Screen_PutChar(x + 4, y, (uint8_t)(226 + eff), a);
+            else                        /* Ax..Fx packed: 0Ah+tens|ones */
+                Screen_PutChar(x + 4, y,
+                    (uint8_t)(((0x0A + eff / 10) << 4) | (eff % 10)),
+                    (uint8_t)(a + 6));
+        } else {
+            uint8_t va = (uint8_t)(a + ((v & 0x80) ? 4 : 6));
+            v &= 0x7F;
+            Screen_PutChar(x + 4, y,
+                (uint8_t)(((v / 10) << 4) | (v % 10)), va);
+        }
+    }
+
+    if (cell->mask & CM_CMD)
+        Screen_PutChar(x + 5, y, (uint8_t)('A' + cell->cmd - 1), a4);
+    else
+        Screen_PutChar(x + 5, y, '.', a4);
+    /* raw value byte: font bank B renders it as its hex pair */
+    Screen_PutChar(x + 6, y, (cell->mask & CM_CMD) ? cell->cmdval : 0,
+                   (uint8_t)(a + 4));
+}
+
+/* ViewNote (9479), 3 wide: one field by priority note/ins/vol/cmd */
+static void draw_cell_note(int x, int y, const editcell_t *cell, uint8_t a)
+{
+    uint8_t a4 = (uint8_t)(a - 4);
+
+    if (cell->mask & CM_NOTE) {
+        draw_note(x, y, cell, a);
+    } else if (cell->mask & CM_INS) {
+        Screen_PutChar(x, y, ' ', a);
+        drawf(x + 1, y, a, "%02d", cell->ins % 100);
+    } else if (cell->mask & CM_VOL) {
+        Screen_PutChar(x, y, ' ', a4);
+        draw_volume_small(x + 1, y, cell->vol, a);
+    } else if (cell->mask & CM_CMD) {
+        Screen_PutChar(x, y,
+            cell->cmd ? (uint8_t)('A' + cell->cmd - 1) : '.', a4);
+        drawf(x + 1, y, a4, "%02X", cell->cmdval);
+    } else {
+        fill(x, y, 3, 173, a);
+    }
+}
+
+/* ViewNote cursor-row override (ViewNote12): the cursor column picks
+ * which field the row shows regardless of priority */
+static void draw_cell_note_cur(int x, int y, const editcell_t *cell,
+                               uint8_t a)
+{
+    uint8_t a4 = (uint8_t)(a - 4);
+
+    if (CurCol <= 1) {                  /* note field */
+        if (!(cell->mask & CM_NOTE))
+            fill(x, y, 3, 173, a);      /* else the normal pass drew it */
+    } else if (CurCol <= 3) {           /* instrument */
+        Screen_PutChar(x, y, ' ', a);
+        if (cell->mask & CM_INS)
+            drawf(x + 1, y, a, "%02d", cell->ins % 100);
+        else
+            fill(x + 1, y, 2, 173, a);
+    } else if (CurCol <= 5) {           /* volume */
+        Screen_PutChar(x, y, ' ', a4);
+        if (cell->mask & CM_VOL)
+            draw_volume_small(x + 1, y, cell->vol, a);
+        else
+            fill(x + 1, y, 2, 173, a4);
+    } else {                            /* command + value */
+        Screen_PutChar(x, y,
+            (cell->mask & CM_CMD) && cell->cmd
+                ? (uint8_t)('A' + cell->cmd - 1) : '.', a4);
+        drawf(x + 1, y, a4, "%02X",
+              (cell->mask & CM_CMD) ? cell->cmdval : 0);
+    }
+}
+
+/* ViewTiny (9818), 2 wide */
+static void draw_cell_tiny(int x, int y, const editcell_t *cell, uint8_t a)
+{
+    uint8_t a4 = (uint8_t)(a - 4);
+
+    if (cell->mask & CM_NOTE) {
+        draw_note2(x, y, cell, a);
+    } else if (cell->mask & CM_INS) {
+        drawf(x, y, a, "%02d", cell->ins % 100);
+    } else if (cell->mask & CM_VOL) {
+        draw_volume_small(x, y, cell->vol, a);
+    } else if (cell->mask & CM_CMD) {
+        Screen_PutChar(x, y,
+            cell->cmd ? (uint8_t)('A' + cell->cmd - 1) : '.', a4);
+        Screen_PutChar(x + 1, y, cell->cmdval, (uint8_t)(a + 4));
+    } else {
+        fill(x, y, 2, 173, a);
+    }
+}
+
+/* ViewTiny cursor-row override (ViewTiny14) */
+static void draw_cell_tiny_cur(int x, int y, const editcell_t *cell,
+                               uint8_t a)
+{
+    uint8_t a4 = (uint8_t)(a - 4);
+
+    if (CurCol <= 1) {
+        if (!(cell->mask & CM_NOTE))
+            fill(x, y, 2, 173, a);
+    } else if (CurCol <= 3) {
+        if (cell->mask & CM_INS)
+            drawf(x, y, a, "%02d", cell->ins % 100);
+        else
+            fill(x, y, 2, 173, a);
+    } else if (CurCol <= 5) {
+        if (cell->mask & CM_VOL)
+            draw_volume_small(x, y, cell->vol, a);
+        else
+            fill(x, y, 2, 173, a4);
+    } else {
+        Screen_PutChar(x, y,
+            (cell->mask & CM_CMD) && cell->cmd
+                ? (uint8_t)('A' + cell->cmd - 1) : '.', a4);
+        Screen_PutChar(x + 1, y,
+            (cell->mask & CM_CMD) ? cell->cmdval : 0, (uint8_t)(a + 4));
+    }
+}
+
+/* PE_HilightView (8931): draw the cursor inside a view column whose
+ * left edge is at screen x. Packed cells (font-bank-B attr, char 184,
+ * or the small glyphs 226..245) get the half-cell invert via font-A
+ * char 246; plain cells get attr 30h over the column's cell span
+ * (CursorPositions high nibble = extra cells, low nibble = x offset). */
+static void pe_hilight_view(int m, int x, int chan)
+{
+    int span = 1, y, cl, cx;
+    screen_cell_t sc;
+
+    if (Template && !ShiftHeld && CurCol == 0 && ClipData)
+        span = ClipChans;
+    if (chan < CurChan || chan >= CurChan + span)
+        return;
+    if (CurRow < TopRow || CurRow >= TopRow + 32)
+        return;
+
+    y  = 15 + (CurRow - TopRow);
+    cl = CursorPositions[m][CurCol];
+    cx = x + (cl & 0x0F);
+    sc = Screen_GetCell(cx, y);
+    if ((sc.attr & 8) || sc.ch == 184 ||
+        (sc.ch >= 226 && sc.ch < 246)) {
+        uint8_t mask = 0xF0;            /* right/units half */
+        if (CurCol < 8 &&
+            CursorPositions[m][CurCol] == CursorPositions[m][CurCol + 1])
+            mask = 0x0F;                /* shares the cell with the next
+                                         * column: left/tens half */
+        Screen_InvertCursor(cx, y, mask);
+    } else {
+        int n;
+        for (n = (cl >> 4) + 1; n > 0; n--, cx++)
+            Screen_SetAttr(cx, y, 0x30);
+    }
+}
+
+/* width-matched captions (ChannelMsg/2/7/4/5, IT_PE.ASM 863..869) */
+static const char *const ViewCaptionFmt[5] = {
+    " Channel %02d ", "Channel %02d", "Chnl %02d", " %02d", "%02d"
+};
+
+/* one ViewChannels entry: caption, 32 rows, cursor (the View* procs) */
+static void draw_view_column(int m, int x, int chan)
+{
+    int screeny;
+    int maxrow = (int)CurRows - 1;
+    uint8_t ca = (Song.Header.ChnlPan[chan] & 0x80) ? 0x10 : 0x13;
+
+    drawf(x, 14, ca, ViewCaptionFmt[m], chan + 1);
+
+    for (screeny = 0; screeny < 32; screeny++) {
+        int row = TopRow + screeny;
+        const editcell_t *cell;
+        uint8_t a;
+
+        if (row > maxrow)
+            break;
+        cell = &Grid[row * 64 + chan];
+        a = pe_select_colour(row, chan, 1);
+        switch (m) {
+        case 0:  draw_cell_full(x, 15 + screeny, cell, a);     break;
+        case 1:  draw_cell_compress(x, 15 + screeny, cell, a); break;
+        case 2:  draw_cell_allsmall(x, 15 + screeny, cell, a); break;
+        case 3:  draw_cell_note(x, 15 + screeny, cell, a);     break;
+        default: draw_cell_tiny(x, 15 + screeny, cell, a);     break;
+        }
+    }
+
+    if ((m == 3 || m == 4) && chan == CurChan &&
+        CurRow >= TopRow && CurRow < TopRow + 32) {
+        const editcell_t *cell = &Grid[CurRow * 64 + chan];
+        uint8_t a = pe_select_colour(CurRow, chan, 1);
+        if (m == 3)
+            draw_cell_note_cur(x, 15 + (CurRow - TopRow), cell, a);
+        else
+            draw_cell_tiny_cur(x, 15 + (CurRow - TopRow), cell, a);
+    }
+
+    pe_hilight_view(m, x, chan);
+}
+
 static void draw_pattern(void)
 {
     int ch, i, screeny;
     int maxrow = (int)CurRows - 1;
+    int gutterx, defx0;
+
+    /* row/block clamps (PE_DrawPatternEdit 2189..2207) */
+    if (CurRow > maxrow) CurRow = maxrow;
+    if (BlockTop > maxrow) BlockTop = maxrow;
+    if (BlockBottom > maxrow) BlockBottom = maxrow;
+
+    /* ViewChannelTracking scroll (2322..2398): when the cursor channel
+     * is outside the view list, shift every entry towards it (clamped
+     * to 0..63) so the cursor channel scrolls into a view column */
+    if (ViewTracking && (ViewChannels[0] & 0xFF) != 0xFF) {
+        int minc = ViewChannels[0] & 0xFF, maxc = minc, found = 0;
+
+        for (i = 0; i < 100 && (ViewChannels[i] & 0xFF) != 0xFF; i++) {
+            int c = ViewChannels[i] & 0xFF;
+            if (c == CurChan) { found = 1; break; }
+            if (c < minc) minc = c;
+            if (c > maxc) maxc = c;
+        }
+        if (!found) {
+            int delta = (maxc <= CurChan) ? CurChan - maxc
+                                          : CurChan - minc;
+            for (i = 0; i < 100 && (ViewChannels[i] & 0xFF) != 0xFF; i++) {
+                int c = (ViewChannels[i] & 0xFF) + delta;
+                if (c < 0)  c = 0;
+                if (c > 63) c = 63;
+                ViewChannels[i] =
+                    (uint16_t)((ViewChannels[i] & 0xFF00) | c);
+            }
+        }
+    }
 
     /* TopRow window (PE_DrawPatternEditNormal); centralise mode
      * (PEConfig bit 0) pins the cursor to the middle */
@@ -978,96 +1371,122 @@ static void draw_pattern(void)
     if (TopRow > maxrow - 31) TopRow = maxrow - 31;
     if (TopRow < 0) TopRow = 0;
 
-    if (CurChan < LeftChan) LeftChan = CurChan;
-    if (CurChan >= LeftChan + PE_CHANNELS) LeftChan = CurChan-PE_CHANNELS+1;
-    if (LeftChan > 64 - PE_CHANNELS) LeftChan = 64 - PE_CHANNELS;
-    if (LeftChan < 0) LeftChan = 0;
-
-    Screen_DrawBox(4, 14, 4 + 14*PE_CHANNELS, 47, 27);
-
-    /* channel headers, attr 13h / 10h muted */
-    for (ch = 0; ch < PE_CHANNELS; ch++) {
-        int c = LeftChan + ch;
-        uint8_t a = (Song.Header.ChnlPan[c] & 0x80) ? 0x10 : 0x13;
-        char hdr[13];
-        snprintf(hdr, sizeof(hdr), " Channel %02d ", c + 1);
-        Screen_DrawString(5 + 14*ch, 14, hdr, a);
+    if (NumChansEdit > 0) {
+        if (LeftChan > CurChan)
+            LeftChan = CurChan;
+        if (LeftChan + NumChansEdit <= CurChan)
+            LeftChan = CurChan - NumChansEdit + 1;
     }
 
+    gutterx = NumChansEdit ? 1 + ViewWidth : 1;
+    defx0   = 5 + ViewWidth;
+
+    /* boxes (2209..2248) */
+    if (ViewWidth) {
+        int cx = NumChansEdit ? 0 : 3;
+        Screen_DrawBox(1 + cx, 14, ViewWidth + cx, 47, 27);
+    }
+    if (NumChansEdit) {
+        Screen_DrawBox(4 + ViewWidth, 14,
+                       4 + ViewWidth + 14 * NumChansEdit, 47, 27);
+
+        /* default-channel headers, attr 13h / 10h muted */
+        for (ch = 0; ch < NumChansEdit; ch++) {
+            int c = LeftChan + ch;
+            uint8_t a = (Song.Header.ChnlPan[c] & 0x80) ? 0x10 : 0x13;
+            char hdr[13];
+            snprintf(hdr, sizeof(hdr), " Channel %02d ", c + 1);
+            Screen_DrawString(defx0 + 14 * ch, 14, hdr, a);
+        }
+    }
+
+    /* row-number gutter; PlayMark row in attr B0h (2437..2472) */
     for (screeny = 0; screeny < 32; screeny++) {
         int row = TopRow + screeny;
-        int y = 15 + screeny;
-        uint8_t base;
+        uint8_t a = 0x20;
 
         if (row > maxrow)
             break;
+        if (PlayMarkOn && PlayMarkPattern == (int)CurPattern &&
+            row == PlayMarkRow)
+            a = 0xB0;
+        draw3num(gutterx, 15 + screeny, row, a);
+    }
 
-        base = 0x06;
-        if (row % row_hilight_2() == 0)      base = 0xE6;
-        else if (row % row_hilight_1() == 0) base = 0xF6;
+    /* view columns left to right (2478..2554); char-168 divider
+     * columns between entries when ViewDivision is on */
+    {
+        int x = NumChansEdit ? 2 : 5;
 
-        draw3num(1, y, row, 0x20);          /* row number gutter */
+        for (i = 0; i < 100 && (ViewChannels[i] & 0xFF) != 0xFF; i++) {
+            int m = (ViewChannels[i] >> 8) & 7;
 
-        for (ch = 0; ch < PE_CHANNELS; ch++) {
-            int c = LeftChan + ch;
-            int x = 5 + 14*ch;
-            const editcell_t *cell = &Grid[row * 64 + c];
-            uint8_t rowattr = base;
-
-            /* PE_SelectColour (IT_PE.ASM 8856): marked block cells get
-             * 96h on hilighted rows / 86h otherwise; the cursor row
-             * gets 16h when the row-hilight toggle is on */
-            if (BlockMark &&
-                c >= BlockLeft && c <= BlockRight &&
-                row >= BlockTop && row <= BlockBottom)
-                rowattr = (uint8_t)((base & 0x80) ? 0x96 : 0x86);
-            else if (row == CurRow && (PEConfig & 2))
-                rowattr = 0x16;
-
-            draw_note(x, y, cell, rowattr);
-            Screen_PutChar(x + 3, y, ' ', rowattr);
-            if (cell->mask & CM_INS)
-                drawf(x + 4, y, rowattr, "%02d", cell->ins % 100);
-            else
-                fill(x + 4, y, 2, 173, rowattr);
-            Screen_PutChar(x + 6, y, ' ', rowattr);
-            draw_volume(x + 7, y, cell, rowattr);
-            Screen_PutChar(x + 9, y, ' ', rowattr);
-            if (cell->mask & CM_CMD)
-                Screen_PutChar(x + 10, y,
-                               (uint8_t)('A' + cell->cmd - 1), rowattr);
-            else
-                Screen_PutChar(x + 10, y, '.', rowattr);
-            drawf(x + 11, y, rowattr, "%02X",
-                  (cell->mask & CM_CMD) ? cell->cmdval : 0);
-
-            if (ch < PE_CHANNELS - 1)       /* track divider, char 168 */
-                Screen_PutChar(x + 13, y, 168,
-                               (uint8_t)((rowattr & 0xF0) | 2));
+            draw_view_column(m, x, ViewChannels[i] & 0xFF);
+            x += ViewMethodWidth[m];
+            if (i + 1 < 100 && (ViewChannels[i + 1] & 0xFF) != 0xFF &&
+                ViewDivision) {
+                for (screeny = 0; screeny < 32 &&
+                                  TopRow + screeny <= maxrow; screeny++)
+                    Screen_PutChar(x, 15 + screeny, 168, 0x02);
+                x++;
+            }
         }
     }
 
-    /* cursor: PE_HilightCursor (IT_PE.ASM 8918) -- keep the drawn
-     * character, rewrite the attribute to (attr & 8) | 30h. The 9
-     * columns sit at cell offsets 0..2 (note, 3 wide), 2 (octave),
-     * 4, 5, 7, 8, 10, 11, 12. */
-    if (CurRow >= TopRow && CurRow < TopRow + 32 &&
-        CurChan >= LeftChan && CurChan < LeftChan + PE_CHANNELS) {
-        static const int fieldoff[9] = { 0, 2, 4, 5, 7, 8, 10, 11, 12 };
-        static const int fieldw[9]   = { 3, 1, 1, 1, 1, 1, 1, 1, 1 };
-        int x = 5 + 14*(CurChan - LeftChan) + fieldoff[CurCol];
-        int y = 15 + (CurRow - TopRow);
+    /* default channels (2564..2842) */
+    if (NumChansEdit > 0) {
+        for (screeny = 0; screeny < 32; screeny++) {
+            int row = TopRow + screeny;
+            int y = 15 + screeny;
 
-        for (i = 0; i < fieldw[CurCol]; i++) {
-            screen_cell_t sc = Screen_GetCell(x + i, y);
-            Screen_PutChar(x + i, y, sc.ch,
-                           (uint8_t)((sc.attr & 8) | 0x30));
+            if (row > maxrow)
+                break;
+
+            for (ch = 0; ch < NumChansEdit; ch++) {
+                int c = LeftChan + ch;
+                int x = defx0 + 14 * ch;
+                uint8_t a = pe_select_colour(row, c, 0);
+
+                draw_cell_full(x, y, &Grid[row * 64 + c], a);
+
+                if (ch < NumChansEdit - 1) {    /* divider, char 168:
+                     * background kept except over marked blocks
+                     * (attr byte 80h..9Fh drops to plain 02h) */
+                    uint8_t da = (uint8_t)((a & 0xF0) | 2);
+                    if (da >= 0x80 && da < 0xA0)
+                        da = 0x02;
+                    Screen_PutChar(x + 13, y, 168, da);
+                }
+            }
         }
+    }
+
+    /* playing-row hilight on the gutter digits (2844..2884) */
+    if (PlayMode != 0 && CurrentPattern == CurPattern) {
+        int r = (int)CurrentRow - TopRow;
+        if (r >= 0 && r < 32 && TopRow + r <= maxrow) {
+            for (i = 0; i < 3; i++) {
+                uint8_t at = Screen_GetAttr(gutterx + i, 15 + r);
+                Screen_SetAttr(gutterx + i, 15 + r,
+                               (uint8_t)((at & 0xF0) | 3));
+            }
+        }
+    }
+
+    /* default-channel cursor (PE_PrePatternEdit 2903..2924): ONE cell,
+     * attr := 30h at the CursorPositions[0] offset */
+    if (NumChansEdit > 0 &&
+        CurChan >= LeftChan && CurChan < LeftChan + NumChansEdit &&
+        CurRow >= TopRow && CurRow < TopRow + 32) {
+        Screen_SetAttr(defx0 + 14 * (CurChan - LeftChan) +
+                           CursorPositions[0][CurCol],
+                       15 + (CurRow - TopRow), 0x30);
     }
 
     /* channel notch at the bottom edge under the cursor channel */
-    {
-        int x = 5 + 14*(CurChan - LeftChan);
+    if (NumChansEdit > 0 &&
+        CurChan >= LeftChan && CurChan < LeftChan + NumChansEdit) {
+        int x = defx0 + 14 * (CurChan - LeftChan);
         for (i = 0; i < 3; i++)
             Screen_PutChar(x + i, 47, 0xA9, 0x23);
     }
@@ -6535,6 +6954,243 @@ static void pe_undo_requester(void)
     }
 }
 
+/* ===================================================================
+ * Feature 010: pattern-length dialog, mute/solo keys, view schemes
+ * =================================================================== */
+
+/* PE_CheckWidth (IT_PE.ASM 8711): sum the view-column widths (+2
+ * border, +count-1 dividers); fail if >= 76, else derive ViewWidth and
+ * the number of default full-width channels. Returns 0 ok / -1 fail. */
+static int pe_check_width(void)
+{
+    int dx = 0, cx = 0, i;
+
+    for (i = 0; i < 100 && (ViewChannels[i] & 0xFF) != 0xFF; i++) {
+        dx += ViewMethodWidth[(ViewChannels[i] >> 8) & 7];
+        cx++;
+    }
+    if (cx) {
+        dx += 2;
+        if (ViewDivision)
+            dx += cx - 1;
+    }
+    if (dx >= 76)
+        return -1;
+    ViewWidth = dx;
+    NumChansEdit = 0;
+    if (dx < 74)
+        NumChansEdit = (74 - dx) / 14;
+    return 0;
+}
+
+static void pe_toggle_tracking(void)    /* Ctrl-T (11189) */
+{
+    ViewTracking ^= 1;
+    status(ViewTracking ? "View-Channel cursor tracking enabled"
+                        : "View-Channel cursor tracking disabled");
+}
+
+static void pe_toggle_row_hilight(void) /* Ctrl-H (11209) */
+{
+    PEConfig ^= 2;
+    status((PEConfig & 2) ? "Row hilight enabled"
+                          : "Row hilight disabled");
+}
+
+static void pe_toggle_division(void)    /* Alt-H (10095); silent */
+{
+    ViewDivision ^= 1;
+    if (pe_check_width() < 0)
+        ViewDivision ^= 1;              /* revert if too wide */
+}
+
+static void pe_clear_views(void)        /* Alt-R (8835) */
+{
+    memset(ViewChannels, 0xFF, sizeof(ViewChannels));
+    ViewWidth = 0;
+    NumChansEdit = 5;                   /* StartChannelEdit (873) */
+    ViewTracking = 0;
+}
+
+/* PE_FastView (10254): n = 0 removes the current channel's view entry
+ * (compacting the list), n = 1..6 sets method n-1, appending at the
+ * terminator if absent; revert on width failure. */
+static void pe_fast_view(int n)
+{
+    int method = n - 1, i;
+    uint16_t old;
+
+    for (i = 0; i < 99; i++) {
+        int c = ViewChannels[i] & 0xFF;
+        if (c == 0xFF || c == CurChan)
+            break;
+    }
+    if (method < 0) {                   /* Ctrl-0: delete entry */
+        if ((ViewChannels[i] & 0xFF) == 0xFF)
+            return;
+        for (; i < 99; i++) {
+            ViewChannels[i] = ViewChannels[i + 1];
+            if (ViewChannels[i] == 0xFFFF)
+                break;
+        }
+        ViewChannels[99] = 0xFFFF;
+        pe_check_width();
+        return;
+    }
+    old = ViewChannels[i];
+    ViewChannels[i] = (uint16_t)((method << 8) | CurChan);
+    if (pe_check_width() < 0)
+        ViewChannels[i] = old;
+}
+
+/* PEFunction_QuickViewSetup (10169): preset = channels 0..n-1 all in
+ * one method; count depends on ViewDivision. Enables tracking. */
+static void pe_quick_view_setup(int method, int ndiv, int nnodiv)
+{
+    int n = ViewDivision ? ndiv : nnodiv;
+    int fill = ViewDivision ? nnodiv : 100 - n;     /* ASM fill quirk */
+    int i, j;
+
+    for (i = 0; i < n; i++)
+        ViewChannels[i] = (uint16_t)((method << 8) | i);
+    for (j = 0; j < fill && i < 100; j++, i++)
+        ViewChannels[i] = 0xFFFF;
+    pe_check_width();
+    if (!ViewTracking)
+        pe_toggle_tracking();
+}
+
+/* Alt-T (PEFunction_ViewTrack 8767): cycle the current channel's view
+ * method; past the narrowest the entry is removed; on width failure
+ * keep narrowing, restoring the old entry when the cycle is spent. */
+static void pe_view_track(void)
+{
+    int i, method;
+    uint16_t old;
+
+    for (i = 0; i < 99; i++) {
+        int c = ViewChannels[i] & 0xFF;
+        if (c == 0xFF || c == CurChan)
+            break;
+    }
+    old = ViewChannels[i];
+    method = (((old >> 8) & 0xFF) + 1) & 0xFF;      /* FF+1 -> 0 */
+    if (method > 4) {                   /* wrap: remove entry */
+        for (; i < 99; i++) {
+            ViewChannels[i] = ViewChannels[i + 1];
+            if (ViewChannels[i] == 0xFFFF)
+                break;
+        }
+        ViewChannels[99] = 0xFFFF;
+        pe_check_width();
+        return;
+    }
+    for (;;) {
+        ViewChannels[i] = (uint16_t)((method << 8) | CurChan);
+        if (pe_check_width() == 0)
+            return;
+        method++;
+        if (method >= 4) {              /* cycle spent: restore (8825) */
+            ViewChannels[i] = old;
+            return;
+        }
+    }
+}
+
+/* Ctrl-F2: the Set Pattern Length requester (PE_SetPatternLength
+ * 11692; objects O1_SetPatternLength, IT_OBJ1.ASM 659..730). Start/End
+ * prime to the current pattern; the length value persists across
+ * invocations (the original's re-prime is commented out, 11695).
+ * Deviation (README fidelity notes): one undo snapshot of the current
+ * pattern is pushed first -- the original's resize is not undoable. */
+static void pe_apply_pattern_length(void)
+{
+    uint16_t p;
+
+    commit_current_pattern();           /* StorePattern (11715) */
+    snapshot_undo(22);                  /* type 22 "Pattern data" */
+    for (p = PatternLengthStart;
+         p <= PatternLengthEnd && p < MAX_PATTERNS; p++) {
+        memset(OpGrid, 0,
+               sizeof(editcell_t) * (size_t)MAX_PATROWS * 64);
+        Pattern_EnsureExists(p, 64);
+        Pattern_Unpack(p, OpGrid);
+        Pattern_Pack(p, OpGrid, PatternSetLength);
+    }
+    load_pattern(CurPattern);           /* re-decode (11747) */
+    if (CurRow > (int)CurRows - 1)
+        CurRow = (int)CurRows - 1;
+}
+
+static void pe_set_pattern_length(void)
+{
+    /* focus: 0 length bar, 1 start bar, 2 end bar, 3 OK */
+    int focus = 0;
+
+    PatternLengthStart = CurPattern;
+    PatternLengthEnd = CurPattern;
+
+    for (;;) {
+        int key;
+        uint16_t *val = focus == 0 ? &PatternSetLength
+                      : focus == 1 ? &PatternLengthStart
+                      : focus == 2 ? &PatternLengthEnd : NULL;
+        int vmin = focus == 0 ? 32 : 0;
+        int vmax = focus == 0 ? 200 : 199;
+
+        draw_screen();
+        Screen_DrawBox(15, 19, 65, 33, 3);
+        Screen_DrawString(31, 21, "Set Pattern Length", 0x20);
+        Screen_DrawString(19, 24, "Pattern Length", 0x20);
+        Screen_DrawString(19, 27, " Start Pattern", 0x20);
+        Screen_DrawString(19, 28, "   End Pattern", 0x20);
+        Screen_DrawBox(33, 23, 56, 25, 25);
+        Screen_DrawBox(33, 26, 60, 29, 25);
+        draw_thumbbar(34, 24, 32, 200, PatternSetLength,
+                      focus == 0 ? 0x03 : 0x02);
+        draw_thumbbar(34, 27, 0, 199, PatternLengthStart,
+                      focus == 1 ? 0x03 : 0x02);
+        draw_thumbbar(34, 28, 0, 199, PatternLengthEnd,
+                      focus == 2 ? 0x03 : 0x02);
+        draw_button_style(35, 30, 44, 32, 8, "   OK", 0, focus == 3);
+        Screen_Update();
+
+        key = Key_Get();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (key) {
+        case ITK_QUIT: Running = 0; return;
+        case ITK_ESC:  return;
+        case ITK_TAB: case ITK_DOWN:
+            focus = (focus + 1) & 3; continue;
+        case ITK_SHIFT_TAB: case ITK_UP:
+            focus = (focus + 3) & 3; continue;
+        case ITK_ENTER: case ' ':
+            if (focus == 3) {
+                pe_apply_pattern_length();
+                return;
+            }
+            continue;
+        default: break;
+        }
+        if (val) {
+            int v = *val;
+            if (key == ITK_LEFT)       v--;
+            else if (key == ITK_RIGHT) v++;
+            else if (key == ITK_HOME)  v = vmin;
+            else if (key == ITK_END)   v = vmax;
+            else if (key >= '0' && key <= '9') {
+                v = v * 10 + (key - '0');   /* F_PostThumbBar 2196 */
+                if (v > vmax)
+                    v = key - '0';
+            } else
+                continue;
+            if (v < vmin) v = vmin;
+            if (v > vmax) v = vmax;
+            *val = (uint16_t)v;
+        }
+    }
+}
+
 static void handle_pattern_key(int key)
 {
     /* LastKeyBoard history (PE_PostPatternEdit 3215..3222) */
@@ -6586,6 +7242,40 @@ static void handle_pattern_key(int key)
         status((PEConfig & 1) ? "Centralise cursor enabled"
                               : "Centralise cursor disabled");
         return;
+    case 0x14: pe_toggle_tracking();    return;     /* Ctrl-T */
+    case 0x08: pe_toggle_row_hilight(); return;     /* Ctrl-H */
+    /* -- feature 010: pattern length, mute/solo, view schemes -- */
+    case ITK_CTRL_F2: pe_set_pattern_length(); return;
+    case '\\':                          /* PEFunction_Alt_F9 */
+    case ITK_ALT_F9:
+        ed_lock(); Music_ToggleChannel((uint16_t)CurChan); ed_unlock();
+        return;
+    case ITK_KP_DIVIDE:                 /* MuteNext: toggle + Tab */
+        ed_lock(); Music_ToggleChannel((uint16_t)CurChan); ed_unlock();
+        if (CurChan < 63) { CurCol = 0; CurChan++; }
+        return;
+    case '?':                           /* MutePrevious (clamp at 0) */
+        if (CurChan > 0)
+            CurChan--;
+        ed_lock(); Music_ToggleChannel((uint16_t)CurChan); ed_unlock();
+        return;
+    case ITK_ALT_F10:                   /* solo */
+        ed_lock(); Music_SoloChannel((uint16_t)CurChan); ed_unlock();
+        return;
+    case '|':                           /* SoloGotoNext: solo + Tab */
+        ed_lock(); Music_SoloChannel((uint16_t)CurChan); ed_unlock();
+        if (CurChan < 63) { CurCol = 0; CurChan++; }
+        return;
+    case ITK_ALT_BACKSLASH:             /* UnmuteAll */
+        ed_lock(); Music_UnmuteAll(); ed_unlock();
+        return;
+    case ITK_ALT_A + ('H' - 'A'): pe_toggle_division(); return;
+    case ITK_ALT_A + ('R' - 'A'): pe_clear_views();     return;
+    case ITK_ALT_A + ('T' - 'A'): pe_view_track();      return;
+    case ITK_CTRL_SHIFT_1:     pe_quick_view_setup(1, 6, 7);   return;
+    case ITK_CTRL_SHIFT_1 + 1: pe_quick_view_setup(2, 9, 10);  return;
+    case ITK_CTRL_SHIFT_1 + 2: pe_quick_view_setup(3, 18, 24); return;
+    case ITK_CTRL_SHIFT_1 + 3: pe_quick_view_setup(4, 24, 36); return;
     case ITK_SCROLL_LOCK:               /* ToggleTrace */
         TracePlayback ^= 1;
         status(TracePlayback ? "Playback tracing enabled"
@@ -6709,6 +7399,12 @@ static void handle_pattern_key(int key)
     if (key >= ITK_ALT_0 + 1 && key <= ITK_ALT_0 + 9) {
         EditStep = key - ITK_ALT_0;
         status("Cursor step set to %d", EditStep);
+        return;
+    }
+
+    /* Ctrl-0..5: view-method assignment (PEFunction_Ctrl0..5) */
+    if (key >= ITK_CTRL_0 && key <= ITK_CTRL_0 + 5) {
+        pe_fast_view(key - ITK_CTRL_0);
         return;
     }
 
@@ -6958,8 +7654,10 @@ static void act_save_prefs(void)
         return;
     }
     fprintf(fp, "moduledir=%s\nsampledir=%s\ninstrdir=%s\n"
-            "octave=%d\nstep=%d\n",
-            DirModule, DirSample, DirInstr, BaseOctave, EditStep);
+            "octave=%d\nstep=%d\n"
+            "peconfig=%d\nviewdivision=%d\nviewtracking=%d\n",
+            DirModule, DirSample, DirInstr, BaseOctave, EditStep,
+            PEConfig, ViewDivision, ViewTracking);
     fclose(fp);
     status("Preferences saved to ited.cfg.");
 }
@@ -7978,6 +8676,12 @@ static void load_prefs(void)
             BaseOctave = atoi(line + 7);
         else if (!strncmp(line, "step=", 5))
             EditStep = atoi(line + 5);
+        else if (!strncmp(line, "peconfig=", 9))
+            PEConfig = (uint8_t)atoi(line + 9);
+        else if (!strncmp(line, "viewdivision=", 13))
+            ViewDivision = (uint8_t)(atoi(line + 13) & 1);
+        else if (!strncmp(line, "viewtracking=", 13))
+            ViewTracking = atoi(line + 13) & 1;
     }
     fclose(fp);
     if (BaseOctave < 0) BaseOctave = 0;
@@ -8225,11 +8929,12 @@ static void pattern_click(void)
     it_mouse_t m;
 
     Screen_GetMouse(&m);
-    if (m.y >= 15 && m.y <= 46 && m.x >= 5 &&
-        m.x < 5 + 14 * PE_CHANNELS) {
+    if (NumChansEdit > 0 &&
+        m.y >= 15 && m.y <= 46 && m.x >= 5 + ViewWidth &&
+        m.x < 5 + ViewWidth + 14 * NumChansEdit) {
         int row = TopRow + (m.y - 15);
-        int ch  = LeftChan + (m.x - 5) / 14;
-        int off = (m.x - 5) % 14;
+        int ch  = LeftChan + (m.x - 5 - ViewWidth) / 14;
+        int off = (m.x - 5 - ViewWidth) % 14;
 
         if (row < (int)CurRows && ch < 64) {
             /* 9 cursor columns at cell offsets 0..2 (note), 2
@@ -8256,7 +8961,13 @@ static void handle_global(int key)
         return;
     case ITK_SHIFT_F9: Screen = SCR_MESSAGE; return;
     case ITK_F1:  Screen = SCR_HELP; return;
-    case ITK_F2:  if (Screen != SCR_PATTERN) Screen = SCR_PATTERN; return;
+    case ITK_F2:                        /* Glbl_F2 loads the packed-cell
+                                           charsets for the small views */
+        if (Screen != SCR_PATTERN) {
+            Screen_DefineSmallNumbers();
+            Screen = SCR_PATTERN;
+        }
+        return;
     case ITK_F3:  Screen = SCR_SAMPLES; ListSel = CurInstr-1; return;
     case ITK_F4:  Screen = SCR_INSTRUMENTS; ListSel = CurInstr-1; return;
     case ITK_F11: Screen = SCR_ORDER; ListSel = 0; return;
@@ -8336,6 +9047,8 @@ int main(int argc, char **argv)
     }
 
     StartTime = time(NULL);
+
+    memset(ViewChannels, 0xFF, sizeof(ViewChannels));   /* default view */
 
     /* directories default to the startup cwd; ited.cfg overrides */
     {
@@ -8422,6 +9135,28 @@ int main(int argc, char **argv)
                         uint32_t n = left > 2048 ? 2048 : left;
                         WAVDriver_Render(pbuf, n);
                         left -= n;
+                    }
+                }
+            }
+            if (scr == SCR_PATTERN) {      /* Glbl_F2 entry side effect */
+                Screen_DefineSmallNumbers();
+                /* capture aid: ITED_SHOT_PEVIEW=1..4 -> the four
+                 * Ctrl-Shift view presets, 5 -> a mixed Ctrl-1..5
+                 * fast-view layout on channels 0..4 */
+                if (getenv("ITED_SHOT_PEVIEW")) {
+                    switch (atoi(getenv("ITED_SHOT_PEVIEW"))) {
+                    case 1: pe_quick_view_setup(1, 6, 7);   break;
+                    case 2: pe_quick_view_setup(2, 9, 10);  break;
+                    case 3: pe_quick_view_setup(3, 18, 24); break;
+                    case 4: pe_quick_view_setup(4, 24, 36); break;
+                    case 5:
+                        for (i = 0; i < 5; i++) {
+                            CurChan = i;
+                            pe_fast_view(i + 1);
+                        }
+                        CurChan = 0;
+                        break;
+                    default: break;
                     }
                 }
             }
@@ -9230,6 +9965,153 @@ int main(int argc, char **argv)
                     pe_ok ? "PE OK" : "PE FAIL");
         }
 
+        /* Pattern editor completion (feature 010): length resize with
+         * undo, the mute/solo key family, and the view-scheme tables.
+         * Runs on scratch pattern 199 (itdemo uses 0..52); the slot is
+         * freed afterwards so song data is left untouched. */
+        {
+            int pe2_ok = 1;
+            uint16_t keep = CurPattern;
+            uint8_t mutekeep[64];           /* itdemo mutes ch13..63 in
+                                             * its own header */
+            int i;
+
+            for (i = 0; i < 64; i++)
+                mutekeep[i] = (uint8_t)(Song.Header.ChnlPan[i] & 0x80);
+
+            Screen = SCR_PATTERN;
+            commit_current_pattern();
+            load_pattern(199);              /* empty scratch: 64 rows */
+            CurRow = CurChan = CurCol = 0;
+            if (CurRows != 64)
+                pe2_ok = 0;
+
+            /* -- US1: shrink 64->32 discards, grow ->128 blank-fills,
+             * undo snapshot restores the pre-resize contents -- */
+            cn_set(&Grid[40 * 64], 40);     /* note at row 40 */
+            commit_current_pattern();
+            PatternSetLength = 32;
+            PatternLengthStart = PatternLengthEnd = 199;
+            pe_apply_pattern_length();
+            if (CurRows != 32 || CurRow > 31)
+                pe2_ok = 0;
+            if (!UndoRing[0].cells || UndoRing[0].rows != 64 ||
+                !(UndoRing[0].cells[40 * 64].mask & CM_NOTE))
+                pe2_ok = 0;                 /* snapshot kept row 40 */
+            PatternSetLength = 128;
+            pe_apply_pattern_length();
+            if (CurRows != 128)
+                pe2_ok = 0;
+            for (i = 32; i < 128; i++)      /* grown rows are empty */
+                if (Grid[i * 64].mask)
+                    pe2_ok = 0;
+            /* revert via the ring (as the Ctrl-Backspace requester
+             * does): restore the 64-row snapshot byte-exact */
+            if (UndoRing[1].cells && UndoRing[1].rows == 64) {
+                memcpy(Grid, UndoRing[1].cells,
+                       (size_t)64 * 64 * sizeof(editcell_t));
+                CurRows = 64;
+                commit_current_pattern();
+                if (!(Grid[40 * 64].mask & CM_NOTE) ||
+                    Grid[40 * 64].note != 41)
+                    pe2_ok = 0;
+            } else
+                pe2_ok = 0;
+
+            /* -- US2: mute/solo keys drive the engine state -- */
+            CurChan = 2;
+            handle_global('\\');            /* mute ch2 */
+            if (!(Song.Header.ChnlPan[2] & 0x80))
+                pe2_ok = 0;
+            handle_global('\\');            /* unmute */
+            if (Song.Header.ChnlPan[2] & 0x80)
+                pe2_ok = 0;
+            handle_global(ITK_ALT_F10);     /* solo ch2 */
+            if ((Song.Header.ChnlPan[2] & 0x80) ||
+                !(Song.Header.ChnlPan[0] & 0x80))
+                pe2_ok = 0;
+            handle_global(ITK_ALT_BACKSLASH);   /* unmute all: restores
+                                                 * the module's own mute
+                                                 * states, nothing more */
+            for (i = 0; i < 64; i++)
+                if ((Song.Header.ChnlPan[i] & 0x80) != mutekeep[i])
+                    pe2_ok = 0;
+            handle_global('|');             /* solo ch2 + advance */
+            if (CurChan != 3 || (Song.Header.ChnlPan[2] & 0x80))
+                pe2_ok = 0;
+            handle_global(ITK_ALT_BACKSLASH);
+            handle_global(ITK_KP_DIVIDE);   /* mute ch3 + advance */
+            if (CurChan != 4 || !(Song.Header.ChnlPan[3] & 0x80))
+                pe2_ok = 0;
+            handle_global('?');             /* back to ch3 + toggle */
+            if (CurChan != 3 || (Song.Header.ChnlPan[3] & 0x80))
+                pe2_ok = 0;
+            handle_global(ITK_ALT_BACKSLASH);
+
+            /* -- US3: view-scheme table mutators -- */
+            CurChan = 1;
+            handle_global(ITK_CTRL_0 + 3);  /* Ctrl-3: method 2 (7 wide) */
+            if (ViewChannels[0] != ((2 << 8) | 1) ||
+                ViewChannels[1] != 0xFFFF ||
+                ViewWidth != 9 || NumChansEdit != 4)
+                pe2_ok = 0;
+            handle_global(ITK_CTRL_SHIFT_1 + 1);    /* preset 2 */
+            for (i = 0; i < 9; i++)
+                if (ViewChannels[i] != ((2 << 8) | i))
+                    pe2_ok = 0;
+            if (ViewChannels[9] != 0xFFFF || !ViewTracking)
+                pe2_ok = 0;
+            handle_global(ITK_CTRL_0);      /* Ctrl-0: remove ch1 entry */
+            if ((ViewChannels[1] & 0xFF) != 2 ||
+                ViewChannels[8] != 0xFFFF)
+                pe2_ok = 0;
+            /* width overflow: 5 full-width entries fit (71), the 6th
+             * (85) must be reverted */
+            pe_clear_views();
+            for (i = 0; i < 6; i++) {
+                CurChan = i;
+                handle_global(ITK_CTRL_0 + 1);
+            }
+            if (ViewChannels[5] != 0xFFFF || ViewWidth != 71)
+                pe2_ok = 0;
+            /* mixed-scheme render + cursor walk across methods */
+            CurChan = 0;
+            handle_global(ITK_CTRL_0 + 1);  /* keep ch0 full */
+            CurChan = 1;
+            handle_global(ITK_CTRL_0 + 2);  /* ch1 compressed */
+            for (CurChan = 0; CurChan <= 2; CurChan++)
+                for (CurCol = 0; CurCol <= 8; CurCol++)
+                    redraw();
+            CurChan = 0; CurCol = 0;
+            /* toggles flip their state bits */
+            i = PEConfig;
+            pe_toggle_row_hilight();
+            if (((PEConfig ^ i) & 2) == 0)
+                pe2_ok = 0;
+            pe_toggle_row_hilight();
+            pe_toggle_division();
+            if (ViewDivision != 0)          /* narrow layout: no revert */
+                pe2_ok = 0;
+            pe_toggle_division();
+            pe_clear_views();
+            if (NumChansEdit != 5 || ViewWidth != 0 || ViewTracking)
+                pe2_ok = 0;
+
+            for (i = 0; i < 10; i++)
+                free(UndoRing[i].cells);
+            memset(UndoRing, 0, sizeof(UndoRing));
+            PatternSetLength = 64;
+            free(Song.Patterns[199].PackedData);    /* drop the scratch */
+            Song.Patterns[199].PackedData = NULL;
+            Song.Patterns[199].Rows = 0;
+            Song.Patterns[199].DataLength = 0;
+            load_pattern(keep);
+            CurRow = CurChan = CurCol = 0;
+            redraw();
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    pe2_ok ? "PE2 OK" : "PE2 FAIL");
+        }
+
         commit_current_pattern();
         fprintf(stderr, "ITED selftest: completed %zu actions, "
                 "pattern %u, %u rows, cursor r%d c%d col%d, "
@@ -9264,6 +10146,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "screen init failed\n");
         return 1;
     }
+    Screen_DefineSmallNumbers();        /* editor starts on F2; the small
+                                           views need the packed charsets */
     signal(SIGINT, on_sig);
 
     while (Running && !g_sig) {
