@@ -128,8 +128,8 @@ The in-depth sample/instrument editors (waveform view, Alt-key ops,
 envelopes), the F5 info page views, the message editor, saving (.IT
 writer with the IT215 compressor), module import (S3M/XM/MOD/MTM/669)
 and the sample/instrument library (rip from other modules) are all
-ported; remaining gaps are listed in `docs/HANDOFF.md` §6 (S3M export,
-Alt-F12 Fourier, small F3/F4 polish items).
+ported; remaining gaps are listed in `docs/HANDOFF.md` §6 (Alt-F12
+Fourier, small F3/F4 polish items).
 
 ## Fidelity notes (deviations from the DOS binary)
 
@@ -270,8 +270,24 @@ Sample editor (F3):
 
 Save (F10) / message editor:
 - The `.IT` writer and the IT 2.14/2.15 sample compressor are ported
-  1:1 (SaveFormat default 3 = IT215, as `SWITCH.INC`); S3M export
-  (SaveFormat 1) is not ported. Edit-history/timer blocks (Special
+  1:1 (SaveFormat default 3 = IT215, as `SWITCH.INC`). The F10 screen
+  carries the original's four format radio buttons (IT214/S3M/IT2xx/
+  IT215); a typed name without a dot gets `.IT` or `.S3M` per format
+  and Ctrl-S replaces the loaded name's extension likewise
+  (`D_SaveModule`/`D_SaveSong`).
+- S3M export (SaveFormat 1) is the `D_SaveS3M` transliteration
+  including its lossy-conversion quirks: patterns always emit 64 rows
+  (shorter padded, longer written in full), cells on channels 17+ or
+  with notes outside C-1..B-8 are dropped, vol-column values above 64
+  write 0xFF, S91 becomes XA4, Vxx/Xxx halve, Cxx re-encodes decimal,
+  the note-range check fires even off a stale cached note (ASM quirk),
+  and the >100-pattern header keeps the original's over-allocated
+  parapointer space. Every unrepresentable feature flashes the
+  original's exact warning text on its original row and the save then
+  waits for a key, as IT does. Deviation note: a byte-diff against a
+  DOS-written S3M has not been run (no DOS box in the loop); layout is
+  asserted field-wise by the selftest plus an import round trip.
+- Edit-history/timer blocks (Special
   bit 1 in ITTECH terms) are not written — the port keeps no timer
   data, which is also the original's behaviour when none exists.
 - Message editor: Alt-C (clear message) has no Alt in the key layer —

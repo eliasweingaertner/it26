@@ -7940,6 +7940,18 @@ static void draw_file_requester(void)
         drawf(58, 41, 0x05, "%09ld", ReqFiles[FSel].size);
     }
 
+    /* save-format radio buttons (O1_SaveModuleList objects 17..20:
+     * style 8 at (69,12)..(77,23), bound to SaveFormat) */
+    if (ReqSave) {
+        static const char *const fmtlbl[4] =
+            { " IT214", "  S3M", " IT2xx", " IT215" };
+        static const uint8_t fmtof[4] = { 0, 1, 2, 3 };
+        for (i = 0; i < 4; i++)
+            draw_button_style(69, 12 + 3 * i, 77, 14 + 3 * i, 8,
+                              fmtlbl[i], SaveFormat == fmtof[i],
+                              ReqFocus == 4 && SaveFormat == fmtof[i]);
+    }
+
     /* filename input + current directory */
     {
         int len = (int)strlen(ReqName);
@@ -8007,8 +8019,52 @@ static void save_progress_draw(int stage, int param)
     Screen_Update();
 }
 
-/* D_SaveModule tail + D_PostFileSaveWindow2: apply .IT when no '.',
- * confirm overwrite, run the writer, report. */
+/* the original's S3M format-limit warnings, rows 23..33 attr 4 */
+static void save_s3m_warning_draw(int row, const char *msg)
+{
+    drawf(4, row, 4, "%s", msg);
+    Screen_Update();
+}
+
+/* D_SaveS3M tail: when any format warning fired, hold the screen
+ * until a key is pressed (K_ClearKeyboardQueue + K_GetKey wait) */
+static void save_s3m_keywait(void)
+{
+    if (!Save_S3MWarned)
+        return;
+    while (Key_Get() != ITK_NONE)
+        ;                               /* clear the queue */
+    for (;;) {
+        int key;
+        Screen_Update();
+        key = Key_Get();
+        if (key == ITK_QUIT) { Running = 0; return; }
+        if (key != ITK_NONE)
+            return;
+        ma_sleep(15);
+    }
+}
+
+/* dispatch by SaveFormat (D_PostFileSaveWindow3) */
+static int save_module_dispatch(const char *name)
+{
+    int ok;
+
+    Save_Progress = save_progress_draw;
+    if (SaveFormat == 1) {
+        Save_S3MWarning = save_s3m_warning_draw;
+        ok = Save_S3MModule(name);
+        save_s3m_keywait();
+        Save_S3MWarning = NULL;
+    } else {
+        ok = Save_ITModule(name);
+    }
+    Save_Progress = NULL;
+    return ok;
+}
+
+/* D_SaveModule tail + D_PostFileSaveWindow2: apply .IT/.S3M by format
+ * when no '.', confirm overwrite, run the writer, report. */
 static void req_do_save(int *done)
 {
     char name[40];
@@ -8021,8 +8077,8 @@ static void req_do_save(int *done)
         req_scan();                     /* wildcard: new file spec */
         return;
     }
-    if (!strchr(name, '.') && strlen(name) < sizeof(name) - 4)
-        strcat(name, ".IT");
+    if (!strchr(name, '.') && strlen(name) < sizeof(name) - 5)
+        strcat(name, SaveFormat == 1 ? ".S3M" : ".IT");
 
     f = fopen(name, "rb");
     if (f) {
@@ -8032,10 +8088,8 @@ static void req_do_save(int *done)
     }
 
     commit_current_pattern();           /* PE_SaveCurrentPattern */
-    Save_Progress = save_progress_draw;
-    if (Save_ITModule(name)) {
+    if (save_module_dispatch(name)) {
         char *q;
-        Save_Progress = NULL;
         snprintf(FileNameDisp, sizeof(FileNameDisp), "%s", name);
         for (q = FileNameDisp; *q; q++)
             if (*q >= 'a' && *q <= 'z')
@@ -8043,7 +8097,6 @@ static void req_do_save(int *done)
         status("Saved.");
         *done = 1;
     } else {
-        Save_Progress = NULL;
         status("Unable to save file");  /* O1_UnableToSaveList */
     }
 }
@@ -8391,8 +8444,12 @@ static void file_requester_run(int save)
         switch (key) {
         case ITK_QUIT: Running = 0; done = 1; continue;
         case ITK_ESC:  done = 1; continue;
-        case ITK_TAB:       ReqFocus = (ReqFocus + 1) % 4; continue;
-        case ITK_SHIFT_TAB: ReqFocus = (ReqFocus + 3) % 4; continue;
+        case ITK_TAB:
+            ReqFocus = (ReqFocus + 1) % (ReqSave ? 5 : 4);
+            continue;
+        case ITK_SHIFT_TAB:
+            ReqFocus = (ReqFocus + (ReqSave ? 4 : 3)) % (ReqSave ? 5 : 4);
+            continue;
         case ITK_MOUSE: {
             it_mouse_t m;
             Screen_GetMouse(&m);
@@ -8428,6 +8485,10 @@ static void file_requester_run(int save)
                 }
             } else if (m.y == 46 && m.x >= 13 && m.x <= 38) {
                 ReqFocus = 3;
+            } else if (ReqSave && m.x >= 69 && m.x <= 77 &&
+                       m.y >= 12 && m.y <= 23 && (m.y - 12) % 3 != 2) {
+                ReqFocus = 4;           /* format radio buttons */
+                SaveFormat = (uint8_t)((m.y - 12) / 3);
             }
             continue; }
         default: break;
@@ -8475,6 +8536,17 @@ static void file_requester_run(int save)
                 break;
             case ITK_BACKSPACE: req_enter_dir(".."); break;
             default: break;
+            }
+        } else if (ReqFocus == 4) {         /* save-format group */
+            switch (key) {
+            case ITK_UP:
+                if (SaveFormat > 0) SaveFormat--;
+                break;
+            case ITK_DOWN:
+                if (SaveFormat < 3) SaveFormat++;
+                break;
+            default:
+                break;
             }
         } else {                            /* filename input */
             int len = (int)strlen(ReqName);
@@ -8550,10 +8622,11 @@ static void instrument_library_requester(void)
 }
 
 /* "Save Current" (Ctrl-S): save to the loaded filename without the
- * requester; the original always goes through D_CheckOverWrite. */
+ * requester; the original always goes through D_CheckOverWrite.
+ * D_SaveSong replaces the extension with IT/S3M per SaveFormat. */
 static void quick_save(void)
 {
-    char name[40];
+    char name[40], *dot;
     FILE *f;
 
     if (!FileNameDisp[0]) {
@@ -8561,8 +8634,11 @@ static void quick_save(void)
         return;
     }
     snprintf(name, sizeof(name), "%s", FileNameDisp);
-    if (!strchr(name, '.') && strlen(name) < sizeof(name) - 4)
-        strcat(name, ".IT");
+    dot = strrchr(name, '.');
+    if (dot && (size_t)(dot - name) < sizeof(name) - 5)
+        strcpy(dot, SaveFormat == 1 ? ".S3M" : ".IT");
+    else if (!dot && strlen(name) < sizeof(name) - 5)
+        strcat(name, SaveFormat == 1 ? ".S3M" : ".IT");
     f = fopen(name, "rb");
     if (f) {
         fclose(f);
@@ -8570,7 +8646,7 @@ static void quick_save(void)
             return;
     }
     commit_current_pattern();
-    if (Save_ITModule(name))
+    if (save_module_dispatch(name))
         status("Saved.");
     else
         status("Unable to save file");
@@ -10205,6 +10281,84 @@ int main(int argc, char **argv)
                 t_ok = 0;
             fprintf(stderr, "ITED selftest: [%s]\n",
                     t_ok ? "TERM OK" : "TERM FAIL");
+        }
+
+        /* S3M export (feature 012): D_SaveS3M layout checks + a round
+         * trip through the feature-007 S3M importer. */
+        {
+            int s3m_ok = 1;
+            const char *tmp = "st_s3m.s3m";
+            uint8_t hd[0x100];
+            FILE *fp;
+            uint8_t v_gv, v_is, v_it;
+            uint8_t smpbytes[16];
+            uint32_t smplen = 0;
+            int smpidx = 2;             /* itdemo sample 3 has data */
+            int i, ordn = 0, patn = 0;
+
+            do_load_named("testdata/itdemo.it");
+            v_gv = Song.Header.GV;
+            v_is = Song.Header.IS;
+            v_it = Song.Header.IT;
+            for (i = 255; i > 0; i--)
+                if (Song.Orders[i] != 0xFF) { ordn = i; break; }
+            ordn += 2;
+            for (i = 0; i < MAX_PATTERNS; i++)
+                if (Song.Patterns[i].PackedData &&
+                    Song.Patterns[i].DataLength)
+                    patn = i + 1;
+            {
+                const sample_t *s = &Song.Smp[smpidx];
+                smplen = s->Length << ((s->Flags & 2) ? 1 : 0);
+                memcpy(smpbytes, s->Data, 16);
+            }
+
+            commit_current_pattern();
+            Save_S3MWarned = 0;
+            if (!Save_S3MModule(tmp))
+                s3m_ok = 0;
+
+            fp = fopen(tmp, "rb");
+            if (!fp || fread(hd, 1, sizeof(hd), fp) != sizeof(hd)) {
+                s3m_ok = 0;
+            } else {
+                if (memcmp(hd + 0x2C, "SCRM", 4) != 0 ||
+                    hd[28] != 0x1A || hd[29] != 16)
+                    s3m_ok = 0;
+                if ((hd[0x20] | (hd[0x21] << 8)) != ordn ||
+                    (hd[0x24] | (hd[0x25] << 8)) != patn)
+                    s3m_ok = 0;
+                if (hd[0x30] != (uint8_t)(v_gv >> 1) ||
+                    hd[0x31] != v_is || hd[0x32] != v_it)
+                    s3m_ok = 0;
+                if (hd[0x40] != 0 ||        /* unmuted ch 1/2 -> L1,R1 */
+                    hd[0x41] != 8 ||
+                    hd[0x4D] != 0xFF)       /* ch 14 muted in itdemo  */
+                    s3m_ok = 0;
+                if (hd[0x35] != 252)        /* default pans present   */
+                    s3m_ok = 0;
+            }
+            if (fp)
+                fclose(fp);
+
+            /* round trip: the importer must read our file back */
+            if (s3m_ok && !do_load_named(tmp))
+                s3m_ok = 0;
+            if (s3m_ok) {
+                const sample_t *s = &Song.Smp[smpidx];
+                uint32_t bl = s->Length << ((s->Flags & 2) ? 1 : 0);
+                if (Song.Header.IS != v_is || Song.Header.IT != v_it)
+                    s3m_ok = 0;
+                if (Song.Header.GV != (uint8_t)((v_gv >> 1) << 1))
+                    s3m_ok = 0;
+                if (bl != smplen || !s->Data ||
+                    memcmp(s->Data, smpbytes, 16) != 0)
+                    s3m_ok = 0;         /* sign-conversion round trip */
+            }
+            remove(tmp);
+            do_load_named("testdata/itdemo.it");
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    s3m_ok ? "S3M OK" : "S3M FAIL");
         }
 
         commit_current_pattern();

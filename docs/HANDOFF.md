@@ -22,15 +22,17 @@ and the sample/instrument library (rip samples/instruments from other
 modules, .ITS/.ITI/.XI, standalone .WAV loading, Alt-O/T/W saves).
 The terminal backend carries the full modifier + mouse input surface
 since feature 011 (roadmap #7 closed). All
-gates green as of 2026-07-11: determinism ×4 + save roundtrip ×4×3
+gates green as of 2026-07-12: determinism ×4 + save roundtrip ×4×3
 IDENTICAL (Windows AND Linux/WSL), selftest reports
-F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2/TERM OK on both platforms.
-**Deferred / still open** (see §6):
+F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2/TERM/S3M OK on both platforms.
+S3M export
+(SaveFormat 1 + the F10 format buttons) landed 2026-07-12 as feature
+012. **Deferred / still open** (see §6):
 the macOS verification pass (spec 001 T022 — needs a Mac), plus small
 leftovers:
-S3M export (SaveFormat 1), Alt-U update-pattern-data, Alt-F12 Fourier
+Alt-U update-pattern-data, Alt-F12 Fourier
 analyser, F4 in-list name editing, instrument-record preview, Ctrl-V
-default-volume display.
+default-volume display, WAV stereo prompt, AIFF/TXWave loading.
 
 ---
 
@@ -217,7 +219,8 @@ pass, and the **IT 2.14/2.15 sample compressor** (delta passes, the
 exact bit-width LUTs from the D_SaveIT setup block, the run-minimise
 cost heuristics, LSB-first bitstream with the three width-change escape
 regimes, u16-length 32KB blocks). SaveFormat = 3 (IT215) default per
-`SWITCH.INC`; 0 (IT214) and 2 (uncompressed) also implemented.
+`SWITCH.INC`; 0 (IT214) and 2 (uncompressed) also implemented, and
+1 (S3M) since feature 012 — see §6 #4.
 UI: F10 = save requester (F9 window with editable filename primed from
 the loaded name, `.IT` applied when no '.', "Overwrite file?" Yes/No
 modal defaulting to No, progress strings at rows 17..23), Ctrl-S =
@@ -444,7 +447,7 @@ Left/Right prompt, instrument-record preview.
 **Not done yet** (see §6): F4
 leftovers: in-list name editing, Alt-U pattern update. F5 leftover:
 Alt-F12 Fourier spectrum analyser (SPECTRUMANALYSER build,
-`IT_FOUR.ASM`). S3M save (SaveFormat 1) not ported. No preview for
+`IT_FOUR.ASM`). No preview for
 instrument records (samples only). Header FreeMem/FreeEMS show host
 free RAM / 0. NB: the selftest script must never send ITK_ENTER while
 the F3/F4 *list widget* has focus — that now opens the modal library
@@ -694,7 +697,21 @@ rough priority order:
    `specs/004-save-module`): see §2. Full `.IT` writer incl. the
    IT214/IT215 sample compressor, save requester with overwrite
    confirm, Ctrl-S, Shift-F9 message editor, `--roundtrip` gate.
-   Leftover: S3M export (SaveFormat 1).
+   The S3M-export leftover landed 2026-07-12 as **feature 012** (spec
+   `specs/012-s3m-export`): `Save_S3MModule` in it_save.c is the
+   D_SaveS3M transliteration (header/orders/channel settings/pan
+   block, aligned SCRS sample headers with the 24-bit memseg patch
+   pass, 64-row pattern translation with the drop/clamp quirks —
+   channels 17+, notes outside C-1..B-8 incl. the stale-cached-note
+   quirk, vol >64 → FF, S91→XA4, V/X halve, C decimal — and unsigned
+   sample conversion). All eleven original warnings (IT_DISK.ASM
+   611..621) fire via the `Save_S3MWarning` hook on their original
+   rows and the save key-waits when any fired. F10 gained the four
+   format radio buttons at (69,12)..(77,23) bound to SaveFormat;
+   extension handling per D_SaveModule/D_SaveSong. Selftest `S3M OK`:
+   layout field checks + import round trip (orders/patnum/GV/speed/
+   tempo/channel settings/sample bytes). Deferred: byte-diff against
+   a DOS-written S3M (needs DOSBox).
 5. **Pattern editing depth** — ✅ DONE (2026-07-05, spec
    `specs/009-pattern-editing-depth`): see §2. Block marking + the full
    Alt-key block-op set, edit mask / multichannel / template entry,

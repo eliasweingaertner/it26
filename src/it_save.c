@@ -634,3 +634,390 @@ int Save_ITModule(const char *path)
     progress(5, 0);                     /* "Done" */
     return 1;
 }
+
+/* ===================================================================
+ * D_SaveS3M (IT_D_WM.INC 753): Scream Tracker 3 export, SaveFormat 1.
+ * Feature 012. Content S3M cannot express fires the original's
+ * warnings (IT_DISK.ASM 611..621) through Save_S3MWarning and is
+ * dropped/clamped exactly as the original drops it; the save itself
+ * never hard-fails on format limits.
+ * =================================================================== */
+
+void (*Save_S3MWarning)(int row, const char *msg);
+int Save_S3MWarned;                     /* SaveFormatError */
+
+static void s3m_warn(int row, const char *msg)
+{
+    Save_S3MWarned = 1;
+    if (Save_S3MWarning)
+        Save_S3MWarning(row, msg);
+}
+
+static void wr16(uint8_t *d, uint16_t v)
+{
+    d[0] = (uint8_t)v;
+    d[1] = (uint8_t)(v >> 8);
+}
+
+/* seek to the next 16-byte boundary at/after `pos`, returning it */
+static uint32_t s3m_align(uint32_t pos)
+{
+    pos = (pos + 15) & ~15u;
+    fseek(SaveFile, (long)pos, SEEK_SET);
+    return pos;
+}
+
+int Save_S3MModule(const char *path)
+{
+    /* header + orders + 199 parapointers (unclamped quirk space) +
+     * pan block */
+    static uint8_t head[0x60 + 258 + 2 * (99 + 200) + 32];
+    /* per-channel translation scratch (D_SaveS3M25 layout):
+     * 0 lastmask, 1 note, 2 ins, 3 vol, 4 cmd, 5 cmdval, 6 note2,
+     * 7 ins2 */
+    static uint8_t cell[64][8];
+    /* worst case: every packed input byte is a repeat-mask entry
+     * emitting 6 output bytes (packed data is at most 64K) */
+    static uint8_t pbuf[6 * 65536 + 1024];
+    static uint32_t datapara[100];      /* ES:10000 table */
+    uint32_t hdrlen, filepos;
+    int ordnum, smpnum, patnum, i, n, panpos;
+
+    SaveFile = fopen(path, "wb");
+    if (!SaveFile)
+        return 0;
+    NoSaveError = 0;
+    Save_S3MWarned = 0;
+
+    memset(head, 0, sizeof(head));
+    memcpy(head, Song.Header.SongName, 26);
+    head[28] = 0x1A;
+    head[29] = 16;                      /* ST3 module type */
+
+    /* OrdNum = last non-FF index + 2 (same scan as the .IT writer) */
+    n = 0;
+    for (i = 255; i > 0; i--)
+        if (Song.Orders[i] != 0xFF) {
+            n = i;
+            break;
+        }
+    ordnum = n + 2;
+    smpnum = count_samples();
+    patnum = max_pattern() + 1;
+
+    hdrlen = 0x60u + (uint32_t)ordnum + 2u * (uint32_t)smpnum
+                   + 2u * (uint32_t)patnum;  /* incl. the >100 quirk */
+    if (patnum > 100) {
+        s3m_warn(23, "Warning: Only 100 patterns supported "
+                     "in S3M format");
+        patnum = 100;
+    }
+    wr16(head + 0x20, (uint16_t)ordnum);
+    wr16(head + 0x22, (uint16_t)smpnum);
+    wr16(head + 0x24, (uint16_t)patnum);
+    wr16(head + 0x26, (uint16_t)((Song.Header.Flags & 2) << 2));
+    wr16(head + 0x28, 0x3000 + 0x217);  /* Cwt/v: Impulse Tracker */
+    wr16(head + 0x2A, 2);               /* Ffi: unsigned samples   */
+    memcpy(head + 0x2C, "SCRM", 4);
+
+    if (Song.Header.Flags & 4)
+        s3m_warn(29, "Warning: Instrument functions unsupported "
+                     "in S3M format");
+
+    head[0x30] = (uint8_t)(Song.Header.GV >> 1);
+    head[0x31] = Song.Header.IS;
+    head[0x32] = Song.Header.IT;
+    head[0x33] = (uint8_t)((Song.Header.MV > 0x7F ? 0x7F
+                                                  : Song.Header.MV)
+                           | ((Song.Header.Flags & 1) ? 0x80 : 0));
+    head[0x34] = 0;                     /* uc */
+    head[0x35] = 252;                   /* dp: pan block present */
+
+    {                                   /* obfuscated edit timer */
+        uint32_t ticks = 0, e;
+        if (Save_LoadTime)
+            ticks = (uint32_t)((double)(time(NULL) - Save_LoadTime)
+                               * 18.2);
+        e = ticks + Song.Header.Reserved;
+        e ^= 0x4A54484Cu;               /* 'JTHL' */
+        e = (e >> 4) | (e << 28);       /* ROR 4  */
+        e = 0u - e;                     /* NEG    */
+        e = (e << 7) | (e >> 25);       /* ROL 7  */
+        e ^= 0x4954524Bu;               /* 'ITRK' */
+        wr32(head + 0x38, e);
+    }
+
+    /* orders: ordnum-1 filtered entries + one 0FFh terminator */
+    for (i = 0; i < ordnum - 1; i++) {
+        uint8_t v = Song.Orders[i];
+        if (v < 0xFE && v >= 100)
+            v = 0xFF;                   /* patterns >= 100 unlisted */
+        head[0x60 + i] = v;
+    }
+    head[0x60 + ordnum - 1] = 0xFF;
+
+    /* channel settings 40h..5Fh + the 32-byte default-pan block at the
+     * end of the header area */
+    panpos = (int)hdrlen;
+    for (i = 0, n = 0; i < 32; i++) {
+        uint8_t p = Song.Header.ChnlPan[i];
+        if (p & 0x80) {                 /* muted / nonexistent */
+            head[0x40 + i] = 0xFF;
+            head[panpos + i] = 0;
+        } else {
+            uint8_t t;
+            if (p > 64)
+                p = 32;                 /* surround */
+            t = (uint8_t)(p >> 1);
+            t = (uint8_t)(t ? t - 1 : 0);
+            head[panpos + i] = (uint8_t)((t >> 1) | 32);
+            head[0x40 + i] = (uint8_t)(((n & 1) << 3) | (n >> 1));
+            n++;                        /* alternating L1,R1,L2,R2... */
+        }
+    }
+    hdrlen += 0x20;
+
+    for (i = 0; i < 32; i++)
+        if (Song.Header.ChnlVol[i] != 64) {
+            s3m_warn(24, "Warning: Channel volumes unsupported "
+                         "in S3M format");
+            break;
+        }
+    if (Song.Header.Flags & 8)
+        s3m_warn(25, "Warning: Linear slides unsupported "
+                     "in S3M format");
+
+    /* ---- sample headers (50h bytes each, 16-byte aligned) ---- */
+    progress(2, 0);                     /* "Sample Headers" */
+    filepos = hdrlen;
+    for (i = 0; i < smpnum; i++) {
+        const sample_t *s = &Song.Smp[i];
+        uint8_t sh[0x50];
+        int k;
+
+        filepos = s3m_align(filepos);
+        wr16(head + 0x60 + ordnum + 2 * i, (uint16_t)(filepos >> 4));
+
+        memset(sh, 0, sizeof(sh));
+        sh[0] = (uint8_t)(s->Flags & 1);
+        memcpy(sh + 1, s->DOSFileName, 12);
+        wr32(sh + 16, s->Length);
+        wr32(sh + 20, s->LoopBeg);
+        wr32(sh + 24, s->LoopEnd);
+        sh[28] = s->Vol;
+        sh[31] = (uint8_t)(((s->Flags >> 4) & 1) |
+                           ((s->Flags << 1) & 4));
+        wr32(sh + 32, s->C5Speed);
+        for (k = 0; k < 25; k++) {
+            char c = s->SampleName[k];
+            sh[48 + k] = (uint8_t)(c ? c : ' ');
+        }
+        memcpy(sh + 76, "SCRS", 4);
+
+        if ((s->Flags & (16 | 32)) &&
+            ((s->Flags & 32) || (s->Flags & 64)))
+            s3m_warn(27, "Warning: Sustain and Ping Pong loops "
+                         "unsupported in S3M format");
+        if (s->GvL != 64)
+            s3m_warn(26, "Warning: Sample volumes unsupported "
+                         "in S3M format");
+        if (s->ViD != 0)
+            s3m_warn(28, "Warning: Sample vibrato unsupported "
+                         "in S3M format");
+
+        save_block(sh, sizeof(sh));
+        filepos += 0x50;
+    }
+
+    /* ---- patterns (16-byte aligned; 64-row translation) ---- */
+    for (n = 0; n < patnum; n++) {
+        const pattern_t *pt = &Song.Patterns[n];
+        const uint8_t *si, *end;
+        uint8_t *di = pbuf + 2;
+        int rows = (pt->PackedData && pt->Rows) ? pt->Rows : 64;
+        int row;
+
+        progress(3, n);                 /* "Pattern n" */
+        filepos = s3m_align(filepos);
+        wr16(head + 0x60 + ordnum + 2 * smpnum + 2 * n,
+             (uint16_t)(filepos >> 4));
+
+        if (rows != 64)
+            s3m_warn(30, "Warning: Pattern lengths other than 64 rows "
+                         "unsupported in S3M format");
+
+        /* empty translation cells (D_SaveS3M25) */
+        for (i = 0; i < 64; i++) {
+            memset(cell[i], 0, 8);
+            cell[i][1] = 0xFD;          /* note */
+            cell[i][3] = 0xFF;          /* volume */
+        }
+
+        si = pt->PackedData;
+        end = si ? si + pt->DataLength : NULL;
+        for (row = 0; row < rows; row++) {
+            for (;;) {
+                uint8_t cv, mask, *c;
+                int ch, smask;
+
+                cv = (si && si < end) ? *si++ : 0;
+                if (cv == 0 || di > pbuf + sizeof(pbuf) - 8) {
+                    *di++ = 0;          /* end of row */
+                    break;
+                }
+                ch = (cv & 0x7F) - 1;
+                c = cell[ch & 63];
+                if (cv & 0x80)
+                    c[0] = (si < end) ? *si++ : 0;
+                mask = c[0];
+                if (mask & 1)
+                    c[1] = (si < end) ? *si++ : 0;
+                if (mask & 2)
+                    c[2] = (si < end) ? *si++ : 0;
+                if (mask & 4) {
+                    uint8_t v = (si < end) ? *si++ : 0;
+                    if (v > 64) {       /* pans / vol effects */
+                        s3m_warn(33, "Warning: Extended volume column "
+                                 "effects are unsupported "
+                                 "in S3M format");
+                        v = 0xFF;
+                    }
+                    c[3] = v;
+                }
+                if (mask & 8) {
+                    c[4] = (si < end) ? *si++ : 0;
+                    c[5] = (si < end) ? *si++ : 0;
+                }
+
+                if ((cv & 0x7F) > 16) { /* NUMS3MCHANNELS */
+                    s3m_warn(31, "Warning: Data outside 16 channels "
+                                 "unsupported in S3M format");
+                    continue;           /* cell dropped */
+                }
+
+                smask = ch;
+                if (mask & 0x33) smask |= 32;
+                if (mask & 0x44) smask |= 64;
+                if (mask & 0x88) smask |= 128;
+
+                /* note remap through the instrument's sample table */
+                c[6] = c[1];
+                c[7] = c[2];
+                if (c[1] < 120 && (mask & 0x11) && (mask & 0x22) &&
+                    (Song.Header.Flags & 4) && c[7] >= 1 && c[7] <= 99)
+                    c[6] = Song.Ins[c[7] - 1]
+                               .NoteSampleTable[2 * c[1]];
+
+                /* range check on the CACHED note whenever the S3M mask
+                 * carries the note/ins field -- even a stale note from
+                 * an earlier row drops an ins-only cell (ASM quirk,
+                 * D_SaveS3M55 tests no IT mask bit here) */
+                if (smask & 32) {
+                    uint8_t nt = c[6];
+                    if (nt < 0xFD && (nt < 12 || nt >= 108)) {
+                        s3m_warn(32, "Warning: Notes outside the range "
+                                 "C-1 to B-8 are unsupported "
+                                 "in S3M format");
+                        continue;       /* cell dropped */
+                    }
+                }
+
+                *di++ = (uint8_t)smask;
+                if (smask & 32) {
+                    uint8_t nt = c[6], out = 0xFF;
+                    if ((mask & 0x11) && nt != 0xFD) {
+                        if (nt >= 0xFE)
+                            out = 0xFE; /* cut / off -> ST3 ^^ */
+                        else
+                            out = (uint8_t)((((nt - 12) / 12) << 4) |
+                                            ((nt - 12) % 12));
+                    }
+                    *di++ = out;
+                    *di++ = (mask & 0x22) ? c[7] : 0;
+                }
+                if (smask & 64)
+                    *di++ = c[3];
+                if (smask & 128) {
+                    uint8_t cm = c[4], cv2 = c[5];
+                    if (cm == 'S' - '@' && cv2 == 0x91) {
+                        cm = 'X' - '@';
+                        cv2 = 0xA4;     /* S91 -> XA4 surround */
+                    } else if (cm == 'V' - '@' || cm == 'X' - '@') {
+                        cv2 >>= 1;
+                    } else if (cm == 'C' - '@') {
+                        cv2 = (uint8_t)(((cv2 / 10) << 4) | (cv2 % 10));
+                    }
+                    *di++ = cm;
+                    *di++ = cv2;
+                }
+            }
+        }
+        for (; row < 64; row++)         /* pad short patterns */
+            *di++ = 0;
+
+        i = (int)(di - pbuf);           /* length word includes itself */
+        wr16(pbuf, (uint16_t)i);
+        save_block(pbuf, (size_t)i);
+        filepos += (uint32_t)i;
+    }
+
+    /* ---- sample data (unsigned conversion) ---- */
+    memset(datapara, 0, sizeof(datapara));
+    for (i = 0; i < smpnum; i++) {
+        const sample_t *s = &Song.Smp[i];
+        uint32_t bytes, k;
+        const uint8_t *src;
+        uint8_t buf[4096];
+
+        if (!(s->Flags & 1) || !s->Data || s->Length == 0)
+            continue;
+        progress(4, i + 1);             /* "Sample n" */
+        filepos = s3m_align(filepos);
+        datapara[i] = filepos >> 4;
+
+        bytes = s->Length << ((s->Flags & 2) ? 1 : 0);
+        src = (const uint8_t *)s->Data;
+        for (k = 0; k < bytes && !NoSaveError; ) {
+            uint32_t c = bytes - k, j;
+            if (c > sizeof(buf))
+                c = sizeof(buf);
+            if (s->Flags & 2)           /* 16-bit: flip sign bytes */
+                for (j = 0; j < c; j++)
+                    buf[j] = (uint8_t)(src[k + j] ^
+                                       ((k + j) & 1 ? 0x80 : 0));
+            else                        /* 8-bit */
+                for (j = 0; j < c; j++)
+                    buf[j] = (uint8_t)(src[k + j] ^ 0x80);
+            save_block(buf, c);
+            k += c;
+        }
+        filepos += bytes;
+    }
+
+    /* ---- final passes: header, then the 24-bit memseg patches ---- */
+    progress(0, 0);                     /* "File Header" */
+    if (!NoSaveError) {
+        fseek(SaveFile, 0, SEEK_SET);
+        save_block(head, hdrlen);
+    }
+    for (i = 0; i < smpnum && !NoSaveError; i++) {
+        uint32_t hp = (uint32_t)(head[0x60 + ordnum + 2 * i] |
+                     (head[0x60 + ordnum + 2 * i + 1] << 8)) << 4;
+        uint8_t ms[3];
+        ms[0] = (uint8_t)(datapara[i] >> 16);
+        ms[1] = (uint8_t)datapara[i];
+        ms[2] = (uint8_t)(datapara[i] >> 8);
+        fseek(SaveFile, (long)(hp + 0x0D), SEEK_SET);
+        save_block(ms, 3);
+    }
+
+    fclose(SaveFile);
+    SaveFile = NULL;
+
+    if (NoSaveError) {                  /* D_DeleteIfError */
+        remove(path);
+        return 0;
+    }
+    progress(5, 0);                     /* "Done" */
+    return 1;
+}

@@ -17,8 +17,8 @@
 extern time_t Save_LoadTime;
 
 /* SaveFormat (IT_DISK.ASM 420, default SWITCH.INC DEFAULTFORMAT = 3):
- *   0 = IT 2.14 (compressed),  2 = IT 2.xx (uncompressed),
- *   3 = IT 2.15 (compressed, double delta).  1 = S3M (not ported). */
+ *   0 = IT 2.14 (compressed),  1 = S3M (feature 012),
+ *   2 = IT 2.xx (uncompressed), 3 = IT 2.15 (compressed, dbl delta). */
 extern uint8_t SaveFormat;
 
 /* Song message (IT_MSG.ASM MessageData): 8000 bytes, CR-separated
@@ -40,5 +40,13 @@ extern void (*Save_Progress)(int stage, int param);
  * `path`. Returns 1 on success; on any write error the partial file is
  * deleted and 0 is returned. Never modifies the in-memory song. */
 int Save_ITModule(const char *path);
+
+/* D_SaveS3M (feature 012): Scream Tracker 3 export, SaveFormat 1.
+ * Lossy conversions fire the original warning texts through
+ * Save_S3MWarning (row = the original's screen row, 23..33) and set
+ * Save_S3MWarned; the save itself only fails on write errors. */
+int Save_S3MModule(const char *path);
+extern void (*Save_S3MWarning)(int row, const char *msg);
+extern int Save_S3MWarned;
 
 #endif /* IT_SAVE_H */
