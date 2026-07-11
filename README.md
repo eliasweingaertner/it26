@@ -192,14 +192,29 @@ Pattern editor (F2):
   stamping follow the `PEFunction_*` handler bodies including their
   quirks (repeat-key alternate behaviours, PEGetVolume default-volume
   lookup for Alt-J on empty cells, transpose clamped to C-0..B-9).
-- **Not ported (documented leftovers):** the multi-scheme pattern views
-  (Ctrl-0..5 / Ctrl-Shift-1..4 / Alt-T track view) need the original's
-  multi-view-method renderer, which this port does not have — the grid
-  is always the full 13-column view; the in-F2 mute/solo keys
-  (Alt-F9/F10 family); the pattern-length resize dialog; and MIDI input
-  triggers (no MIDI-in exists). Terminal-backend modifier keys
-  (Ctrl/Alt/Shift combos, shift-marking) are a roadmap-#7 gap — the
-  pixel backends carry the full set.
+- The multi-scheme pattern views (Ctrl-0..5 fast views,
+  Ctrl-Shift-1..4 presets, Alt-T method cycle, Alt-R clear, Alt-H
+  division, Ctrl-T view tracking) are ported from the five View*
+  renderers in IT_PE.ASM, including the font-bank-B packed-digit cells,
+  the small G0..H9 volume-effect glyphs and the half-cell invert cursor
+  (`S_InvertCursor` on char 246). The in-F2 mute/solo key family
+  (`\`/Alt-F9 toggle, keypad `/` mute+advance, `?` mute-previous,
+  Alt-F10 solo, `|` solo+advance, Alt-`\` unmute-all) drives the same
+  engine mute table as F5/F11.
+- Ctrl-F2 opens the original Set Pattern Length requester (length
+  32..200, start/end pattern range). As in IT, `Pattern Length` is not
+  re-primed from the current pattern (it persists across invocations)
+  and OK always rewrites the range. Deviation: the port pushes one
+  "Pattern data" undo snapshot of the **current** pattern first — the
+  original's resize is not undoable at all; other patterns in a range
+  resize remain non-undoable.
+- ViewDivision/ViewTracking/row-hilight+centralise (`PEConfig`) persist
+  in `ited.cfg`; the original kept them in IT.CFG's Pattern segment.
+- **Not ported (documented leftovers):** MIDI input triggers (no
+  MIDI-in exists); the Ctrl-V default-volume display toggle.
+  Terminal-backend modifier keys (Ctrl/Alt/Shift combos,
+  shift-marking) are a roadmap-#7 gap — the pixel backends carry the
+  full set.
 
 Sample/instrument library (F3/F4 Enter):
 - Ripping single samples out of IT/S3M/XM/MOD/MTM/669/FAR/PTM/KRZ/PAT

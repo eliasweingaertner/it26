@@ -5,26 +5,29 @@
 > code is organised**, and **what to do next**. For the staged editor plan
 > see `EDITOR-PORT-PLAN.md`; for the user-facing overview see `../README.md`.
 
-Last updated: 2026-07-05.
+Last updated: 2026-07-11.
 
 **State in one paragraph:** the engine has been done and verified since
 the start; the editor now covers the full planned surface — the real IT
 2.14 UI on Win32/SDL2/terminal backends, a deep pattern editor (block
 ops, edit mask, template/multichannel entry, 10-slot undo, the 9-column
-cursor and the full IT_PE.ASM key layer), F3/F4 sample &
+cursor and the full IT_PE.ASM key layer, plus — feature 010 — the five
+multi-scheme pattern views with the packed-cell renderers and half-cell
+invert cursor, the in-F2 mute/solo key family, and the Ctrl-F2
+Set Pattern Length requester), F3/F4 sample &
 instrument *editors* (waveform view, Alt-op set, envelopes, presets),
 F5 info page (all 11 views), F11/F12, message editor, .IT saving with
 the IT214/215 compressor, whole-module import (S3M/XM/MOD/MTM/669),
 and the sample/instrument library (rip samples/instruments from other
 modules, .ITS/.ITI/.XI, standalone .WAV loading, Alt-O/T/W saves). All
-gates green as of 2026-07-05: determinism ×4 + save roundtrip ×4×3
-IDENTICAL, selftest reports F4/F5/F3/SAVE/IMPORT/LIB/PE OK. **Deferred / still open** (see §6):
+gates green as of 2026-07-11: determinism ×4 + save roundtrip ×4×3
+IDENTICAL, selftest reports F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2 OK.
+**Deferred / still open** (see §6):
 the macOS verification pass (spec 001 T022 — needs a Mac) and terminal
-mouse/Alt keys (roadmap #7, **no spec yet**), plus small leftovers:
-the F2 multi-scheme pattern views (Ctrl-0..5) + in-F2 mute/solo +
-pattern-length dialog (feature 009 leftovers), S3M export
-(SaveFormat 1), Alt-U update-pattern-data, Alt-F12 Fourier analyser,
-F4 in-list name editing, instrument-record preview.
+mouse/Alt keys (roadmap #7, spec next in queue), plus small leftovers:
+S3M export (SaveFormat 1), Alt-U update-pattern-data, Alt-F12 Fourier
+analyser, F4 in-list name editing, instrument-record preview, Ctrl-V
+default-volume display.
 
 ---
 
@@ -309,6 +312,44 @@ overwrite, transpose round-trip, wipe+undo-ring revert byte-equality,
 row insert/delete, mask-suppressed entry, a 2-row template overwrite
 with transpose, and multichannel advancement — all on a scratch
 pattern, leaving the song untouched. Leftovers listed in §6 #5.
+
+**Pattern editor completion — DONE (2026-07-11, spec
+`specs/010-pattern-editor-completion`):** closes the 009 leftovers.
+(1) **Ctrl-F2 Set Pattern Length** (`O1_SetPatternLength` geometry:
+box (15,19)-(65,33), thumbbars 32..200 / 0..199 / 0..199, OK
+(35,30)-(44,32) style 8): start/end prime to the current pattern,
+the length value persists across invocations (original quirk), OK
+unpack→repacks every pattern in range under the engine lock;
+deviation: one type-22 undo snapshot of the current pattern (the
+original resize is not undoable — research.md R1 documents that
+`PEFunction_StorePattern` is the pack routine, not an undo push).
+(2) **Mute/solo family** in the F2 key table: `\`/Alt-F9 toggle,
+keypad `/` toggle+advance, `?` channel−1-then-toggle, Alt-F10 solo,
+`|` solo+advance, Alt-`\` unmute-all (`Music_UnmuteAll`, IT_MUSIC.ASM
+6392 — restores only user-muted channels via `MuteChannelTable`).
+(3) **Multi-scheme views**: `ViewChannels[100]` (method<<8|channel,
+FFFF-terminated), `PE_CheckWidth` (fail ≥76, `NumChansEdit =
+(74-w)/14`), Ctrl-1..5 fast views / Ctrl-0 remove, Ctrl-Shift-1..4
+presets (6/7, 9/10, 18/24, 24/36 by division; enable tracking),
+Alt-T cycle-with-narrowing, Alt-R clear, Alt-H division, Ctrl-T
+tracking with scroll-into-view, Ctrl-H row-hilight. `draw_pattern()`
+is now scheme-driven: per-entry View{Full,Compress,AllSmall,Note,Tiny}
+cell renderers (packed digit pairs via font bank B `attr+4/+6`,
+G0..H9 small glyphs 226..245, `Draw_2Note` lowercase-natural 2-cell
+notes, ViewNote/ViewTiny priority cells with cursor-row field
+override), captions per width, char-168 dividers, `CursorPositions`
+cursor addressing with `Screen_InvertCursor` (font-A char 246 XOR
+half-cell masks) on packed cells. Fixed two 009-era fidelity bugs
+(1-cell default cursor; 83h/93h default-channel block colours) and a
+pan-display bug (vol-column pan 5..64 drew as effect letters).
+`ViewDivision`/`ViewTracking`/`PEConfig` persist in `ited.cfg`.
+Keys: `ITK_CTRL_F2/ALT_F9/ALT_F10/ALT_BACKSLASH/KP_DIVIDE` +
+`ITK_CTRL_0..5`/`ITK_CTRL_SHIFT_1..4` on both pixel backends.
+Capture aid: `ITED_SHOT_PEVIEW=1..5` (presets / mixed layout).
+Selftest gains `PE2 OK` on scratch pattern 199: resize 64→32→128
+with undo-ring byte checks, key-driven mute/solo engine-state
+assertions (module mute states respected), view-table mutations,
+width-overflow revert, and a mixed-scheme redraw/cursor walk.
 
 **Standalone WAV sample loading — DONE (2026-07-05, spec
 `specs/008-wav-sample-loading`):** closes the samples half of the 006
@@ -630,17 +671,29 @@ rough priority order:
    Alt-key block-op set, edit mask / multichannel / template entry,
    the 10-slot typed undo with the Ctrl-Backspace requester, the
    9-column cursor, navigation depth and thumbbar digit entry, plus the
-   Ctrl/Shift/Alt key codes on the pixel backends. **Leftovers** (see
-   the §2 block + README fidelity notes): the multi-scheme pattern
-   views (Ctrl-0..5 / Ctrl-Shift-1..4 / Alt-T track view — needs the
-   original's multi-view renderer the port lacks), in-F2 mute/solo
-   keys (Alt-F9/F10 family), the pattern-length resize dialog, and
-   some view toggles (row-hilight/tracking/division). MIDI input
-   triggers are out of scope (no MIDI-in). NB the ASM decode corrected
+   Ctrl/Shift/Alt key codes on the pixel backends. The 009 leftovers
+   landed 2026-07-11 as **feature 010** (spec
+   `specs/010-pattern-editor-completion`): the five multi-scheme
+   pattern views (Ctrl-0..5 fast views, Ctrl-Shift-1..4 presets,
+   Alt-T cycle, Alt-R clear, Alt-H division, Ctrl-T tracking) with the
+   1:1 View* renderers — font-bank-B packed cells, G0..H9 small
+   glyphs, `Screen_InvertCursor` half-cell cursor, tracking scroll —
+   the in-F2 mute/solo family (`\`/Alt-F9, keypad `/`, `?`, Alt-F10,
+   `|`, Alt-`\` via `Music_UnmuteAll`), and the Ctrl-F2 Set Pattern
+   Length requester (range resize; port adds a single type-22 undo of
+   the current pattern — deviation, see README). The renderer rework
+   also fixed two 009-era fidelity bugs: the default-view cursor is
+   ONE cell (was 3 on the note column) and default-channel marked
+   blocks use 83h/93h (view columns keep 86h/96h); plus a pan-display
+   bug (vol-column pan 5..64 rendered as effect letters). MIDI input
+   triggers are out of scope (no MIDI-in); Ctrl-V default-volume
+   display not ported. NB the ASM decode corrected
    two spec assumptions: `PE_TRANS.INC` is the feature-007 format
    converters (block semantics live in `IT_PE.ASM`), and undo is a
    10-slot history with a picker, not single-step — see the spec's
-   research.md R0.
+   research.md R0. Feature 010's research.md R1 documents that
+   `PEFunction_StorePattern` is the pack/commit routine, not an undo
+   push — the original's Ctrl-F2 resize is not undoable.
 6. **In-depth sample & instrument editors** (`IT_I.ASM`) — ✅ DONE
    (2026-07-03, spec `specs/005-sample-instrument-editors`): see §2.
    Waveform view, loop editing, the full Alt-op set, note-table ops,
