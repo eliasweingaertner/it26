@@ -339,11 +339,14 @@ void Screen_DumpPlain(void *vfp)
 /* ====================================================================
  * VT/ANSI truecolor terminal backend (fallback; primary on POSIX)
  *
- * Modifier limitation (roadmap #7): this backend produces none of the
- * ITK Alt/Ctrl/Shift combo codes nor the shift press/release events
- * (feature 009) -- a raw tty does not report modifier state without
- * xterm modifyOtherKeys/kitty protocols. The editor treats missing
- * combos as simply never pressed.
+ * Input (feature 011, roadmap #7): the POSIX side decodes the xterm
+ * encodings -- ESC-prefix Alt keys, modified-CSI combos, modifyOther-
+ * Keys/CSI-u for Ctrl-digits, and SGR mouse reporting -- through the
+ * incremental parser below; the Windows console side decodes conio
+ * scan codes (no mouse there; the Win32 window is the primary
+ * backend). Remaining limitations: no ITK_SHIFT_PRESS/RELEASE (a tty
+ * has no key-up events, so F2 chord entry stays pixel-only) and no
+ * keypad-`/` distinction (terminals send plain '/').
  * ==================================================================== */
 
 static screen_cell_t TermFront[SCREEN_H][SCREEN_W];
@@ -364,6 +367,12 @@ static int Term_Init(void)
     tcsetattr(STDIN_FILENO, TCSANOW, &t);
 #endif
     printf("\x1b[?1049h\x1b[?25l");     /* alt screen, hide cursor */
+#ifndef _WIN32
+    /* feature 011: SGR mouse (button-event tracking) + modifyOtherKeys
+     * level 1 for the otherwise-unencodable Ctrl-digit combos.
+     * Terminals without support ignore these. */
+    printf("\x1b[?1002h\x1b[?1006h\x1b[>4;1m");
+#endif
     fflush(stdout);
     memset(TermFront, 0xFF, sizeof(TermFront));
     return 1;
@@ -371,6 +380,9 @@ static int Term_Init(void)
 
 static void Term_UnInit(void)
 {
+#ifndef _WIN32
+    printf("\x1b[>4;0m\x1b[?1006l\x1b[?1002l");
+#endif
     printf("\x1b[0m\x1b[?25h\x1b[?1049l");
     fflush(stdout);
 #ifndef _WIN32
@@ -504,16 +516,367 @@ static void Term_Present(const screen_cell_t *cells)
     fflush(stdout);
 }
 
+/* ====================================================================
+ * Terminal input parser (feature 011): an incremental byte state
+ * machine shared by the key and mouse polls, decoding the xterm
+ * families -- Alt prefix (ESC x), modified CSI (CSI 1;m X / CSI n;m ~ /
+ * CSI 1;m P..S), modifyOtherKeys (CSI 27;m;c~) + CSI-u (CSI c;m u),
+ * and SGR mouse (CSI < b;x;y M/m) -- into the ITK_* codes + an
+ * it_mouse_t mirror. Platform-neutral and compiled everywhere so the
+ * selftest can drive it headless (Screen_TermFeedTest); only the read
+ * pump in Term_Key/Term_Mouse is POSIX.
+ * ==================================================================== */
+
+static int TermKeyQueue[64];
+static int TermKeyHead, TermKeyTail;
+static int TermMousePX = 320, TermMousePY = 200, TermMouseB;
+
+enum { TP_GROUND, TP_ESC, TP_CSI, TP_SS3 };
+static int TP_State;
+static int TP_Param[4], TP_NParam;      /* CSI numeric parameters */
+static int TP_Priv;                     /* CSI private marker (< > ?) */
+static int TP_EscPending;               /* lone ESC seen at pump end */
+
+static void Term_PushKey(int k)
+{
+    int next = (TermKeyTail + 1) % 64;
+    if (next != TermKeyHead) {
+        TermKeyQueue[TermKeyTail] = k;
+        TermKeyTail = next;
+    }
+}
+
+static int Term_PopKey(void)
+{
+    int k;
+    if (TermKeyHead == TermKeyTail)
+        return ITK_NONE;
+    k = TermKeyQueue[TermKeyHead];
+    TermKeyHead = (TermKeyHead + 1) % 64;
+    return k;
+}
+
+/* ESC x -> Alt-x */
+static void Term_AltByte(uint8_t c)
+{
+    if (c >= 'a' && c <= 'z')      Term_PushKey(ITK_ALT_A + (c - 'a'));
+    else if (c >= 'A' && c <= 'Z') Term_PushKey(ITK_ALT_A + (c - 'A'));
+    else if (c >= '0' && c <= '9') Term_PushKey(ITK_ALT_0 + (c - '0'));
+    else if (c == '\\')            Term_PushKey(ITK_ALT_BACKSLASH);
+    else if (c == '+' || c == '=') Term_PushKey(ITK_ALT_PLUS);
+    else if (c == '-')             Term_PushKey(ITK_ALT_MINUS);
+    /* unmapped Alt combos are consumed silently */
+}
+
+/* modifyOtherKeys / CSI-u payload: unshifted (or shifted) codepoint +
+ * xterm modifier value (1 + 1 shift / 2 alt / 4 ctrl) */
+static void Term_ModOther(int code, int mod)
+{
+    int bits = (mod > 0) ? mod - 1 : 0;
+
+    if (bits == 4) {                            /* Ctrl */
+        if (code >= '0' && code <= '5')
+            Term_PushKey(ITK_CTRL_0 + (code - '0'));
+        else if (code == '+' || code == '=')
+            Term_PushKey(ITK_CTRL_PLUS);
+        else if (code == '-')
+            Term_PushKey(ITK_CTRL_MINUS);
+        else if (code == 8 || code == 127)
+            Term_PushKey(ITK_CTRL_BACKSPACE);
+        else if (code >= 'a' && code <= 'z')    /* some terminals CSI-u
+                                                   encode Ctrl-letters */
+            Term_PushKey(code - 'a' + 1);
+    } else if (bits == 5) {                     /* Ctrl+Shift */
+        if (code >= '1' && code <= '4')
+            Term_PushKey(ITK_CTRL_SHIFT_1 + (code - '1'));
+        else if (code == '!') Term_PushKey(ITK_CTRL_SHIFT_1);
+        else if (code == '@') Term_PushKey(ITK_CTRL_SHIFT_1 + 1);
+        else if (code == '#') Term_PushKey(ITK_CTRL_SHIFT_1 + 2);
+        else if (code == '$') Term_PushKey(ITK_CTRL_SHIFT_1 + 3);
+    } else if (bits == 2) {                     /* Alt via CSI-u */
+        if (code < 256)
+            Term_AltByte((uint8_t)code);
+    }
+    /* other combinations: consumed */
+}
+
+/* CSI < b;x;y M/m -- SGR mouse. Left button only (pixel-backend
+ * parity); px/py approximate to the cell centre. */
+static void Term_MouseReport(int b, int x, int y, int press)
+{
+    int motion = b & 32;
+
+    if (b & 64)                                 /* wheel: consumed */
+        return;
+    if (x < 1) x = 1; if (x > SCREEN_W) x = SCREEN_W;
+    if (y < 1) y = 1; if (y > SCREEN_H) y = SCREEN_H;
+    TermMousePX = (x - 1) * 8 + 4;
+    TermMousePY = (y - 1) * 8 + 4;
+    if ((b & 3) != 0)                           /* not the left button */
+        return;
+    if (!press)
+        TermMouseB = 0;
+    else if (!motion) {
+        TermMouseB = 1;
+        Term_PushKey(ITK_MOUSE);
+    }
+    /* motion with button held: position update only, b stays */
+}
+
+/* CSI final byte: dispatch on collected parameters */
+static void Term_CsiFinal(uint8_t f)
+{
+    int p0  = TP_NParam > 0 ? TP_Param[0] : 0;
+    int mod = TP_NParam > 1 ? TP_Param[1] : 1;
+
+    if (TP_Priv == '<') {                       /* SGR mouse */
+        if (f == 'M' || f == 'm')
+            Term_MouseReport(TP_Param[0],
+                             TP_NParam > 1 ? TP_Param[1] : 0,
+                             TP_NParam > 2 ? TP_Param[2] : 0,
+                             f == 'M');
+        return;
+    }
+    if (TP_Priv)                                /* ? / > replies etc. */
+        return;
+
+    switch (f) {
+    case 'A': case 'B': case 'C': case 'D': {   /* arrows */
+        static const int plain[4] = { ITK_UP, ITK_DOWN, ITK_RIGHT,
+                                      ITK_LEFT };
+        static const int shift[4] = { ITK_SHIFT_UP, ITK_SHIFT_DOWN,
+                                      ITK_SHIFT_RIGHT, ITK_SHIFT_LEFT };
+        static const int ctrl[4]  = { ITK_CTRL_UP, ITK_CTRL_DOWN,
+                                      ITK_CTRL_RIGHT, ITK_CTRL_LEFT };
+        int i = (f == 'A') ? 0 : (f == 'B') ? 1 : (f == 'C') ? 2 : 3;
+        if (mod == 2)      Term_PushKey(shift[i]);
+        else if (mod == 5) Term_PushKey(ctrl[i]);
+        else if (mod == 3) {
+            if (f == 'A') Term_PushKey(ITK_ALT_UP);
+            if (f == 'B') Term_PushKey(ITK_ALT_DOWN);
+        } else if (mod <= 1)
+            Term_PushKey(plain[i]);
+        return;
+    }
+    case 'H':
+        Term_PushKey(mod == 2 ? ITK_SHIFT_HOME :
+                     mod == 5 ? ITK_CTRL_HOME : ITK_HOME);
+        return;
+    case 'F':
+        Term_PushKey(mod == 2 ? ITK_SHIFT_END :
+                     mod == 5 ? ITK_CTRL_END : ITK_END);
+        return;
+    case 'Z': Term_PushKey(ITK_SHIFT_TAB); return;
+    case 'P': case 'Q': case 'R': case 'S':     /* (modified) F1..F4 */
+        if (mod == 5 && f == 'Q')
+            Term_PushKey(ITK_CTRL_F2);
+        else if (mod <= 1)
+            Term_PushKey(ITK_F1 + (f - 'P'));
+        return;
+    case 'u':                                   /* CSI-u */
+        Term_ModOther(p0, mod);
+        return;
+    case '~':
+        switch (p0) {
+        case 1: case 7:
+            Term_PushKey(mod == 2 ? ITK_SHIFT_HOME :
+                         mod == 5 ? ITK_CTRL_HOME : ITK_HOME);
+            return;
+        case 4: case 8:
+            Term_PushKey(mod == 2 ? ITK_SHIFT_END :
+                         mod == 5 ? ITK_CTRL_END : ITK_END);
+            return;
+        case 2:
+            Term_PushKey(mod == 3 ? ITK_ALT_INS :
+                         mod == 5 ? ITK_CTRL_INS : ITK_INS);
+            return;
+        case 3:
+            Term_PushKey(mod == 3 ? ITK_ALT_DEL :
+                         mod == 5 ? ITK_CTRL_DEL : ITK_DEL);
+            return;
+        case 5:
+            Term_PushKey(mod == 2 ? ITK_SHIFT_PGUP :
+                         mod == 5 ? ITK_CTRL_PGUP : ITK_PGUP);
+            return;
+        case 6:
+            Term_PushKey(mod == 2 ? ITK_SHIFT_PGDN :
+                         mod == 5 ? ITK_CTRL_PGDN : ITK_PGDN);
+            return;
+        case 11: case 12: case 13: case 14:     /* F1..F4 (old xterm) */
+            if (mod <= 1) Term_PushKey(ITK_F1 + (p0 - 11));
+            return;
+        case 15:
+            if (mod <= 1) Term_PushKey(ITK_F5);
+            return;
+        case 17: case 18: case 19: case 20: case 21: {
+            int fk = ITK_F6 + (p0 - 17);        /* F6..F10 */
+            if (mod == 2 && p0 == 20)      Term_PushKey(ITK_SHIFT_F9);
+            else if (mod == 3 && p0 == 20) Term_PushKey(ITK_ALT_F9);
+            else if (mod == 3 && p0 == 21) Term_PushKey(ITK_ALT_F10);
+            else if (mod == 5 && p0 == 18) Term_PushKey(ITK_CTRL_F7);
+            else if (mod <= 1)             Term_PushKey(fk);
+            return;
+        }
+        case 23:
+            if (mod <= 1) Term_PushKey(ITK_F11);
+            return;
+        case 24:
+            if (mod <= 1) Term_PushKey(ITK_F12);
+            return;
+        case 27:                                /* modifyOtherKeys */
+            Term_ModOther(TP_NParam > 2 ? TP_Param[2] : 0, mod);
+            return;
+        default:
+            return;
+        }
+    default:                                    /* unknown final: eat */
+        return;
+    }
+}
+
+/* feed one raw byte through the state machine */
+static void Term_FeedByte(uint8_t c)
+{
+    switch (TP_State) {
+    case TP_GROUND:
+        if (c == 0x1B)      { TP_State = TP_ESC; return; }
+        if (c == '\r' || c == '\n') { Term_PushKey(ITK_ENTER); return; }
+        if (c == 0x7F)      { Term_PushKey(ITK_BACKSPACE); return; }
+        if (c == '\t')      { Term_PushKey(ITK_TAB); return; }
+        if (c >= 0x80)      return;             /* UTF-8 tails: eat */
+        if (c)              Term_PushKey(c);    /* incl. Ctrl-letters
+                                                   1..26 (8 = Ctrl-H) */
+        return;
+    case TP_ESC:
+        if (c == '[') {
+            TP_State = TP_CSI;
+            TP_NParam = 0;
+            TP_Param[0] = TP_Param[1] = TP_Param[2] = TP_Param[3] = 0;
+            TP_Priv = 0;
+            return;
+        }
+        if (c == 'O') { TP_State = TP_SS3; return; }
+        if (c == 0x1B) { Term_PushKey(ITK_ESC); return; } /* stay */
+        TP_State = TP_GROUND;
+        Term_AltByte(c);
+        return;
+    case TP_SS3:
+        TP_State = TP_GROUND;
+        if (c >= 'P' && c <= 'S')
+            Term_PushKey(ITK_F1 + (c - 'P'));
+        /* SS3 keypad codes etc.: consumed */
+        return;
+    case TP_CSI:
+        if (c == '<' || c == '?' || c == '>') { TP_Priv = c; return; }
+        if (c >= '0' && c <= '9') {
+            if (TP_NParam == 0)
+                TP_NParam = 1;
+            if (TP_NParam <= 4)
+                TP_Param[TP_NParam - 1] =
+                    TP_Param[TP_NParam - 1] * 10 + (c - '0');
+            return;
+        }
+        if (c == ';') {
+            if (TP_NParam < 4)
+                TP_NParam++;
+            if (TP_NParam == 1)                 /* leading ';' */
+                TP_NParam = 2;
+            return;
+        }
+        if (c >= 0x40 && c <= 0x7E) {
+            TP_State = TP_GROUND;
+            Term_CsiFinal(c);
+            return;
+        }
+        return;                                 /* intermediates: eat */
+    }
+}
+
+/* resolve a dangling ESC (no continuation arrived) as a real ESC key */
+static void Term_FlushEsc(void)
+{
+    if (TP_State == TP_ESC) {
+        TP_State = TP_GROUND;
+        Term_PushKey(ITK_ESC);
+    }
+    TP_EscPending = 0;
+}
+
+/* test hook (selftest, FR-007): feed `n` bytes, optionally flush a
+ * pending lone ESC, then pop one decoded key (ITK_NONE when drained).
+ * Call repeatedly with n=0 to drain the queue. */
+int Screen_TermFeedTest(const uint8_t *buf, int n, int flush)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        Term_FeedByte(buf[i]);
+    if (flush)
+        Term_FlushEsc();
+    return Term_PopKey();
+}
+
+void Screen_TermMouseTest(it_mouse_t *m)
+{
+    m->px = TermMousePX;
+    m->py = TermMousePY;
+    m->x = m->px / 8;
+    m->y = m->py / 8;
+    m->b = TermMouseB;
+}
+
+#ifndef _WIN32
+/* read everything the tty has buffered into the parser; called from
+ * both the key and the mouse poll. A lone ESC only becomes ITK_ESC
+ * after it has survived one full empty poll (~15ms editor tick) --
+ * terminals transmit multi-byte sequences atomically. */
+static void Term_Pump(void)
+{
+    unsigned char buf[256];
+    ssize_t n;
+    int got = 0;
+
+    for (;;) {
+        ssize_t i;
+
+        n = read(STDIN_FILENO, buf, sizeof(buf));
+        if (n <= 0)
+            break;
+        for (i = 0; i < n; i++)
+            Term_FeedByte(buf[i]);
+        got = 1;
+        if (n < (ssize_t)sizeof(buf))
+            break;
+    }
+
+    if (TP_State == TP_ESC) {
+        if (!got && TP_EscPending)
+            Term_FlushEsc();
+        else
+            TP_EscPending = 1;
+    } else {
+        TP_EscPending = 0;
+    }
+}
+#endif
+
 static int Term_Key(void)
 {
 #ifdef _WIN32
+    /* Windows console (`ITED_TERM=1`): conio scan codes. 0x00/0xE0
+     * prefixes carry the Alt/Ctrl/Shift combos (feature 011). */
     if (!_kbhit())
         return ITK_NONE;
     {
         int c = _getch();
 
         if (c == 0 || c == 0xE0) {
+            /* scan -> Alt-letter (PC scan code rows) */
+            static const char altrow[] =
+                "qwertyuiop\0\0\0\0asdfghjkl\0\0\0\0\0zxcvbnm";
             int e = _getch();
+
+            if (e >= 16 && e <= 50 && altrow[e - 16])
+                return ITK_ALT_A + (altrow[e - 16] - 'a');
             switch (e) {
             case 72: return ITK_UP;
             case 80: return ITK_DOWN;
@@ -531,82 +894,65 @@ static int Term_Key(void)
                 return ITK_F1 + (e - 59);
             case 133: return ITK_F11;
             case 134: return ITK_F12;
-            default: return ITK_NONE;
+            /* feature 011: modifier combos the console reports */
+            case 115: return ITK_CTRL_LEFT;
+            case 116: return ITK_CTRL_RIGHT;
+            case 141: return ITK_CTRL_UP;
+            case 145: return ITK_CTRL_DOWN;
+            case 119: return ITK_CTRL_HOME;
+            case 117: return ITK_CTRL_END;
+            case 132: return ITK_CTRL_PGUP;
+            case 118: return ITK_CTRL_PGDN;
+            case 146: return ITK_CTRL_INS;
+            case 147: return ITK_CTRL_DEL;
+            case 162: return ITK_ALT_INS;
+            case 163: return ITK_ALT_DEL;
+            case 152: return ITK_ALT_UP;
+            case 160: return ITK_ALT_DOWN;
+            case 130: return ITK_ALT_MINUS;
+            case 131: return ITK_ALT_PLUS;
+            case 92:  return ITK_SHIFT_F9;      /* Shift-F1..F10=84..93 */
+            case 95:  return ITK_CTRL_F2;       /* Ctrl-F1..F10=94..103 */
+            case 100: return ITK_CTRL_F7;
+            case 112: return ITK_ALT_F9;        /* Alt-F1..F10=104..113 */
+            case 113: return ITK_ALT_F10;
+            default:
+                if (e >= 120 && e <= 128)       /* Alt-1..9 */
+                    return ITK_ALT_0 + (e - 119);
+                if (e == 129)                   /* Alt-0 */
+                    return ITK_ALT_0;
+                return ITK_NONE;
             }
         }
-        if (c == 27) return ITK_ESC;
-        if (c == 13) return ITK_ENTER;
-        if (c == 8)  return ITK_BACKSPACE;
-        if (c == 9)  return ITK_TAB;
+        if (c == 27)   return ITK_ESC;
+        if (c == 13)   return ITK_ENTER;
+        if (c == 8)    return ITK_BACKSPACE;    /* BS and Ctrl-H collide
+                                                   on the console */
+        if (c == 0x7F) return ITK_CTRL_BACKSPACE;
+        if (c == 9)    return ITK_TAB;
         return c;
     }
 #else
-    unsigned char c;
-
-    if (read(STDIN_FILENO, &c, 1) != 1)
-        return ITK_NONE;
-
-    if (c == 0x1B) {
-        unsigned char seq[4];
-        if (read(STDIN_FILENO, seq, 1) != 1)
-            return ITK_ESC;
-        if (seq[0] == '[') {
-            if (read(STDIN_FILENO, seq + 1, 1) != 1)
-                return ITK_ESC;
-            switch (seq[1]) {
-            case 'A': return ITK_UP;
-            case 'B': return ITK_DOWN;
-            case 'D': return ITK_LEFT;
-            case 'C': return ITK_RIGHT;
-            case 'H': return ITK_HOME;
-            case 'F': return ITK_END;
-            case 'Z': return ITK_SHIFT_TAB;
-            case '5': read(STDIN_FILENO, seq + 2, 1); return ITK_PGUP;
-            case '6': read(STDIN_FILENO, seq + 2, 1); return ITK_PGDN;
-            case '2': read(STDIN_FILENO, seq + 2, 1); return ITK_INS;
-            case '3': read(STDIN_FILENO, seq + 2, 1); return ITK_DEL;
-            case '1': {
-                /* xterm F-keys: ESC [ 1 ... ~ */
-                unsigned char a = 0, b = 0;
-                if (read(STDIN_FILENO, &a, 1) == 1 && a != '~')
-                    read(STDIN_FILENO, &b, 1);
-                switch (a) {
-                case '1': return ITK_F1;
-                case '2': return ITK_F2;
-                case '3': return ITK_F3;
-                case '4': return ITK_F4;
-                case '5': return ITK_F5;
-                case '7': return ITK_F6;
-                case '8': return ITK_F7;
-                case '9': return ITK_F8;
-                default:  return ITK_NONE;
-                }
-            }
-            default: return ITK_NONE;
-            }
-        }
-        if (seq[0] == 'O') {
-            if (read(STDIN_FILENO, seq + 1, 1) != 1)
-                return ITK_ESC;
-            switch (seq[1]) {
-            case 'P': return ITK_F1;
-            case 'Q': return ITK_F2;
-            case 'R': return ITK_F3;
-            case 'S': return ITK_F4;
-            default:  return ITK_NONE;
-            }
-        }
-        return ITK_ESC;
-    }
-    if (c == '\n' || c == '\r') return ITK_ENTER;
-    if (c == 0x7F || c == 8)    return ITK_BACKSPACE;
-    if (c == '\t')              return ITK_TAB;
-    return c;
+    Term_Pump();
+    return Term_PopKey();
 #endif
 }
 
+#ifndef _WIN32
+static void Term_Mouse(it_mouse_t *m)
+{
+    Term_Pump();
+    Screen_TermMouseTest(m);
+}
+#endif
+
 static const screen_backend_t Screen_BackendTerm = {
-    Term_Init, Term_UnInit, Term_Present, Term_Key, NULL
+    Term_Init, Term_UnInit, Term_Present, Term_Key,
+#ifdef _WIN32
+    NULL                        /* console: pixel backend has the mouse */
+#else
+    Term_Mouse
+#endif
 };
 
 /* ---- public init/update/key dispatch --------------------------------- */

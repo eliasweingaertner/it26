@@ -120,15 +120,15 @@ enum {
     ITK_F7, ITK_F8, ITK_F9, ITK_F10, ITK_F11, ITK_F12,
     ITK_ESC, ITK_ENTER, ITK_BACKSPACE, ITK_TAB, ITK_SHIFT_TAB,
     ITK_SHIFT_F9,           /* message editor (Glbl_Shift_F9) */
-    /* Alt/Ctrl modifier combos (Win32 backend; the terminal backend
-     * doesn't produce these). ITK_ALT_A..Z and ITK_ALT_0..9 are
-     * contiguous. */
+    /* Alt/Ctrl modifier combos (all backends since feature 011; the
+     * POSIX terminal decodes the xterm ESC-prefix/CSI encodings, the
+     * Windows console its conio scan codes). ITK_ALT_A..Z and
+     * ITK_ALT_0..9 are contiguous. */
     ITK_ALT_A = 0x200,      /* .. ITK_ALT_A + 25 = Alt-Z */
     ITK_ALT_0 = 0x220,      /* .. ITK_ALT_0 + 9  = Alt-9 */
     ITK_ALT_INS = 0x230, ITK_ALT_DEL, ITK_ALT_UP, ITK_ALT_DOWN,
     ITK_ALT_PLUS, ITK_ALT_MINUS, ITK_CTRL_PLUS, ITK_CTRL_MINUS,
-    /* feature 009 (pattern editing depth). Terminal backend produces
-     * none of these (roadmap #7). */
+    /* feature 009 (pattern editing depth) */
     ITK_CTRL_UP = 0x240, ITK_CTRL_DOWN, ITK_CTRL_LEFT, ITK_CTRL_RIGHT,
     ITK_CTRL_HOME, ITK_CTRL_END, ITK_CTRL_PGUP, ITK_CTRL_PGDN,
     ITK_CTRL_INS, ITK_CTRL_DEL, ITK_CTRL_BACKSPACE, ITK_SCROLL_LOCK,
@@ -142,17 +142,20 @@ enum {
     ITK_CTRL_0 = 0x260,     /* .. ITK_CTRL_0 + 5 = Ctrl-5 */
     ITK_CTRL_SHIFT_1 = 0x268, /* .. +3 = Ctrl-Shift-4 */
     /* plain Shift press/release events (IT_PE.ASM scan 2Ah/36h
-     * handlers; drive F2 shift-marking) */
+     * handlers; drive F2 shift-marking). Pixel backends only -- a
+     * terminal has no key-up events (feature 011 limitation). */
     ITK_SHIFT_PRESS = 0x270, ITK_SHIFT_RELEASE,
     ITK_QUIT = 0x300,       /* window closed (pixel backend) */
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };
 int Key_Get(void);          /* non-blocking, K_GetKey-style             */
 
-/* ---- mouse (pixel backend; terminal backend reports no mouse) ----
+/* ---- mouse (pixel backends + POSIX terminal via SGR reporting;
+ * the Windows console path reports none) ----
  * x,y are cell coordinates (0..79, 0..49); px,py logical pixels
  * (0..639, 0..399) for the thumbbars' pixel-precise positioning, as in
- * the original's 8010h mouse events; b is bit 0 = left button held. */
+ * the original's 8010h mouse events (the terminal approximates px/py
+ * to the cell centre); b is bit 0 = left button held. */
 typedef struct it_mouse_t {
     int x, y;
     int px, py;
@@ -170,6 +173,13 @@ typedef struct screen_cell_t {
 /* read back one cell of the draw buffer (PE_HilightCursor-style
  * attribute rewrites; feature 009) */
 screen_cell_t Screen_GetCell(int x, int y);
+
+/* test hooks for the terminal input parser (feature 011; selftest):
+ * feed raw bytes, optionally resolve a pending lone ESC, pop one
+ * decoded key per call (ITK_NONE when drained); read the parser's
+ * mouse mirror. Platform-neutral -- works without any tty. */
+int  Screen_TermFeedTest(const uint8_t *buf, int n, int flush);
+void Screen_TermMouseTest(it_mouse_t *m);
 
 typedef struct screen_backend_t {
     int  (*init)(void);
