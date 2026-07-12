@@ -27,12 +27,17 @@ IDENTICAL (Windows AND Linux/WSL), selftest reports
 F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2/TERM/S3M OK on both platforms.
 S3M export
 (SaveFormat 1 + the F10 format buttons) landed 2026-07-12 as feature
-012. **Deferred / still open** (see §6):
-the macOS verification pass (spec 001 T022 — needs a Mac), plus small
-leftovers:
-Alt-U update-pattern-data, Alt-F12 Fourier
-analyser, F4 in-list name editing, instrument-record preview, Ctrl-V
-default-volume display, WAV stereo prompt, AIFF/TXWave loading.
+012, and the whole polish backlog the same day as feature 013:
+Alt-U update-pattern-data, F3/F4 in-list name editing, the WAV
+stereo Left/Right prompt, the hi-ASCII message charset, IFF
+8SVX/16SV + TX16W standalone samples, and the Alt-F12 Fourier
+spectrum analyser (overlay-rendered). **Deferred / still open**
+(see §6):
+the macOS verification pass (spec 001 T022 — needs a Mac); the only
+remaining fidelity leftover is the Ctrl-V default-volume display
+toggle. Selftest now reports 11 blocks OK
+(F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2/TERM/S3M/UPD/FFT) on Windows and
+Linux.
 
 ---
 
@@ -357,6 +362,38 @@ with undo-ring byte checks, key-driven mute/solo engine-state
 assertions (module mute states respected), view-table mutations,
 width-overflow revert, and a mixed-scheme redraw/cursor walk.
 
+**Polish batch — DONE (2026-07-12, spec `specs/013-polish-batch`):**
+the remaining §6 leftovers in one feature, three parts. (1) F4 Alt-U
+(`I_UpdateInstrument` -> `PE_UpdateInstruments`): remap every pattern
+cell whose (note, instrument) matches a note-sample-table entry of
+the selected instrument to (table-index note, instrument); F3/F4
+in-list name editing (`SamplePos` cursor on F3 — Left/Right/Home/End,
+insert/Backspace/Delete in the 25-char region, 25 = keyjazz stop;
+F4 = Spacebar edit mode with `InstrumentPos`, ESC/Enter leave; mouse
+placement; attr-30h cursor cell); the "Loading Stereo Sample"
+Left/Right requester through the `Load_StereoChoice` hook (NULL =
+silent left for headless paths); `Screen_DefineHiASCII` (font bank B
+:= CP437 ROM font) on message-editor entry. The "instrument-record
+preview" leftover was resolved as authentic: the original's Load
+Instrument key lists carry no note handling. (2) IFF 8SVX/16SV
+("AIFF Sample", fmt 17) + Yamaha TX16W ("TX Wave Sample", fmt 13)
+scanners in it_ris.c per D_GetSampleInfo13/TXWave decode (VHDR field
+quirk, low-word no-pad chunk walk, 17-bit TX lengths, rate by byte
+17h) and the TX 12-bit unpack branch in Load_SampleData
+(ConvertTXSample bit ops); fixtures lib_test.{iff,txw}. (3) Alt-F12
+Fourier analyser from the F5 page (IT_FOUR.ASM): transliterated
+2048-point float FFT (bit-reversal + FSinCos twiddle recurrence,
+1/128 magnitude scale, >>6 clamp), driver output tap
+(`WAVDriver_GetWaveForm`, last 2048 mono frames), scrolling
+spectrogram + 64-row bar spectrum, both gradient palettes ('p'),
++/- order keys, F5/F6/F8 playback, ESC exit; rendered via the new
+`Screen_SetOverlay` 640x400 8-bit overlay in the shared rasterizer
+(deviation: no VESA mode switch; terminal backend excluded); capture
+aid `ITED_SHOT_FOURIER=1` (+`ITED_SHOT_PLAY`). New ITK_ALT_F12 on all
+backends. Selftest blocks: UPD (Alt-U remap, name edits, hi-ASCII
+raster check, stereo default), FFT (bin-32 sine saturation +
+silence), LIB additions (IFF/TXW scan + byte-exact loads).
+
 **Terminal-backend input — DONE (2026-07-11, spec
 `specs/011-terminal-input`, roadmap #7):** the VT terminal backend's
 input was rewritten around a platform-neutral incremental byte parser
@@ -440,15 +477,12 @@ source files (`testdata/import_test.*` + `testdata/lib_test.{ptm,far,
 krz,pat}`), .ITS and .ITI round-trips, and in-IT / in-XM / .XI
 instrument transfers with remap checks. Capture aids:
 `ITED_SHOT_SCREEN=10/11` render the sample/instrument library browser
-(`ITED_SHOT_LIB=<file>` picks the source, default itdemo). Leftovers
-after feature 008: AIFF/TXWave standalone loading, the WAV stereo
-Left/Right prompt, instrument-record preview.
+(`ITED_SHOT_LIB=<file>` picks the source, default itdemo). The
+feature-008 leftovers (IFF/TXWave loading, the WAV stereo prompt)
+landed with feature 013.
 
-**Not done yet** (see §6): F4
-leftovers: in-list name editing, Alt-U pattern update. F5 leftover:
-Alt-F12 Fourier spectrum analyser (SPECTRUMANALYSER build,
-`IT_FOUR.ASM`). No preview for
-instrument records (samples only). Header FreeMem/FreeEMS show host
+**Not done yet** (see §6): the Ctrl-V default-volume display toggle.
+Header FreeMem/FreeEMS show host
 free RAM / 0. NB: the selftest script must never send ITK_ENTER while
 the F3/F4 *list widget* has focus — that now opens the modal library
 requester and would block the headless run.
@@ -691,8 +725,8 @@ rough priority order:
    `specs/003-info-page-views`): see §2. All 11 view methods, split
    windows, solo, velocity bars. Note IT 2.17 has no oscilloscope —
    `Display_SampleDots` is commented out of the build; the velocity
-   bars are what the original draws. Leftover: Alt-F12 Fourier
-   spectrum analyser (`IT_FOUR.ASM`).
+   bars are what the original draws. The Alt-F12 Fourier spectrum
+   analyser leftover landed 2026-07-12 with feature 013 (see §2).
 4. **Message editor, save module (F10)** — ✅ DONE (2026-07-02, spec
    `specs/004-save-module`): see §2. Full `.IT` writer incl. the
    IT214/IT215 sample compressor, save requester with overwrite
@@ -743,8 +777,9 @@ rough priority order:
 6. **In-depth sample & instrument editors** (`IT_I.ASM`) — ✅ DONE
    (2026-07-03, spec `specs/005-sample-instrument-editors`): see §2.
    Waveform view, loop editing, the full Alt-op set, note-table ops,
-   envelope presets, plus the Alt key layer. Leftover: Alt-U pattern
-   update. The deferred disk saves landed with feature 006.
+   envelope presets, plus the Alt key layer. The Alt-U pattern-update
+   and in-list name-editing leftovers landed 2026-07-12 with feature
+   013 (see §2). The deferred disk saves landed with feature 006.
 7. **Terminal-backend mouse + modifier keys** — ✅ DONE (2026-07-11,
    spec `specs/011-terminal-input`): see §2. The POSIX terminal decodes
    ESC-prefix Alt, xterm modified CSI, modifyOtherKeys/CSI-u and SGR
@@ -763,9 +798,10 @@ rough priority order:
    requesters, ten sample source formats + .ITS, .ITI/.XI/in-module
    instrument import with slot allocation, check-slot preview,
    Alt-O/T/W + .ITI saves. Standalone `.WAV` loading landed 2026-07-05
-   as spec `specs/008-wav-sample-loading` (see §2). Leftovers:
-   AIFF/TXWave standalone sample loading, the WAV stereo Left/Right
-   prompt (left channel taken silently), instrument-record preview.
+   as spec `specs/008-wav-sample-loading` (see §2). The leftovers —
+   IFF/TXWave standalone loading, the WAV stereo Left/Right prompt —
+   landed 2026-07-12 with feature 013 (see §2); instrument-record
+   preview was resolved as authentic original behaviour (no preview).
 
 ### Working agreements when continuing
 - Engine code stays 1:1; if you must touch it, re-run the §4 regression and

@@ -145,6 +145,7 @@ static void PumpEvents(void)
                 case SDLK_DOWN:   PushKey(ITK_ALT_DOWN);  break;
                 case SDLK_F9:     PushKey(ITK_ALT_F9);    break;
                 case SDLK_F10:    PushKey(ITK_ALT_F10);   break;
+                case SDLK_F12:    PushKey(ITK_ALT_F12);   break;
                 case SDLK_BACKSLASH:
                     PushKey(ITK_ALT_BACKSLASH); break;
                 case SDLK_PLUS: case SDLK_EQUALS: case SDLK_KP_PLUS:

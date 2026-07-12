@@ -106,6 +106,14 @@ void Screen_SetAttr(int x, int y, uint8_t attr);
  * Screen_WriteBMP and any future SDL backend). */
 void Screen_Rasterize(uint32_t *px);
 
+/* feature 013 (Alt-F12 analyser): while `pix` (640x400 8-bit indices)
+ * is set, the rasterizer presents it through `pal6` (256 x 3 6-bit
+ * VGA DAC values) instead of the cell buffer -- the port's stand-in
+ * for the original's VESA mode switch. Screen_SetOverlay(NULL, NULL)
+ * restores the text screen. Pixel backends + BMP shots only; the
+ * terminal backend keeps showing the cell buffer. */
+void Screen_SetOverlay(const uint8_t *pix, const uint8_t *pal6);
+
 /* write the current cell buffer as a 640x400 24-bit BMP (for visual
  * verification without a window/terminal). Returns 1 on success. */
 int Screen_WriteBMP(const char *path);
@@ -140,8 +148,9 @@ enum {
     ITK_CTRL_INS, ITK_CTRL_DEL, ITK_CTRL_BACKSPACE, ITK_SCROLL_LOCK,
     ITK_ALT_F9, ITK_ALT_F10, ITK_CTRL_F7, ITK_CTRL_F2,
     /* feature 010: Alt-'\' (UnmuteAll, 12Bh) and the keypad slash
-     * (MuteNext, scan 135h -- distinct from the free main-row '/') */
-    ITK_ALT_BACKSLASH = 0x238, ITK_KP_DIVIDE,
+     * (MuteNext, scan 135h -- distinct from the free main-row '/');
+     * feature 013: Alt-F12 (spectrum analyser, scan 158h) */
+    ITK_ALT_BACKSLASH = 0x238, ITK_KP_DIVIDE, ITK_ALT_F12,
     ITK_SHIFT_UP = 0x250, ITK_SHIFT_DOWN, ITK_SHIFT_LEFT,
     ITK_SHIFT_RIGHT, ITK_SHIFT_PGUP, ITK_SHIFT_PGDN,
     ITK_SHIFT_HOME, ITK_SHIFT_END,

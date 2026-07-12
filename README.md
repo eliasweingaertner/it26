@@ -170,8 +170,15 @@ Info page (F5):
   so their portable stand-ins remain as aliases: Ctrl-U/Ctrl-D =
   Alt-Up/Alt-Down (window resize), 'r' = Alt-R (reverse output),
   's' = Alt-S (stereo toggle). The shifted-letter aliases (Q/S/G/V/I)
-  are as in the original. Alt-F12 (Fourier spectrum analyser) is not
-  ported.
+  are as in the original.
+- Alt-F12 opens the Fourier spectrum analyser (`IT_FOUR.ASM`,
+  SPECTRUMANALYSER build): the transliterated 2048-point FFT over the
+  driver's output tap, the scrolling spectrogram + 64-line bar
+  spectrum, both gradient palettes ('p' toggles), +/- order keys and
+  F5/F6/F8 playback. Deviation: the original switches to a VESA mode
+  (1280/1024/800); the port renders a 640x400 palettized overlay
+  through the normal pixel presentation — the terminal backend shows
+  no analyser.
 - The velocity-bar scan is bounds-clamped to the sample data (the
   original scans raw DOS memory for transient mixer offsets).
 
@@ -237,8 +244,12 @@ Sample/instrument library (F3/F4 Enter):
   sample length; the out-of-slots check uses the free-slot count from
   when the requester was opened; instrument import forces each
   transferred sample's default pan off). ULT ripping is commented out
-  in the 2.17 source and is likewise absent here. AIFF/TXWave
-  standalone samples are not ported. Deviation from the original: an
+  in the 2.17 source and is likewise absent here. IFF 8SVX/16SV
+  ("AIFF Sample") and Yamaha TX16W ("TX Wave Sample", 12-bit packed)
+  standalone samples load per `D_GetSampleInfo` including its quirks
+  (the VHDR loop fields read from the original's offsets, the chunk
+  walk uses low-word sizes with no pad skip, 16SV data loads
+  little-endian). Deviation from the original: an
   occupied slot asks "Replace sample/instrument N?" before it is
   overwritten (IT overwrites silently); reads are bounds-checked
   rather than trusting DOS scratch buffers.
@@ -247,13 +258,15 @@ Sample/instrument library (F3/F4 Enter):
   leading `RIFF` magic is not checked, the `data` chunk is found by
   the original's bounded 3-chunk walk with its 16-bit skip
   arithmetic, length capped at 4,177,910 bytes, C5 speed takes the
-  sample rate's low 16 bits only). Deviation: a stereo WAV loads the
-  **left channel silently** — the original pops a "Loading Stereo
-  Sample" Left/Right prompt; the prompt (and the Right choice) is not
-  ported.
+  sample rate's low 16 bits only). A stereo WAV pops the original
+  "Loading Stereo Sample" Left/Right requester (keys L/R); headless
+  paths (selftest, captures) keep the silent-left default.
 - Note keys preview the selected library entry through IT's check
   slot (sample 100) via the ported `Music_PlaySample`; there is no
   key-release note-off (the port's key layer has no release events).
+  Instrument records have no note preview — neither does the
+  original's Load Instrument screen (its key lists carry no note
+  handling), so this is faithful, not a gap.
 - F3 Alt-O/T/W save the current sample as .ITS / Scream Tracker /
   WAV under its DOS filename, F4 Alt-O saves the instrument as .ITI —
   as in IT, including the WAV header's RIFF size staying 0.
@@ -265,6 +278,13 @@ Sample editor (F3):
   speed) is a stub in the 2.17 source and stays one here.
 - Loop/speed numeric fields edit through a value prompt instead of the
   original's inline digit entry.
+- Sample and instrument names edit directly on the F3/F4 lists
+  (feature 013): F3 carries the original's name cursor
+  (Left/Right/Home/End; typing inserts, Backspace/Delete edit; the
+  right stop keeps keyjazz), F4 uses the original's Spacebar-toggled
+  edit mode (ESC/Enter leave). F4 Alt-U runs the original's "update
+  pattern data" (remap matching (note, sample) pairs to the selected
+  instrument through its note-sample table).
 - The Alt modifier works on all backends (pixel backends natively;
   the terminal via ESC-prefix decoding since feature 011).
 
@@ -287,6 +307,11 @@ Save (F10) / message editor:
   waits for a key, as IT does. Deviation note: a byte-diff against a
   DOS-written S3M has not been run (no DOS box in the loop); layout is
   asserted field-wise by the selftest plus an import round trip.
+- The message editor loads the hi-ASCII charset on entry
+  (S_DefineHiASCII, feature 013): font bank B holds the plain CP437
+  ROM font, so colour-12 text (Ctrl-T toggles 12/6) displays real
+  high-ASCII characters — colour-6 text shows the IT UI glyphs for
+  128..201, as in DOS IT.
 - Edit-history/timer blocks (Special
   bit 1 in ITTECH terms) are not written — the port keeps no timer
   data, which is also the original's behaviour when none exists.

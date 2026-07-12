@@ -33,6 +33,7 @@
 #include <stdarg.h>
 #include <signal.h>
 #include <time.h>
+#include <math.h>                       /* Fourier analyser (013) */
 
 #ifdef _WIN32
 #include <windows.h>
@@ -62,6 +63,7 @@ extern const sounddriver_t WAVDriver;
 void WAVDriver_Render(int16_t *dst, uint32_t frames);
 void WAVDriver_SetMixSpeed(uint32_t hz);
 uint32_t WAVDriver_GetMixSpeed(void);
+void WAVDriver_GetWaveForm(int16_t *out2048);   /* feature 013 tap */
 int  Music_LoadIT(const char *path);
 void Music_FreeIT(void);
 
@@ -5008,6 +5010,202 @@ static void draw_info(void)
  * combos (no Alt modifier in the key layer yet, HANDOFF roadmap #5):
  * Ctrl-U/Ctrl-D = Alt-Up/Alt-Down (resize), 'r' = Alt-R (reverse),
  * 's' = Alt-S (stereo). Documented in the README fidelity notes. */
+/* ===================================================================
+ * Alt-F12 spectrum analyser (IT_FOUR.ASM, SPECTRUMANALYSER=1 in the
+ * released SWITCH.INC; feature 013). Fourier_Transform is
+ * transliterated (2048-point radix-2, float arithmetic -- the
+ * original loads FPU control word 003Fh = 24-bit precision for it);
+ * the display is the original's scrolling spectrogram over the 64-row
+ * thresholded bar spectrum with the two switchable gradient palettes.
+ * Deviation (README): rendered into the 640x400 overlay instead of a
+ * VESA mode switch; terminal backend excluded.
+ * =================================================================== */
+#define FOUR_W 640
+#define FOUR_H 400
+
+static float FourRe[2048], FourIm[2048];
+static uint8_t FourPix[FOUR_W * FOUR_H];
+static uint8_t FourMag[1024];
+
+static void play_song(void);
+static void play_pattern(void);
+
+/* Fourier_CreateTable: 11-bit bit reversal */
+static uint16_t four_reloc(uint16_t c)
+{
+    uint16_t r = 0;
+    int b;
+
+    for (b = 0; b < 11; b++) {
+        r = (uint16_t)((r << 1) | (c & 1));
+        c >>= 1;
+    }
+    return r;
+}
+
+/* Fourier_Transform + the magnitude pass: mag8[k] =
+ * min(255, lrint(|X[k]| / 128) >> 6) for bins 0..1023 */
+static void fourier_fft(const int16_t *wave, uint8_t *mag8)
+{
+    int i, d, k;
+
+    for (i = 0; i < 2048; i++) {
+        FourRe[four_reloc((uint16_t)i)] = (float)wave[i];
+        FourIm[four_reloc((uint16_t)i)] = 0.0f;
+    }
+    for (i = 1; i < 2048; i <<= 1) {
+        float dr = (float)cos(-3.14159265358979323846 / i);
+        float di = (float)sin(-3.14159265358979323846 / i);
+        float cr = 1.0f, ci = 0.0f;
+
+        for (d = 0; d < i; d++) {
+            for (k = d; k < 2048; k += 2 * i) {
+                float sr = FourRe[k + i], si = FourIm[k + i];
+                float tr = cr * sr - ci * si;   /* temp = s * phase */
+                float ti = cr * si + ci * sr;
+                FourRe[k + i] = FourRe[k] - tr;
+                FourIm[k + i] = FourIm[k] - ti;
+                FourRe[k] += tr;
+                FourIm[k] += ti;
+            }
+            {                           /* phase *= deltaphase */
+                float nr = cr * dr - ci * di;
+                float ni = cr * di + ci * dr;
+                cr = nr;
+                ci = ni;
+            }
+        }
+    }
+    for (k = 0; k < 1024; k++) {
+        float m = sqrtf(FourRe[k] * FourRe[k] + FourIm[k] * FourIm[k])
+                  * 0.0078125f;         /* Const1_2048 = 1/128 */
+        long v = lrintf(m) >> 6;
+        mag8[k] = (uint8_t)(v > 255 ? 255 : v);
+    }
+}
+
+/* Fourier_SetPalette: the two gradient palettes, 6-bit DAC values */
+static void fourier_palette(uint8_t *p, int sel)
+{
+    int i;
+
+    if (sel) {                          /* palette A */
+        for (i = 0; i < 64; i++) {
+            p[i * 3] = 0; p[i * 3 + 1] = 0;
+            p[i * 3 + 2] = (uint8_t)(i >> 1);
+        }
+        for (i = 0; i < 64; i++) {
+            p[(64 + i) * 3] = 0;
+            p[(64 + i) * 3 + 1] = (uint8_t)(i >> 1);
+            p[(64 + i) * 3 + 2] = (uint8_t)((i >> 1) + 32);
+        }
+        for (i = 0; i < 128; i++) {
+            p[(128 + i) * 3]     = (uint8_t)(i >> 1);
+            p[(128 + i) * 3 + 1] = (uint8_t)((i >> 2) + 32);
+            p[(128 + i) * 3 + 2] = 63;
+        }
+    } else {                            /* palette B (default) */
+        for (i = 0; i < 32; i++) {
+            p[i * 3] = 0; p[i * 3 + 1] = 0;
+            p[i * 3 + 2] = (uint8_t)(i * 2);
+        }
+        for (i = 0; i < 32; i++) {
+            p[(32 + i) * 3] = (uint8_t)(i * 2);
+            p[(32 + i) * 3 + 1] = 0;
+            p[(32 + i) * 3 + 2] = 63;
+        }
+        for (i = 0; i < 32; i++) {
+            p[(64 + i) * 3] = 63;
+            p[(64 + i) * 3 + 1] = 0;
+            p[(64 + i) * 3 + 2] = (uint8_t)(63 - i * 2);
+        }
+        for (i = 0; i < 32; i++) {
+            p[(96 + i) * 3] = 63;
+            p[(96 + i) * 3 + 1] = (uint8_t)(i * 2);
+            p[(96 + i) * 3 + 2] = 0;
+        }
+        for (i = 0; i < 128; i++) {
+            p[(128 + i) * 3] = 63;
+            p[(128 + i) * 3 + 1] = 63;
+            p[(128 + i) * 3 + 2] = (uint8_t)(i >> 1);
+        }
+    }
+}
+
+/* Fourier_DrawScreen: one frame -- FFT the driver tap, plot one
+ * spectrogram column at *xoff (bins H-64..1, low frequencies at the
+ * bottom), redraw the 64-row bar spectrum (bins 1..W, lit where
+ * magnitude > (63-row)*4). */
+static void fourier_frame(int *xoff)
+{
+    static int16_t wave[2048];
+    int r, i;
+
+    WAVDriver_GetWaveForm(wave);
+    fourier_fft(wave, FourMag);
+
+    for (r = 0; r < FOUR_H - 64; r++)
+        FourPix[r * FOUR_W + *xoff] = FourMag[FOUR_H - 64 - r];
+    *xoff = (*xoff + 1) % FOUR_W;
+
+    for (r = 0; r < 64; r++) {
+        uint8_t bl = (uint8_t)((63 - r) << 2);
+        uint8_t *row = FourPix + (FOUR_H - 64 + r) * FOUR_W;
+        for (i = 0; i < FOUR_W; i++)
+            row[i] = (FourMag[i + 1] > bl) ? 255 : 0;
+    }
+}
+
+/* Fourier_Start / O1_FourierDisplay: the modal analyser view.
+ * Keys per FourierKeyList: 'p' palette, +/- the F5 order keys,
+ * F5/F6/F8 playback, ESC exits. */
+static void fourier_view(void)
+{
+    static uint8_t fpal[768];
+    int xoff = 0, palsel = 0;
+
+    memset(FourPix, 0, sizeof(FourPix));
+    fourier_palette(fpal, palsel);
+    Screen_SetOverlay(FourPix, fpal);
+
+    for (;;) {
+        int key;
+
+        fourier_frame(&xoff);
+        Screen_Update();
+
+        key = Key_Get();
+        switch (key) {
+        case ITK_QUIT:
+            Running = 0;
+            key = ITK_ESC;
+            break;
+        case 'p':
+            palsel ^= 1;
+            fourier_palette(fpal, palsel);
+            Screen_SetOverlay(FourPix, fpal);
+            break;
+        case '+':
+            ed_lock(); Music_NextOrder(); ed_unlock();
+            break;
+        case '-':
+            ed_lock(); Music_LastOrder(); ed_unlock();
+            break;
+        case ITK_F5: commit_current_pattern(); play_song();    break;
+        case ITK_F6: commit_current_pattern(); play_pattern(); break;
+        case ITK_F8: stop_song(); break;
+        default:
+            break;
+        }
+        if (key == ITK_ESC)
+            break;
+        ma_sleep(15);
+    }
+
+    Screen_SetOverlay(NULL, NULL);      /* Fourier_End */
+    Screen_DefineSmallNumbers();
+}
+
 static void handle_info_key(int key)
 {
     dispwin_t *w = &InfoWin[InfoCurWindow];
@@ -5032,6 +5230,9 @@ static void handle_info_key(int key)
         return;
     case '-':                           /* DisplayMinus */
         ed_lock(); Music_LastOrder(); ed_unlock();
+        return;
+    case ITK_ALT_F12:                   /* Display_FourierStart */
+        fourier_view();
         return;
     case ITK_PGUP:                      /* DisplayPageUp: method-1 mod 11 */
         w->method = (uint16_t)((w->method + 10) % 11);
@@ -9413,6 +9614,21 @@ int main(int argc, char **argv)
                         left -= n;
                     }
                 }
+                if (getenv("ITED_SHOT_FOURIER")) {
+                    /* capture aid (feature 013): render analyser
+                     * frames over live playback and leave the overlay
+                     * set for the BMP (use with ITED_SHOT_PLAY) */
+                    static uint8_t fpal[768];
+                    static int16_t pbuf[2048 * 2];
+                    int f, xo = 0;
+                    memset(FourPix, 0, sizeof(FourPix));
+                    fourier_palette(fpal, 0);
+                    Screen_SetOverlay(FourPix, fpal);
+                    for (f = 0; f < 480; f++) {
+                        WAVDriver_Render(pbuf, 2048);
+                        fourier_frame(&xo);
+                    }
+                }
             }
             if (scr == SCR_PATTERN) {      /* Glbl_F2 entry side effect */
                 Screen_DefineSmallNumbers();
@@ -10717,6 +10933,31 @@ int main(int argc, char **argv)
             redraw();
             fprintf(stderr, "ITED selftest: [%s]\n",
                     u_ok ? "UPD OK" : "UPD FAIL");
+        }
+
+        /* Fourier transform sanity (feature 013): a bin-32 sine
+         * saturates its bin and leaves the rest near-silent; silence
+         * yields all-zero magnitudes. */
+        {
+            int f_ok = 1, i;
+            static int16_t w[2048];
+
+            for (i = 0; i < 2048; i++)
+                w[i] = (int16_t)(8192.0 *
+                    sin(2.0 * 3.14159265358979323846 * 32.0 * i
+                        / 2048.0));
+            fourier_fft(w, FourMag);
+            if (FourMag[32] != 255)     /* |X| = 8192*1024/128>>6 = 1024 */
+                f_ok = 0;
+            if (FourMag[30] > 8 || FourMag[34] > 8 || FourMag[200] > 2)
+                f_ok = 0;               /* leakage stays tiny */
+            memset(w, 0, sizeof(w));
+            fourier_fft(w, FourMag);
+            for (i = 0; i < 1024; i++)
+                if (FourMag[i])
+                    f_ok = 0;
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    f_ok ? "FFT OK" : "FFT FAIL");
         }
 
         commit_current_pattern();

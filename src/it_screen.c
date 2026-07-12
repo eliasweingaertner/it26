@@ -245,9 +245,36 @@ void Screen_InvertCursor(int x, int y, uint8_t mask)
     Screen_PutChar(x, y, 246, 0x30);
 }
 
+/* full-resolution 8-bit overlay (feature 013: the Alt-F12 spectrum
+ * analyser replaces the text screen with a VESA graphics mode in the
+ * original; the port presents a 640x400 palettized framebuffer through
+ * the same rasterizer instead). NULL pixels = overlay off. */
+static const uint8_t *OverlayPix;
+static uint32_t OverlayPal[256];
+
+void Screen_SetOverlay(const uint8_t *pix, const uint8_t *pal6)
+{
+    OverlayPix = pix;
+    if (pal6) {
+        int i;
+        for (i = 0; i < 256; i++)
+            OverlayPal[i] =
+                ((uint32_t)(pal6[i * 3]     << 2) << 16) |
+                ((uint32_t)(pal6[i * 3 + 1] << 2) << 8)  |
+                 (uint32_t)(pal6[i * 3 + 2] << 2);
+    }
+}
+
 void Screen_Rasterize(uint32_t *px)
 {
     int cy, cx, row;
+
+    if (OverlayPix) {
+        int i;
+        for (i = 0; i < 640 * 400; i++)
+            px[i] = OverlayPal[OverlayPix[i]];
+        return;
+    }
 
     for (cy = 0; cy < SCREEN_H; cy++) {
         for (cx = 0; cx < SCREEN_W; cx++) {
@@ -731,7 +758,8 @@ static void Term_CsiFinal(uint8_t f)
             if (mod <= 1) Term_PushKey(ITK_F11);
             return;
         case 24:
-            if (mod <= 1) Term_PushKey(ITK_F12);
+            if (mod == 3)      Term_PushKey(ITK_ALT_F12);
+            else if (mod <= 1) Term_PushKey(ITK_F12);
             return;
         case 27:                                /* modifyOtherKeys */
             Term_ModOther(TP_NParam > 2 ? TP_Param[2] : 0, mod);

@@ -1095,10 +1095,26 @@ static void DoTick(void)
     OutPos = 0;
 }
 
+/* passive output tap for the Alt-F12 spectrum analyser (feature 013):
+ * the last 2048 rendered frames, mixed down to mono (the original's
+ * GetWaveform driver hook, DriverFlags bit 2 semantics). Written only
+ * from the render path; the analyser copies it unlocked -- a torn
+ * frame just smears one FFT column, as on real hardware. */
+static int16_t WaveTap[2048];
+static uint32_t WaveTapPos;
+
+void WAVDriver_GetWaveForm(int16_t *out2048)
+{
+    uint32_t i, p = WaveTapPos;
+
+    for (i = 0; i < 2048; i++)
+        out2048[i] = WaveTap[(p + i) & 2047];
+}
+
 void WAVDriver_Render(int16_t *dst, uint32_t frames)
 {
     while (frames != 0) {
-        uint32_t n;
+        uint32_t n, i;
 
         if (OutPos >= OutFilled)
             DoTick();
@@ -1108,6 +1124,11 @@ void WAVDriver_Render(int16_t *dst, uint32_t frames)
             n = frames;
 
         memcpy(dst, &OutBuffer[OutPos * 2], n * 4);
+        for (i = 0; i < n; i++) {       /* mono tap: (L+R)/2 */
+            WaveTap[WaveTapPos] =
+                (int16_t)((dst[i * 2] + dst[i * 2 + 1]) >> 1);
+            WaveTapPos = (WaveTapPos + 1) & 2047;
+        }
         dst += n * 2;
         OutPos += n;
         frames -= n;

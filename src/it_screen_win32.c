@@ -122,6 +122,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_DOWN:   PushKey(ITK_ALT_DOWN); return 0;
             case VK_F9:     PushKey(ITK_ALT_F9);   return 0;
             case VK_F10:    PushKey(ITK_ALT_F10);  return 0;
+            case VK_F12:    PushKey(ITK_ALT_F12);  return 0;
             case VK_OEM_5:  PushKey(ITK_ALT_BACKSLASH); return 0;
             case VK_OEM_PLUS: case VK_ADD:
                 PushKey(ITK_ALT_PLUS);  return 0;
