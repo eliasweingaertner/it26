@@ -43,6 +43,9 @@ void SetDefaultMIDIDataArea(void);  /* stock ITMIDI.CFG (it_load.c) */
  * decompression); allocates s->Data, rewrites Flags/Cvt like the
  * original. For the sample/instrument library (it_ris.c). */
 int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s);
+/* stereo Left/Right requester hook (O1_StereoSampleList; feature 013):
+ * returns 64 = left, 192 = right; NULL = left (headless paths). */
+extern int (*Load_StereoChoice)(void);
 /* pre-2.00 instrument conversion, shared with the library loaders */
 void Load_OldInstrument(const uint8_t *src, instrument_t *in);
 

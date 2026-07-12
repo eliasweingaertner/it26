@@ -81,6 +81,12 @@ void Screen_GenerateCharacters(int first, int wchars, int hchars,
  * font bank B is reclaimed by the next Screen_GenerateCharacters. */
 void Screen_DefineSmallNumbers(void);
 
+/* S_DefineHiASCII: load font bank B with the plain CP437 ROM font so
+ * attr-bit-3 text shows real high-ASCII (message editor; feature 013).
+ * The next Screen_GenerateCharacters / Screen_DefineSmallNumbers
+ * reclaims bank B, as in the original. */
+void Screen_DefineHiASCII(void);
+
 /* S_InvertCursor: redefine font-A char 246 as the glyph at (x,y) with
  * the masked pixel columns inverted and show it there in attr 30h (the
  * packed-cell pattern cursor; feature 010). */

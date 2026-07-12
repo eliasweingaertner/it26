@@ -456,6 +456,47 @@ def gen_wav24(path):
     open(path, 'wb').write(wav_header(1, 44100, 24, len(data)) + data)
 
 
+def gen_iff(path):
+    """IFF 8SVX (feature 013): NAME + VHDR + BODY chunks, big-endian.
+    body byte i = (i*5)&0xFF. NB the original reads LoopBeg from
+    VHDR+4 (repeatHiSamples) and the loop LENGTH from VHDR+8
+    (samplesPerHiCycle) -- quirk kept, so: loop 32..48, rate 16726."""
+    data = bytes((i * 5) & 0xFF for i in range(SR))
+    name = b'iff fixture!'              # even length: the original's
+                                        # chunk walk has no pad skip
+    vhdr = (struct.pack('>II', 64, 32) +        # oneShot / repeat
+            struct.pack('>I', 16) +             # samplesPerHiCycle
+            struct.pack('>H', 16726) +          # rate
+            b'\x01\x00' + struct.pack('>I', 0x10000))
+    chunks = (b'NAME' + struct.pack('>I', len(name)) + name +
+              b'VHDR' + struct.pack('>I', len(vhdr)) + vhdr +
+              b'BODY' + struct.pack('>I', len(data)) + data)
+    open(path, 'wb').write(b'FORM' + struct.pack('>I', 4 + len(chunks)) +
+                           b'8SVX' + chunks)
+
+
+def gen_txw(path):
+    """TX16W wave (feature 013): looped (byte 16h = 0x49), 33 kHz
+    (byte 17h < 2), attack 48 + loop 32 samples, 12-bit packed pairs
+    s0 = (i<<5)&0xFFF0 pattern the selftest recomputes"""
+    attack, looplen = 48, 32
+    n = attack + looplen                        # samples (even)
+    hdr = bytearray(32)
+    hdr[0:6] = b'LM8953'
+    hdr[0x16] = 0x49
+    hdr[0x17] = 1
+    hdr[0x18:0x1B] = struct.pack('<I', attack)[0:3]
+    hdr[0x1B:0x1E] = struct.pack('<I', looplen)[0:3]
+    data = bytearray()
+    for g in range(n // 2):
+        s0 = ((2 * g) << 5) & 0xFFF0            # 12-bit <<4 values
+        s1 = ((2 * g + 1) << 5) & 0xFFF0
+        data.append((s0 >> 8) & 0xFF)           # b0
+        data.append(((s0 & 0xF0)) | ((s1 >> 4) & 0x0F))  # b1
+        data.append((s1 >> 8) & 0xFF)           # b2
+    open(path, 'wb').write(bytes(hdr) + bytes(data))
+
+
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else '.'
     gen_s3m(outdir + '/import_test.s3m')
@@ -473,8 +514,10 @@ def main():
     gen_wavst(outdir + '/lib_testst.wav')
     gen_wavf(outdir + '/lib_testf.wav')
     gen_wav24(outdir + '/lib_test24.wav')
+    gen_iff(outdir + '/lib_test.iff')
+    gen_txw(outdir + '/lib_test.txw')
     print('wrote import_test.{s3m,mod,mtm,669,xm} + '
-          'lib_test.{xi,ptm,far,krz,pat} + '
+          'lib_test.{xi,ptm,far,krz,pat,iff,txw} + '
           'lib_test{8,16,st,f,24}.wav to', outdir)
 
 

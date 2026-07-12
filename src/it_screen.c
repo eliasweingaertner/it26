@@ -182,6 +182,16 @@ void Screen_SetAttr(int x, int y, uint8_t attr)
 static uint8_t FontASmall[20][8];
 static int SmallNumbersOn;
 
+/* S_DefineHiASCII (IT_S.ASM 1589; feature 013): load font bank B with
+ * the plain ROM font so attr-bit-3 text (the message editor's colour
+ * 12) renders real CP437 high-ASCII. Called on message-editor entry
+ * (Glbl_Shift_F9); bank B is reclaimed by the next
+ * GenerateCharacters/DefineSmallNumbers, as in the original. */
+void Screen_DefineHiASCII(void)
+{
+    memcpy(FontB, IT_FontROM, sizeof(FontB));
+}
+
 void Screen_DefineSmallNumbers(void)
 {
     int c, row, l, d;

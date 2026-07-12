@@ -252,16 +252,19 @@ static int DecompressIT16(reader_t *r, int16_t *dst, uint32_t length,
  * 4 = swap bytes (big endian), 8 = delta values, 16 = byte delta
  * (PTM), 64 = stereo (standalone WAV: read both channels, keep one),
  * 8000h = IT-compressed. (32 = TX 12-bit is TXWave-only, not ported.)
- * Stereo deviation: the original prompts Left/Right
- * (O1_StereoSampleList; right = BP bit 128); this port always takes
- * the left channel -- see specs/008-wav-sample-loading/research.md R4.
+ * Stereo (feature 013): the original prompts Left/Right
+ * (O1_StereoSampleList; right = BP bit 128). The editor installs
+ * Load_StereoChoice to run that requester; a NULL hook (headless
+ * paths, DisableStereoMenu parity) takes the left channel.
  * Exported for the sample/instrument library (it_ris.c).
  * ---------------------------------------------------------------- */
+int (*Load_StereoChoice)(void);         /* returns 64 left / 192 right */
+
 int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
 {
     reader_t rr = { filedata, size, 0 };
     reader_t *r = &rr;
-    int is16, compressed, it215, bswap, delta, bytedelta, stereo;
+    int is16, compressed, it215, bswap, delta, bytedelta, stereo, tx12;
     uint32_t len = s->Length;
     uint32_t units;
     size_t bytes;
@@ -283,6 +286,7 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
     delta      = !compressed && (s->Cvt & 0x0C) != 0;
     bytedelta  = !compressed && (s->Cvt & 8) != 0;
     stereo     = !compressed && (s->Cvt & 32) != 0;
+    tx12       = !compressed && (s->Cvt & 0x10) != 0;   /* TX Wave */
 
     /* stereo reads both channels (the ASM doubles EDX again) and
      * compacts to one after conversion */
@@ -303,9 +307,28 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
                 DecompressIT8(r, (int8_t *)data, len, it215);
         } else {
             size_t avail = r->size - r->pos;
-            if (bytes > avail)
-                bytes = avail;
-            memcpy(data, r->data + r->pos, bytes);
+            size_t rd = bytes;
+            if (tx12)                   /* 12-bit: 3 bytes / 2 samples */
+                rd = (bytes * 3 + 3) >> 2;
+            if (rd > avail)
+                rd = avail;
+            memcpy(data, r->data + r->pos, rd);
+            if (!tx12) {
+                bytes = rd;
+            } else {
+                /* ConvertTXSample1 (IT_DISK.ASM, feature 013): expand
+                 * each 3-byte group into two LE 16-bit samples,
+                 * backwards in place */
+                size_t g = (rd + 2) / 3;
+                while (g--) {
+                    uint8_t b0 = data[g * 3], b1 = data[g * 3 + 1],
+                            b2 = data[g * 3 + 2];
+                    data[g * 4]     = (uint8_t)(b1 & 0xF0);
+                    data[g * 4 + 1] = b0;
+                    data[g * 4 + 2] = (uint8_t)((b1 << 4) & 0xF0);
+                    data[g * 4 + 3] = b2;
+                }
+            }
         }
 
         /* order as in the ASM: byte-swap, then delta, then sign --
@@ -349,16 +372,18 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
         }
         if (stereo) {
             /* channel compaction (IT_DISK.ASM 3172..3211): keep every
-             * other sample in place; left starts at 0 (right would
-             * start at +1 -- never selected, see the header comment) */
-            uint32_t n;
+             * other sample; left starts at 0, right at +1 per the
+             * O1_StereoSampleList choice (BP bit 128) */
+            uint32_t n, ch = 0;
+            if (Load_StereoChoice && Load_StereoChoice() & 128)
+                ch = 1;
             if (is16) {
                 int16_t *p = (int16_t *)data;
                 for (n = 0; n < len; n++)
-                    p[n] = p[n * 2];
+                    p[n] = p[n * 2 + ch];
             } else {
                 for (n = 0; n < len; n++)
-                    data[n] = data[n * 2];
+                    data[n] = data[n * 2 + ch];
             }
         }
     }

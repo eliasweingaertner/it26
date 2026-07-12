@@ -18,7 +18,8 @@
  * (hdr; hdr.OffsetInFile = offset of the data inside SrcFile) plus
  * file size, format code and the source path. Format codes follow
  * SampleFormatNames: 2=IT, 3=S3M, 5=WAV 8-bit, 7=WAV 16-bit, 8=XM,
- * 9=PTM, 10=MTM, 11=669, 12=FAR, 14=MOD, 15=KRZ, 16=PAT. */
+ * 9=PTM, 10=MTM, 11=669, 12=FAR, 13=TX Wave, 14=MOD, 15=KRZ, 16=PAT,
+ * 17=AIFF (IFF 8SVX/16SV; feature 013). */
 typedef struct slibent_t {
     sample_t hdr;
     uint32_t FileSize;                  /* record +50h */

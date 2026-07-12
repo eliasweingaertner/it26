@@ -51,6 +51,7 @@
 #include "it_import.h"
 #include "it_ris.h"
 #include "it_screen.h"
+#include "it_vgadata.h"                 /* IT_FontROM (selftest checks) */
 
 #define MINIAUDIO_IMPLEMENTATION
 #define MA_NO_DECODING
@@ -1503,6 +1504,13 @@ static const uint8_t InstParamText[] =
 
 static int SmpListTop, InsListTop, OrdListTop;
 static int PanSel;                              /* selected pan channel */
+/* in-list name editing (feature 013; IT_I.ASM I_PostSampleList /
+ * I_PostInstrumentWindow): F3 cursor position within the sample name
+ * (25 = right stop = keyjazz mode); F4 uses a Spacebar-toggled edit
+ * mode with its own position. */
+static int SamplePos = 25;                      /* IT_I.ASM 290 */
+static int InstrumentPos = 0;                   /* 242 */
+static int InstrumentEdit = 0;                  /* 273 */
 
 /* ===================================================================
  * Sample editor core (IT_I.ASM): the F3 waveform view, loop editing
@@ -2279,6 +2287,46 @@ static void pattern_remap_ins(int op, int a, int b)
     load_pattern(CurPattern);
 }
 
+/* Alt-U on the F4 list (I_UpdateInstrument, IT_I.ASM 6575 ->
+ * PE_UpdateInstruments, IT_PE.ASM 10840; feature 013): rewrite every
+ * pattern cell whose (note, instrument) pair matches an entry of the
+ * selected instrument's note-sample table into (table-index note,
+ * selected instrument). All patterns; not undoable (original). */
+static void pattern_update_instruments(void)
+{
+    int ins = ListSel + 1;              /* PE_GetLastInstrument */
+    const uint8_t *tab = Song.Ins[ins - 1].NoteSampleTable;
+    int p, i, dx;
+
+    commit_current_pattern();
+    for (p = 0; p < MAX_PATTERNS; p++) {
+        uint16_t rows;
+        int changed = 0;
+        if (!Song.Patterns[p].PackedData)
+            continue;
+        rows = Pattern_Unpack((uint16_t)p, OpGrid);
+        for (i = 0; i < (int)rows * 64; i++) {
+            editcell_t *e = &OpGrid[i];
+            if (!(e->mask & CM_NOTE) || e->note < 1 || e->note > 120)
+                continue;               /* real notes only */
+            if (!(e->mask & CM_INS) || e->ins == 0)
+                continue;
+            for (dx = 0; dx < 120; dx++)
+                if (tab[dx * 2] == e->note - 1 &&
+                    tab[dx * 2 + 1] == e->ins)
+                    break;
+            if (dx < 120) {
+                e->note = (uint8_t)(dx + 1);
+                e->ins = (uint8_t)ins;
+                changed = 1;
+            }
+        }
+        if (changed)
+            Pattern_Pack((uint16_t)p, OpGrid, rows);
+    }
+    load_pattern(CurPattern);
+}
+
 /* NoteSampleTable remap over all instruments (sample slot ops in
  * instrument mode) */
 static void nst_remap(int op, int a, int b)
@@ -2617,8 +2665,13 @@ static void draw_samples(void)
         uint8_t a = (idx == ListSel) ? 0x30 : 0x06;
         if (idx < 0 || idx >= n)
             continue;
+        if (idx == ListSel && SamplePos < 25)
+            a = 0x06;           /* name editing: cursor cell only
+                                   (I_PreSampleList1) */
         drawf(5, 13 + i, a, "%02d:", idx + 1);
         draw_itname(8, 13 + i, Song.Smp[idx].SampleName, 26, a);
+        if (idx == ListSel && SamplePos < 25)
+            Screen_SetAttr(8 + SamplePos, 13 + i, 0x30);
     }
 
     s = &Song.Smp[ListSel];
@@ -2869,8 +2922,8 @@ static int handle_instrument_altkey(int key)
     case ITK_ALT_A + ('R'-'A'): ins_op_replace();       break;
     case ITK_ALT_A + ('S'-'A'): ins_op_swap();          break;
     case ITK_ALT_A + ('X'-'A'): ins_op_exchange();      break;
-    case ITK_ALT_A + ('U'-'A'):
-        status("Update pattern data (Alt-U) not ported yet");
+    case ITK_ALT_A + ('U'-'A'):         /* I_UpdateInstrument */
+        pattern_update_instruments();
         break;
     case ITK_ALT_A + ('O'-'A'): ins_save_disk();        break;
     default:
@@ -3619,8 +3672,13 @@ static void draw_instruments(void)
             break;
         a = (idx == ListSel) ? ((focusw == IdxLeftList) ? 0x30 : 0xE6)
                              : 0x06;
+        if (idx == ListSel && InstrumentEdit)
+            a = 0x06;           /* edit mode: single cursor cell
+                                   (I_PreInstrumentWindow2) */
         drawf(2, 13 + i, 0x20, "%02d", (idx + 1) % 100);
         draw_itname(5, 13 + i, Song.Ins[idx].InstrumentName, 25, a);
+        if (idx == ListSel && InstrumentEdit)
+            Screen_SetAttr(5 + InstrumentPos, 13 + i, 0x30);
     }
 
     /* tab buttons (G/V-InstrumentGeneral/Volume/Panning/PitchButton) */
@@ -7441,19 +7499,101 @@ static int generic_list_lkey(int key, int n)
 static void sample_library_requester(void);     /* feature 006 */
 static void instrument_library_requester(void);
 
+/* insert/delete within the 25-char editable name region (feature 013;
+ * I_PostSampleList3/5 -- the 26th byte stays untouched on insert and
+ * zero-fills on delete) */
+static void name_insert(char *nm, int pos, char c)
+{
+    int i;
+    for (i = 24; i > pos; i--)
+        nm[i] = nm[i - 1];
+    nm[pos] = c;
+}
+
+static void name_delete(char *nm, int pos)
+{
+    int i;
+    for (i = pos; i < 24; i++)
+        nm[i] = nm[i + 1];
+    nm[24] = 0;
+}
+
 static int sample_list_lkey(int key)
 {
+    char *nm = Song.Smp[ListSel].SampleName;
+
     if (key == ITK_ENTER) {                 /* IT: Enter = load sample */
         sample_library_requester();
         return 1;
+    }
+    switch (key) {          /* I_SampleLeft/Right/Home/End: the name
+                               cursor, not the list */
+    case ITK_LEFT:  if (SamplePos > 0)  SamplePos--; return 1;
+    case ITK_RIGHT: if (SamplePos < 25) SamplePos++; return 1;
+    case ITK_HOME:  SamplePos = 0;  return 1;
+    case ITK_END:   SamplePos = 25; return 1;
+    default: break;
+    }
+    if (SamplePos < 25) {                   /* editing inside the name */
+        if (key >= 32 && key < 127) {
+            name_insert(nm, SamplePos, (char)key);
+            SamplePos++;
+            return 1;
+        }
+        if (key == ITK_BACKSPACE) {
+            if (SamplePos > 0) {
+                SamplePos--;
+                name_delete(nm, SamplePos);
+            }
+            return 1;
+        }
+        if (key == ITK_DEL) {
+            name_delete(nm, SamplePos);
+            return 1;
+        }
     }
     return generic_list_lkey(key, 99);
 }
 
 static int instr_list_lkey(int key)
 {
+    char *nm = Song.Ins[ListSel].InstrumentName;
+
+    if (InstrumentEdit) {       /* I_PostInstrumentWindow edit mode */
+        if (key == ITK_ESC || key == ITK_ENTER) {
+            InstrumentEdit = 0;
+            return 1;
+        }
+        if (key >= 32 && key < 127) {
+            name_insert(nm, InstrumentPos, (char)key);
+            if (InstrumentPos < 24)         /* I_InstrumentRight */
+                InstrumentPos++;
+            return 1;
+        }
+        switch (key) {
+        case ITK_BACKSPACE:
+            if (InstrumentPos > 0) {
+                InstrumentPos--;
+                name_delete(nm, InstrumentPos);
+            }
+            return 1;
+        case ITK_DEL:
+            name_delete(nm, InstrumentPos);
+            return 1;
+        case ITK_LEFT:  if (InstrumentPos > 0)  InstrumentPos--; return 1;
+        case ITK_RIGHT: if (InstrumentPos < 24) InstrumentPos++; return 1;
+        default:
+            break;                          /* list nav still works */
+        }
+    }
     if (key == ITK_ENTER) {                 /* IT: Enter = load instrument */
         instrument_library_requester();
+        return 1;
+    }
+    if (key == ' ') {                       /* Spacebar enters edit mode
+                                               (I_PostInstrumentWindow7) */
+        InstrumentEdit = 1;
+        InstrumentPos = 0;
         return 1;
     }
     return generic_list_lkey(key, 99);
@@ -7461,16 +7601,25 @@ static int instr_list_lkey(int key)
 
 static void sample_list_lclick(int row, int mx, int mpx)
 {
-    (void)mx; (void)mpx;
+    (void)mpx;
     if (row >= 0 && SmpListTop + row < 99)
         ListSel = SmpListTop + row;
+    /* I_SelectInstrument: click position places the name cursor
+     * (left of the name = the note-play stop) */
+    SamplePos = (mx >= 8 && mx - 8 < 25) ? mx - 8 : 25;
 }
 
 static void instr_list_lclick(int row, int mx, int mpx)
 {
-    (void)mx; (void)mpx;
+    (void)mpx;
     if (row >= 0 && InsListTop + row < 99)
         ListSel = InsListTop + row;
+    if (InstrumentEdit) {                   /* I_SelectInstrument2 */
+        int p = mx - 5;
+        if (p < 0)  p = 0;
+        if (p > 24) p = 24;
+        InstrumentPos = p;
+    }
 }
 
 static int order_list_lkey(int key)
@@ -7999,6 +8148,49 @@ static int confirm_overwrite(void (*bg)(void))
             return 0;
         case ITK_ENTER:
             return sel == 0;
+        default:
+            break;
+        }
+    }
+}
+
+/* O1_StereoSampleList (feature 013): the "Loading Stereo Sample"
+ * Left/Right requester, drawn over the current screen as the original
+ * overlays the loader. Returns 64 (left) or 64+128 (right). */
+static int stereo_choice_prompt(void)
+{
+    int sel = 0;                        /* 0 = Left, 1 = Right */
+
+    for (;;) {
+        int key;
+
+        Screen_DrawBox(26, 22, 54, 29, 3);
+        Screen_DrawString(30, 24, "Loading Stereo Sample", 0x20);
+        draw_button_style(30, 26, 39, 28, 8, "  Left", 0, sel == 0);
+        draw_button_style(40, 26, 50, 28, 8, "  Right", 0, sel == 1);
+        Screen_Update();
+
+        key = Key_Get();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (key) {
+        case ITK_QUIT: Running = 0; return 64;
+        case 'l': case 'L': case ITK_ESC:
+            return 64;
+        case 'r': case 'R':
+            return 64 + 128;
+        case ITK_LEFT: case ITK_RIGHT: case ITK_TAB: case ITK_SHIFT_TAB:
+            sel ^= 1;
+            break;
+        case ITK_ENTER: case ' ':
+            return sel ? 64 + 128 : 64;
+        case ITK_MOUSE: {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (m.y >= 26 && m.y <= 28) {
+                if (m.x >= 30 && m.x <= 39) return 64;
+                if (m.x >= 40 && m.x <= 50) return 64 + 128;
+            }
+            break; }
         default:
             break;
         }
@@ -8860,7 +9052,7 @@ static int act_view_orders(void)   { Screen = SCR_ORDER;   return 1; }
 static int act_view_vars(void)     { Screen = SCR_VARS;    return 1; }
 static int act_help(void)          { Screen = SCR_HELP;    return 1; }
 static int act_message_editor(void)
-{ Screen = SCR_MESSAGE; return 1; }
+{ Screen_DefineHiASCII(); Screen = SCR_MESSAGE; return 1; }
 
 static int act_file_load(void)  { file_requester(); return 1; }
 static int act_file_new(void)   { new_song(); status("New song."); return 1; }
@@ -9033,9 +9225,17 @@ static void handle_global(int key)
             handle_message_key(ITK_ESC);    /* edit -> view mode */
             return;
         }
+        if (Screen == SCR_INSTRUMENTS && InstrumentEdit) {
+            InstrumentEdit = 0;             /* leave name editing */
+            return;
+        }
         main_menu();
         return;
-    case ITK_SHIFT_F9: Screen = SCR_MESSAGE; return;
+    case ITK_SHIFT_F9:                  /* Glbl_Shift_F9: hi-ASCII
+                                           charset for the message */
+        Screen_DefineHiASCII();
+        Screen = SCR_MESSAGE;
+        return;
     case ITK_F1:  Screen = SCR_HELP; return;
     case ITK_F2:                        /* Glbl_F2 loads the packed-cell
                                            charsets for the small views */
@@ -9757,6 +9957,56 @@ int main(int argc, char **argv)
                     lib_ok = 0;
                 }
 
+                /* IFF 8SVX (feature 013): chunk walk incl. the
+                 * original's VHDR field quirk (loop 32..48) */
+                n = RIS_ScanModule("testdata/lib_test.iff", ents,
+                                   LIB_MAX);
+                memset(&got, 0, sizeof(got));
+                if (n != 1 || ents[0].Format != 17 ||
+                    ents[0].hdr.Length != 256 ||
+                    ents[0].hdr.LoopBeg != 32 ||
+                    ents[0].hdr.LoopEnd != 48 ||
+                    !(ents[0].hdr.Flags & 16) ||
+                    ents[0].hdr.C5Speed != 16726 ||
+                    memcmp(ents[0].hdr.SampleName, "iff fixture!", 12) ||
+                    !RIS_LoadSample(&ents[0], &got) || !got.Data) {
+                    fprintf(stderr, "  iff scan/rip failed\n");
+                    lib_ok = 0;
+                } else {
+                    const int8_t *p = (const int8_t *)got.Data;
+                    for (k = 0; k < 256; k++)
+                        if (p[k] != (int8_t)((k * 5) & 0xFF)) {
+                            fprintf(stderr, "  iff data mismatch\n");
+                            lib_ok = 0;
+                            break;
+                        }
+                }
+                free(got.Data);
+
+                /* TX Wave (feature 013): 12-bit unpack to 16-bit */
+                n = RIS_ScanModule("testdata/lib_test.txw", ents,
+                                   LIB_MAX);
+                memset(&got, 0, sizeof(got));
+                if (n != 1 || ents[0].Format != 13 ||
+                    ents[0].hdr.Length != 80 ||
+                    ents[0].hdr.LoopBeg != 48 ||
+                    ents[0].hdr.LoopEnd != 80 ||
+                    ents[0].hdr.Flags != (1 | 2 | 16) ||
+                    ents[0].hdr.C5Speed != 33000 ||
+                    !RIS_LoadSample(&ents[0], &got) || !got.Data) {
+                    fprintf(stderr, "  txw scan/rip failed\n");
+                    lib_ok = 0;
+                } else {
+                    const int16_t *p = (const int16_t *)got.Data;
+                    for (k = 0; k < 80; k++)
+                        if (p[k] != (int16_t)((k << 5) & 0xFFF0)) {
+                            fprintf(stderr, "  txw data mismatch\n");
+                            lib_ok = 0;
+                            break;
+                        }
+                }
+                free(got.Data);
+
                 /* save -> re-scan -> rip round trip */
                 {
                     sample_t *src = &Song.Smp[2];   /* itdemo sample 3 */
@@ -10361,6 +10611,114 @@ int main(int argc, char **argv)
                     s3m_ok ? "S3M OK" : "S3M FAIL");
         }
 
+        /* Polish batch (feature 013, US1): Alt-U pattern update,
+         * in-list name editing, hi-ASCII bank, stereo-hook default. */
+        {
+            int u_ok = 1, i;
+            uint16_t keep = CurPattern;
+            static instrument_t keepins;
+            char keepnm[26];
+
+            /* -- Alt-U: table entry (note 60, sample 3) on instrument
+             * 5 remaps a (60,3) cell to (10, ins 5) -- */
+            commit_current_pattern();
+            load_pattern(199);
+            CurRow = CurChan = CurCol = 0;
+            memset(&Grid[0], 0, sizeof(editcell_t));
+            Grid[0].mask = CM_NOTE | CM_INS;
+            Grid[0].note = 61;          /* engine note 60 */
+            Grid[0].ins  = 3;
+            commit_current_pattern();
+            keepins = Song.Ins[4];
+            memset(Song.Ins[4].NoteSampleTable, 0, 240);
+            Song.Ins[4].NoteSampleTable[10 * 2]     = 60;
+            Song.Ins[4].NoteSampleTable[10 * 2 + 1] = 3;
+            i = ListSel;
+            ListSel = 4;                /* instrument 5 */
+            pattern_update_instruments();
+            ListSel = i;
+            if (Grid[0].note != 11 || Grid[0].ins != 5)
+                u_ok = 0;               /* engine 10 + instrument 5 */
+            Song.Ins[4] = keepins;
+            free(Song.Patterns[199].PackedData);
+            Song.Patterns[199].PackedData = NULL;
+            Song.Patterns[199].Rows = 0;
+            Song.Patterns[199].DataLength = 0;
+            load_pattern(keep);
+
+            /* -- F3 name editing: insert x2 + backspace x2 round trip */
+            i = ListSel; ListSel = 0;
+            memcpy(keepnm, Song.Smp[0].SampleName, 26);
+            SamplePos = 25;
+            sample_list_lkey(ITK_HOME);
+            if (SamplePos != 0)
+                u_ok = 0;
+            sample_list_lkey('H');
+            sample_list_lkey('i');
+            if (Song.Smp[0].SampleName[0] != 'H' ||
+                Song.Smp[0].SampleName[1] != 'i' ||
+                Song.Smp[0].SampleName[2] != keepnm[0] || SamplePos != 2)
+                u_ok = 0;
+            sample_list_lkey(ITK_BACKSPACE);
+            sample_list_lkey(ITK_BACKSPACE);
+            if (Song.Smp[0].SampleName[0] != keepnm[0] || SamplePos != 0)
+                u_ok = 0;
+            memcpy(Song.Smp[0].SampleName, keepnm, 26);
+            sample_list_lkey(ITK_END);  /* back to note-play mode */
+
+            /* -- F4 edit mode (Spacebar toggles; Enter leaves) -- */
+            memcpy(keepnm, Song.Ins[0].InstrumentName, 26);
+            instr_list_lkey(' ');
+            if (!InstrumentEdit || InstrumentPos != 0)
+                u_ok = 0;
+            instr_list_lkey('X');
+            if (Song.Ins[0].InstrumentName[0] != 'X' ||
+                Song.Ins[0].InstrumentName[1] != keepnm[0] ||
+                InstrumentPos != 1)
+                u_ok = 0;
+            instr_list_lkey(ITK_BACKSPACE);
+            if (Song.Ins[0].InstrumentName[0] != keepnm[0])
+                u_ok = 0;
+            instr_list_lkey(ITK_ENTER);
+            if (InstrumentEdit)
+                u_ok = 0;
+            memcpy(Song.Ins[0].InstrumentName, keepnm, 26);
+            ListSel = i;
+
+            /* -- hi-ASCII: bank-B char 176 rasterizes as the ROM
+             * glyph after Screen_DefineHiASCII -- */
+            {
+                uint32_t *px = (uint32_t *)malloc(640u * 400u * 4u);
+                if (!px) {
+                    u_ok = 0;
+                } else {
+                    uint32_t bg;
+                    Screen_Clear(0x00);
+                    Screen_PutChar(1, 0, ' ', 0x08);
+                    Screen_PutChar(0, 0, 176, 0x08);  /* fg bit 3 ->
+                                                         font bank B */
+                    Screen_DefineHiASCII();
+                    Screen_Rasterize(px);
+                    bg = px[8];         /* first pixel of the blank */
+                    for (i = 0; i < 8; i++) {
+                        int lit = (IT_FontROM[176][0] >> (7 - i)) & 1;
+                        if ((px[i] != bg) != lit)
+                            u_ok = 0;
+                    }
+                    free(px);
+                }
+                Screen_DefineSmallNumbers();    /* restore bank B */
+            }
+
+            /* -- headless stereo default stays silent-left -- */
+            if (Load_StereoChoice != NULL)
+                u_ok = 0;
+
+            redraw();
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    u_ok ? "UPD OK" : "UPD FAIL");
+        }
+
         commit_current_pattern();
         fprintf(stderr, "ITED selftest: completed %zu actions, "
                 "pattern %u, %u rows, cursor r%d c%d col%d, "
@@ -10398,6 +10756,10 @@ int main(int argc, char **argv)
     Screen_DefineSmallNumbers();        /* editor starts on F2; the small
                                            views need the packed charsets */
     signal(SIGINT, on_sig);
+
+    /* interactive only: the stereo Left/Right requester (feature 013);
+     * headless paths (selftest, shots) keep the silent-left default */
+    Load_StereoChoice = stereo_choice_prompt;
 
     while (Running && !g_sig) {
         int key = Key_Get();

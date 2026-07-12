@@ -626,6 +626,105 @@ static int scan_pat(const uint8_t *d, size_t n, const char *path,
  *    every other channel count is treated as mono;
  *  - length = min(size dword, 4177910) bytes -> frames (>>1 per
  *    16-bit and stereo); C5Speed = the rate's low 16 bits only. */
+/* D_GetSampleInfo13 (IT_D_INF.INC 1002; feature 013): IFF 'FORM' with
+ * '8SVX' (8-bit) or '16SV' (16-bit) -- the "AIFF Sample" record,
+ * format code 17. Chunk walk from offset 12 advancing by the SIZE
+ * field's LOW word + 8 (original 16-bit arithmetic); NAME fills the
+ * sample name (cap 25), VHDR the loop fields + rate, BODY finishes
+ * the record. Big-endian values halve for 16-bit samples
+ * (D_GetSampleInfoBSwap); the rate does not. 16SV data loads
+ * little-endian (Cvt 1 only) -- original quirk kept. */
+static int scan_iff(const uint8_t *d, size_t n, const char *path,
+                    slibent_t *ents)
+{
+    sample_t *s;
+    size_t si = 12;
+    uint8_t fl;
+    int sh;
+
+    if (n < 12 || memcmp(d, "FORM", 4) != 0)
+        return -1;
+    if (!memcmp(d + 8, "16SV", 4))
+        fl = 3;
+    else if (!memcmp(d + 8, "8SVX", 4))
+        fl = 1;
+    else
+        return -1;
+    sh = (fl & 2) ? 1 : 0;
+
+    s = ent_init(&ents[0], path, 17);
+    s->Flags = fl;
+
+    for (;;) {
+        uint32_t adv;
+
+        if (si + 8 > n)
+            return -1;
+        if (!memcmp(d + si, "NAME", 4)) {
+            int l = b16be(d, n, si + 6);
+            if (l > 25)
+                l = 25;
+            name_raw(s, d, n, si + 8, l);
+        } else if (!memcmp(d + si, "VHDR", 4)) {
+            uint32_t lb = b32be(d, n, si + 0x0C) >> sh;
+            uint32_t t  = b32be(d, n, si + 0x10) >> sh;
+            if (t)
+                s->Flags |= 16;
+            s->LoopBeg = lb;
+            s->LoopEnd = lb + t;
+            s->C5Speed = b16be(d, n, si + 0x14);
+        } else if (!memcmp(d + si, "BODY", 4)) {
+            s->GvL = 64;
+            s->Vol = 64;
+            s->Cvt = 1;                 /* signed */
+            s->Length = b32be(d, n, si + 4) >> sh;
+            s->OffsetInFile = (uint32_t)(si + 8);
+            ents[0].FileSize = b32be(d, n, si + 4);
+            return 1;
+        }
+        adv = (uint32_t)b16be(d, n, si + 6) + 8;
+        si += adv;
+    }
+}
+
+/* TXWaveSampleIdentification (IT_D_INF.INC 632; feature 013): Yamaha
+ * TX16W wave, format code 13. Byte 16h & 7Fh must be 49h (== 49h
+ * exactly also sets the loop flag); 17-bit attack/loop lengths at
+ * 18h/1Bh; rate by byte 17h; data at offset 20h; Cvt = 11h
+ * (signed | TX 12-bit packed). */
+static int scan_txw(const uint8_t *d, size_t n, const char *path,
+                    slibent_t *ents)
+{
+    static const uint8_t ident[16] =
+        { 'L','M','8','9','5','3',0,0,0,0,0,0,0,0,0,0 };
+    sample_t *s;
+    uint32_t attack, looplen;
+    uint8_t fb;
+
+    if (n < 32 || memcmp(d, ident, 16) != 0)
+        return -1;
+    fb = b8(d, n, 0x16);
+    if ((fb & 0x7F) != 0x49)
+        return -1;
+
+    s = ent_init(&ents[0], path, 13);
+    memset(s->SampleName, 0, 26);
+    memcpy(s->SampleName, s->DOSFileName, 12);
+    s->Vol = 64;
+    s->Flags = (uint8_t)(1 | 2 | (fb == 0x49 ? 16 : 0));
+    s->Cvt = 0x11;
+    attack  = b32(d, n, 0x18) & 0x1FFFF;
+    looplen = b32(d, n, 0x1B) & 0x1FFFF;
+    s->Length  = attack + looplen;
+    s->LoopBeg = attack;
+    s->LoopEnd = attack + looplen;
+    s->C5Speed = (b8(d, n, 0x17) < 2) ? 33000
+               : (b8(d, n, 0x17) == 2) ? 50000 : 16000;
+    s->OffsetInFile = 0x20;
+    ents[0].FileSize = (s->Length * 3 + 1) / 2;     /* packed bytes */
+    return 1;
+}
+
 static int scan_wav(const uint8_t *d, size_t n, const char *path,
                     slibent_t *ents)
 {
@@ -753,6 +852,10 @@ int RIS_ScanModule(const char *path, slibent_t *ents, int max)
         cnt = scan_pat(d, n, path, ents, max);
     } else if (n >= 16 && !memcmp(d + 8, "WAVEfmt ", 8)) {
         cnt = scan_wav(d, n, path, ents);
+    } else if (n >= 12 && !memcmp(d, "FORM", 4)) {
+        cnt = scan_iff(d, n, path, ents);
+    } else if (n >= 16 && !memcmp(d, "LM8953", 6)) {
+        cnt = scan_txw(d, n, path, ents);
     } else if (has_ext(path, ".KRZ")) {
         cnt = scan_krz(d, n, path, ents, max);
     } else if ((ch = mod_sig_channels(d, n)) != 0) {
@@ -805,9 +908,11 @@ const char *RIS_FormatName(uint8_t fmt)
     case 10: return "Multi Tracker Sample";
     case 11: return "Composer 669 Sample";
     case 12: return "Farandole Sample";
+    case 13: return "TX Wave Sample";
     case 14: return "MOD Sample";
     case 15: return "KRZ Sample";
     case 16: return "GUS Patch";
+    case 17: return "AIFF Sample";
     default: return "Unknown sample format";
     }
 }
@@ -816,7 +921,8 @@ int RIS_KnownExt(const char *name)
 {
     static const char *ext[] = {
         ".IT", ".S3M", ".XM", ".MOD", ".MTM", ".669",
-        ".PTM", ".FAR", ".KRZ", ".PAT", ".ITS", ".WAV", NULL
+        ".PTM", ".FAR", ".KRZ", ".PAT", ".ITS", ".WAV",
+        ".IFF", ".8SV", ".16S", ".TXW", ".W01", NULL
     };
     int i;
 
