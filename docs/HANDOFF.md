@@ -5,7 +5,7 @@
 > code is organised**, and **what to do next**. For the staged editor plan
 > see `EDITOR-PORT-PLAN.md`; for the user-facing overview see `../README.md`.
 
-Last updated: 2026-07-11.
+Last updated: 2026-07-15.
 
 **State in one paragraph:** the engine has been done and verified since
 the start; the editor now covers the full planned surface — the real IT
@@ -37,7 +37,9 @@ the macOS verification pass (spec 001 T022 — needs a Mac); the only
 remaining fidelity leftover is the Ctrl-V default-volume display
 toggle. Selftest now reports 11 blocks OK
 (F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2/TERM/S3M/UPD/FFT) on Windows and
-Linux.
+Linux. 2026-07-15: the pixel output carries a diagonal "2026 AI port"
+corner ribbon (rasterizer-stage, `ITED_NOBANNER=1` hides it — see the
+capture-workflow note in §5).
 
 ---
 
@@ -573,6 +575,9 @@ Non-interactive editor checks (no terminal/window/audio needed):
   the F3 selection.
   **This is the visual-iteration workflow:** render, convert to PNG
   (PowerShell `System.Drawing`), compare against `..\screenshots\`.
+  Set `ITED_NOBANNER=1` when comparing against original screenshots —
+  the pixel output otherwise carries the diagonal "2026 AI port"
+  corner ribbon (rasterizer-stage only; cells/dumps are unaffected).
 
 Test modules live in `testdata/` (`beyond_network.it`, `itdemo.it`,
 `quests_end.it`, `synthscape_filters.it`); the generated import/library

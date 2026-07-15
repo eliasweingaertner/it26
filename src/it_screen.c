@@ -265,6 +265,42 @@ void Screen_SetOverlay(const uint8_t *pix, const uint8_t *pal6)
     }
 }
 
+/* "2026 AI port" corner ribbon (port marking, not in the original):
+ * drawn diagonally across the top-right corner of the pixel output
+ * only.  The glyphs are the ROM font sampled on the 45-degree grid
+ * (u=x+y, v=x-y halved), which rotates them and scales them to
+ * 1/sqrt(2) of cell size in one step.  Cell contents (ITED_DUMP
+ * hashes) and the terminal backend are untouched; ITED_NOBANNER=1
+ * hides it for reference-screenshot comparisons. */
+static void RasterizeBanner(uint32_t *px)
+{
+    static const char text[] = "2026 AI port";
+    static const int u0 = 543, v0 = 537; /* text origin along/across */
+    static int state;                    /* 0 unknown, 1 on, 2 off */
+    int x, y;
+
+    if (!state)
+        state = getenv("ITED_NOBANNER") ? 2 : 1;
+    if (state == 2)
+        return;
+
+    for (y = 0; y <= 122; y++) {
+        int xhi = 541 + y < 639 ? 541 + y : 639;
+        for (x = 518 + y; x <= xhi; x++) {
+            int ty = (v0 - (x - y)) >> 1;   /* -2..9: glyph row/border */
+            int on = 0;
+            if (ty >= 0 && ty < 8) {
+                int tx = (x + y - u0) >> 1; /* position along the text */
+                if (tx >= 0 && tx < 8 * (int)(sizeof(text) - 1))
+                    on = IT_FontROM[(uint8_t)text[tx >> 3]][ty]
+                         & (0x80 >> (tx & 7));
+            }
+            px[y*640 + x] = on ? 0xFFFFFF
+                          : (ty == -2 || ty == 9) ? 0x500000 : 0x900000;
+        }
+    }
+}
+
 void Screen_Rasterize(uint32_t *px)
 {
     int cy, cx, row;
@@ -296,6 +332,8 @@ void Screen_Rasterize(uint32_t *px)
             }
         }
     }
+
+    RasterizeBanner(px);
 }
 
 int Screen_WriteBMP(const char *path)
