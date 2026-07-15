@@ -266,39 +266,54 @@ void Screen_SetOverlay(const uint8_t *pix, const uint8_t *pal6)
 }
 
 /* "2026 AI port" corner ribbon (port marking, not in the original):
- * drawn diagonally across the top-right corner of the pixel output
- * only.  The glyphs are the ROM font sampled on the 45-degree grid
- * (u=x+y, v=x-y halved), which rotates them and scales them to
- * 1/sqrt(2) of cell size in one step.  Cell contents (ITED_DUMP
- * hashes) and the terminal backend are untouched; ITED_NOBANNER=1
- * hides it for reference-screenshot comparisons. */
+ * a diagonal strip across the top-right corner of the pixel output
+ * only, with the text at half the cell font size -- hand-made 3x5
+ * glyphs in the ROM font's style (the ROM font itself is unreadable
+ * below ~6px), drawn upright and stepping down the 45-degree
+ * baseline.  Cell contents (ITED_DUMP hashes) and the terminal
+ * backend are untouched; ITED_NOBANNER=1 hides it for
+ * reference-screenshot comparisons. */
 static void RasterizeBanner(uint32_t *px)
 {
-    static const char text[] = "2026 AI port";
-    static const int u0 = 543, v0 = 537; /* text origin along/across */
+    /* "2026 AI port"; bits 0x80/0x40/0x20 = glyph columns, col 3 =
+     * inter-character spacing (always clear) */
+    static const uint8_t tiny[][5] = {
+        {0xE0,0x20,0xE0,0x80,0xE0},  /* 2 */
+        {0xE0,0xA0,0xA0,0xA0,0xE0},  /* 0 */
+        {0xE0,0x80,0xE0,0xA0,0xE0},  /* 6 */
+        {0x00,0x00,0x00,0x00,0x00},  /* space */
+        {0xE0,0xA0,0xE0,0xA0,0xA0},  /* A */
+        {0xE0,0x40,0x40,0x40,0xE0},  /* I */
+        {0x00,0xC0,0xA0,0xC0,0x80},  /* p */
+        {0x00,0xE0,0xA0,0xA0,0xE0},  /* o */
+        {0x00,0xE0,0x80,0x80,0x80},  /* r */
+        {0x40,0xE0,0x40,0x40,0x60},  /* t */
+    };
+    static const uint8_t map[12] = {0,1,0,2,3,4,5,3,6,7,8,9};
     static int state;                    /* 0 unknown, 1 on, 2 off */
-    int x, y;
+    int x, y, i, r, c;
 
     if (!state)
         state = getenv("ITED_NOBANNER") ? 2 : 1;
     if (state == 2)
         return;
 
-    for (y = 0; y <= 122; y++) {
-        int xhi = 541 + y < 639 ? 541 + y : 639;
-        for (x = 518 + y; x <= xhi; x++) {
-            int ty = (v0 - (x - y)) >> 1;   /* -2..9: glyph row/border */
-            int on = 0;
-            if (ty >= 0 && ty < 8) {
-                int tx = (x + y - u0) >> 1; /* position along the text */
-                if (tx >= 0 && tx < 8 * (int)(sizeof(text) - 1))
-                    on = IT_FontROM[(uint8_t)text[tx >> 3]][ty]
-                         & (0x80 >> (tx & 7));
-            }
-            px[y*640 + x] = on ? 0xFFFFFF
-                          : (ty == -2 || ty == 9) ? 0x500000 : 0x900000;
+    /* the band: diagonal strip x-y in [578,590], darker edge lines */
+    for (y = 0; y <= 61; y++) {
+        int xhi = 590 + y < 639 ? 590 + y : 639;
+        for (x = 578 + y; x <= xhi; x++) {
+            int v = x - y;
+            px[y*640 + x] = (v == 578 || v == 590) ? 0x004000 : 0x007000;
         }
     }
+
+    /* the text: upright glyphs stepping down the 45-degree baseline
+     * (rotated strokes alias into dots at this size) */
+    for (i = 0; i < 12; i++)
+        for (r = 0; r < 5; r++)
+            for (c = 0; c < 3; c++)
+                if (tiny[map[i]][r] & (0x80 >> c))
+                    px[(4 + i*4 + r)*640 + 589 + i*4 + c] = 0xFFFFFF;
 }
 
 void Screen_Rasterize(uint32_t *px)

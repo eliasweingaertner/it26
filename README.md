@@ -159,13 +159,14 @@ Behavioral:
 - MIDI *output hardware* is not implemented; the MIDI macro engine
   (`MIDITranslate`) is fully ported because Zxx macros drive the
   resonant filters through it.
-- A diagonal "2026 AI port" ribbon is drawn across the top-right
-  corner of the pixel output (next to the header's copyright line) to
-  distinguish the port from the original at a glance. It is painted at
-  the rasterizer stage — the ROM font sampled on the 45° grid, ~70%
-  cell size — so text cells, dump hashes and the terminal backend are
-  untouched. `ITED_NOBANNER=1` hides it (e.g. for screenshot
-  comparisons against the DOS original).
+- A diagonal "2026 AI port" ribbon (green, #007000) is drawn across
+  the top-right corner of the pixel output (next to the header's
+  copyright line) to distinguish the port from the original at a
+  glance. It is painted at the rasterizer stage — hand-made 3x5
+  glyphs at half the cell font size, upright on the 45° baseline —
+  so text cells, dump hashes and the terminal backend are untouched.
+  `ITED_NOBANNER=1` hides it (e.g. for screenshot comparisons
+  against the DOS original).
 
 Info page (F5):
 - IT 2.17 has **no oscilloscope**: what the track view draws are
