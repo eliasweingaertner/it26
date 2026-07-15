@@ -1,12 +1,15 @@
-# ittrack — native cross-platform port of the Impulse Tracker 2.17 engine
+# ittrack — a native cross-platform port of Impulse Tracker
 
-A 1:1 C transliteration of Jeffrey Lim's Impulse Tracker playback engine,
-ported directly from the released x86 assembly source
-(https://github.com/jthlim/impulse-tracker, the author's own publication;
-the herrnst/impulsetracker mirror is byte-identical in every file this
-port is based on). This is **not** a generic
-module player wired to .IT files — the playing routines are the original
-ones, translated instruction-for-instruction:
+A 1:1 C port of Jeffrey Lim's Impulse Tracker for Windows, Linux and
+macOS: the complete 2.17 playback engine transliterated
+instruction-for-instruction from the released x86 assembly source
+(https://github.com/jthlim/impulse-tracker, the author's own
+publication; the herrnst/impulsetracker mirror is byte-identical in
+every file this port is based on), and on top of it a faithful
+reproduction of the editor — the original screen layouts, font,
+palette, key surface and behaviours, taken from the same source
+rather than approximated. This is **not** a generic module player
+wired to .IT files — the playing routines are the original ones:
 
 | Port file        | Original source                | What it is |
 |------------------|--------------------------------|------------|
@@ -16,6 +19,13 @@ ones, translated instruction-for-instruction:
 | `src/it_driver.c` | `WAVDRV.ASM` + `MIXWAV.INC` + `WAV.MIX` | the high-quality software driver (= ITWAV.DRV): 256 channels, cubic spline interpolation, the IT resonant filter (`F0 F0` MIDI intercept, coefficients per `Q.INC`), volume ramping, click removal, error-feedback dither |
 | `src/it_load.c`  | (re-implementation of the `IT_DISK.ASM` load path against `ITTECH.TXT`) | .IT loader; keeps patterns in the packed on-disk format because the engine decodes packed rows directly, IT 2.14/2.15 sample decompression, embedded/default MIDI macros |
 | `src/it_structs.h` | `InternalDocumentation/CHANNEL.TXT` | host/slave channel layouts, byte-for-byte, enforced with `_Static_assert` |
+| `src/it_save.c`  | `IT_DISK.ASM`                  | .IT writer with the IT 2.14/2.15 sample compressor, and the `D_SaveS3M` S3M exporter with its lossy-conversion quirks |
+| `src/it_import.c` | IT's own importers             | whole-module S3M/XM/MOD/MTM/669 conversion, quirks included |
+| `src/it_ris.c`   | `D_GetSampleInfo` + `Load*SamplesInModule` | standalone sample/instrument identification and the library rippers (WAV, IFF 8SVX/16SV, TX16W, .ITS/.ITI/.XI, and samples/instruments out of other modules) |
+| `src/it_editor.c` | `IT_F.ASM`, `IT_PE.ASM`, `IT_OBJ1.ASM`, `IT_S.ASM`, `IT_FOUR.ASM` | the editor: IT's object model, every screen's layout data, the key layers, the Fourier spectrum analyser |
+| `src/it_screen*.c`, `src/it_vgadata.c` | `IT_S.ASM` | 80x50 cell display layer with the byte-exact VGA font/palette/glyph data, behind three presentation backends (Win32, SDL2, VT terminal) |
+| `src/it_pattern.c` | (port-side)                   | unpacked pattern grid for editing; re-packs to the on-disk format the engine plays, verified byte-identical |
+| `src/main.c`     | (port-side)                    | `itplay` command-line player / WAV renderer |
 
 The build configuration mirrors the 2.17 release (`SWITCH.INC`):
 `USEFPUCODE=1` (FPU slide math; the 2.14 lookup-table variants are also
@@ -25,26 +35,77 @@ ported under `USEFPUCODE=0`), and the driver uses `WAVSWITC.INC` settings
 
 ## Building
 
-Any C11 compiler. With CMake:
-
-    cmake -B build && cmake --build build --config Release
-
-or directly with MSVC:
-
-    cl /std:c11 /O2 /D_CRT_SECURE_NO_WARNINGS /Fe:itplay.exe src\*.c
-
-or gcc/clang (Linux/macOS):
-
-    cc -std=c11 -O2 -o itplay src/*.c -lm -lpthread -ldl
-
-Audio output is miniaudio (vendored, single header) — WASAPI on Windows,
+Any C11 compiler; there are no required external dependencies. Audio
+output is miniaudio (vendored, single header) — WASAPI on Windows,
 CoreAudio on macOS, ALSA/PulseAudio on Linux.
+
+### CMake (all platforms)
+
+    cmake -B build
+    cmake --build build --config Release
+
+builds three targets:
+
+| Target | What it is |
+|--------|------------|
+| `itplay` | command-line player / WAV renderer |
+| `ited`   | the editor |
+| `test_pattern` | regression harness (pattern round-trip + save-path audio gate) |
+
+On Windows run this from a **x64 Native Tools** (vcvars64) prompt —
+the VS Build Tools ship `cmake` and `ninja` inside it even when
+neither is on the general PATH.
 
 The editor's authentic pixel window on Linux/macOS uses **SDL2**, an
 optional dependency: install the dev package (`libsdl2-dev` /
-`SDL2-devel` / `brew install sdl2`) and CMake builds it automatically.
-Without SDL2 — or with `-DITED_SDL=OFF` — `ited` still builds and runs
-with the terminal backend, and the `itplay` player never needs SDL.
+`SDL2-devel` / `brew install sdl2`) and CMake picks it up
+automatically. Without SDL2 — or with `-DITED_SDL=OFF` — `ited` still
+builds and runs with the terminal backend, and `itplay` /
+`test_pattern` never need SDL.
+
+### Direct compiler invocations (no CMake)
+
+MSVC, from a vcvars64 prompt (`^` continues the line in cmd; put it
+on one line in PowerShell):
+
+    cl /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:itplay.exe ^
+       src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c ^
+       src\it_load.c src\it_pattern.c src\it_save.c src\main.c
+
+    cl /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe ^
+       src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c ^
+       src\it_load.c src\it_pattern.c src\it_save.c src\it_import.c ^
+       src\it_ris.c src\it_screen.c src\it_screen_win32.c ^
+       src\it_vgadata.c src\it_editor.c user32.lib gdi32.lib
+
+gcc/clang on Linux/macOS (terminal-backend editor; use CMake if you
+want the SDL2 pixel window):
+
+    cc -std=c11 -O2 -o itplay src/it_music.c src/it_effects.c \
+       src/it_tables.c src/it_driver.c src/it_load.c src/it_pattern.c \
+       src/it_save.c src/main.c -lm -lpthread -ldl
+
+    cc -std=c11 -O2 -o ited src/it_music.c src/it_effects.c \
+       src/it_tables.c src/it_driver.c src/it_load.c src/it_pattern.c \
+       src/it_save.c src/it_import.c src/it_ris.c src/it_screen.c \
+       src/it_vgadata.c src/it_editor.c -lm -lpthread -ldl
+
+`test_pattern` is the engine sources plus `tests/test_pattern.c`.
+Python is only needed to regenerate the checked-in test fixtures
+(`tools/gen_import_tests.py`) or the VGA data tables
+(`tools/gen_vgadata.py` — `src/it_vgadata.c` is generated, never
+hand-edited); building requires neither.
+
+### Verifying a build
+
+    ITED_SELFTEST=1 ITED_TERM=1 ited testdata/itdemo.it    # scripted editor smoke test
+    test_pattern testdata/itdemo.it --roundtrip            # pack/unpack + save-path audio gate
+    itplay -w out.wav testdata/itdemo.it                   # renders are bit-deterministic
+
+The selftest prints 11 `OK` blocks (F5/IMPORT/F3/SAVE/LIB/PE/PE2/
+TERM/S3M/UPD/FFT) and a summary line; `--roundtrip` re-renders the
+module after saving it in every format and demands byte-identical
+audio.
 
 ## Usage
 
@@ -60,7 +121,9 @@ bit-deterministic).
 `ited` is the editor (see below). It opens a 640x400 pixel window (2x
 scaled) that reproduces IT's VGA 80x50 text mode with the real font,
 palette and bevel glyphs — via the Win32 backend on Windows and the SDL2
-backend on Linux/macOS (built when SDL2 is present; see Building). Set
+backend on Linux/macOS (built when SDL2 is present; see Building).
+**Alt-Enter** toggles borderless fullscreen (letterboxed, aspect
+preserved). Set
 `ITED_TERM=1` to force the truecolor terminal backend instead, which is
 also the automatic fallback when no display is available (resize your
 terminal to at least 80x50). On POSIX the terminal backend carries the
@@ -68,6 +131,10 @@ full input surface: Alt/Ctrl/Shift key combos via the xterm encodings
 (ESC prefix, modified CSI, `modifyOtherKeys`) and mouse via SGR
 reporting — clicking, dragging thumbbars and pattern-grid clicks work
 over SSH.
+
+The pixel output carries a small diagonal "2026 AI port" ribbon in
+the top-right corner marking the port (`ITED_NOBANNER=1` hides it —
+see the fidelity notes).
 
 ## Editor (`ited`)
 
@@ -82,10 +149,12 @@ same WAV/hiqual driver. Screens and keys follow IT 2.x:
 | F1  | Help (key reference) |
 | F2  | Pattern editor |
 | F3 / F4 | Sample list / Instrument list (piano keys audition; **Enter = load sample/instrument** from another module or file, as in IT) |
-| F11 / F12 | Order list & panning / Song variables |
-| F5  | Play song + live info page (per-channel VU / sample / pan) |
+| F5  | Play song + live info page (all 11 view methods: track view, global volumes, note dots, …) |
 | F6 / F8 | Play current pattern / stop |
-| F9  | Load module (file requester) |
+| F9 / F10 | Load module (file requester) / Save module (.IT — IT214/IT215 compressed — or S3M export) |
+| Shift-F9 | Song message editor |
+| F11 / F12 | Order list & panning / Song variables |
+| Alt-F12 | Fourier spectrum analyser (scrolling spectrogram + bar spectrum over live playback) |
 | ESC | Main menu (the original menu tree: File, Playback, Sample, Instrument menus) |
 
 All screens are operable with IT's object model: Tab/Shift-Tab and the
@@ -325,19 +394,18 @@ Save (F10) / message editor:
 - Edit-history/timer blocks (Special
   bit 1 in ITTECH terms) are not written — the port keeps no timer
   data, which is also the original's behaviour when none exists.
-- Message editor: Alt-C (clear message) has no Alt in the key layer —
-  Ctrl-L is the stand-in. Ctrl-T toggles only the text colour (12/6);
-  the original also swaps in its hi-ASCII character set
-  (`S_DefineHIASCII`), which is not ported yet.
+- Message editor: Alt-C (clear message) is not wired in this screen's
+  key handler — Ctrl-L is the stand-in.
 
-## What about the editor?
+## Project docs
 
-This port deliberately preserves everything the editor builds on: the
-host/slave channel model, `Music_PlayNote`/freeplay mode (PlayMode 0,
-which exists only for the editor), pattern/sample/instrument memory
-layouts, and the engine entry points the UI calls. See
-`docs/EDITOR-PORT-PLAN.md` for the staged plan and the text-mode screen
-groundwork in `src/it_screen.*`.
+The editor was built in staged, individually gated features on top of
+the ported engine. `docs/EDITOR-PORT-PLAN.md` is the original staged
+plan; `docs/HANDOFF.md` is the living project handbook — current
+status, build/verification commands with the expected determinism
+hashes, a file map, layout facts and the roadmap. The only open items
+are a macOS verification pass and the Ctrl-V default-volume display
+toggle.
 
 ## License / credits
 
