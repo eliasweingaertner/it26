@@ -130,6 +130,17 @@ static void PumpEvents(void)
             }
             if (mod & KMOD_ALT) {           /* Alt combos (parity with
                                              * the Win32 backend) */
+                if (kc == SDLK_RETURN || kc == SDLK_KP_ENTER) {
+                    /* host concern, not an IT key: toggle fullscreen
+                     * (logical size keeps the letterbox + mouse map) */
+                    if (!e.key.repeat) {
+                        Uint32 fs = SDL_GetWindowFlags(Wnd)
+                                    & SDL_WINDOW_FULLSCREEN_DESKTOP;
+                        SDL_SetWindowFullscreen(Wnd,
+                            fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                    }
+                    break;
+                }
                 if (kc >= SDLK_a && kc <= SDLK_z) {
                     PushKey(ITK_ALT_A + (int)(kc - SDLK_a));
                     break;

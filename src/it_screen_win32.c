@@ -19,6 +19,7 @@
 #define PIX_W 640
 #define PIX_H 400
 #define SCALE 2
+#define WIN_STYLE (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX)
 
 static HWND      Wnd;
 static uint32_t  Pixels[PIX_W * PIX_H];
@@ -28,6 +29,11 @@ static int       KeyHead, KeyTail;
 static int       WantQuit;
 static int       MousePX, MousePY;      /* logical pixels 0..639/0..399 */
 static int       MouseB;
+static int       FullScr;               /* Alt-Enter borderless fullscreen */
+static WINDOWPLACEMENT SavedPlacement;
+static int       DstX, DstY;            /* letterboxed blit rect (for the */
+static int       DstW = PIX_W * SCALE;  /* window -> logical mouse map)   */
+static int       DstH = PIX_H * SCALE;
 
 static void PushKey(int k)
 {
@@ -64,11 +70,63 @@ static int MapVKey(WPARAM vk)
 static void PaintWindow(HDC dc)
 {
     RECT rc;
+    int cw, ch;
+
     GetClientRect(Wnd, &rc);
+    cw = rc.right;
+    ch = rc.bottom;
+
+    /* largest 640:400 rect that fits, centred; black bars around it
+     * (only differs from the full client rect in fullscreen) */
+    if (cw * PIX_H >= ch * PIX_W) {
+        DstH = ch;
+        DstW = ch * PIX_W / PIX_H;
+    } else {
+        DstW = cw;
+        DstH = cw * PIX_H / PIX_W;
+    }
+    DstX = (cw - DstW) / 2;
+    DstY = (ch - DstH) / 2;
+    if (DstX || DstY)
+        FillRect(dc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+
     SetStretchBltMode(dc, COLORONCOLOR);
-    StretchDIBits(dc, 0, 0, rc.right, rc.bottom,
+    StretchDIBits(dc, DstX, DstY, DstW, DstH,
                   0, 0, PIX_W, PIX_H,
                   Pixels, &Bmi, DIB_RGB_COLORS, SRCCOPY);
+}
+
+static void ToggleFullscreen(void)
+{
+    if (!FullScr) {
+        MONITORINFO mi;
+        mi.cbSize = sizeof(mi);
+        SavedPlacement.length = sizeof(SavedPlacement);
+        GetWindowPlacement(Wnd, &SavedPlacement);
+        GetMonitorInfoA(MonitorFromWindow(Wnd, MONITOR_DEFAULTTONEAREST),
+                        &mi);
+        SetWindowLongPtrA(Wnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+        SetWindowPos(Wnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_FRAMECHANGED);
+        FullScr = 1;
+    } else {
+        SetWindowLongPtrA(Wnd, GWL_STYLE, WIN_STYLE | WS_VISIBLE);
+        SetWindowPlacement(Wnd, &SavedPlacement);
+        SetWindowPos(Wnd, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                     SWP_FRAMECHANGED);
+        FullScr = 0;
+    }
+    InvalidateRect(Wnd, NULL, FALSE);
+}
+
+static void MouseFromLParam(LPARAM lp)
+{
+    int wx = (int)(short)LOWORD(lp), wy = (int)(short)HIWORD(lp);
+    MousePX = DstW > 0 ? (wx - DstX) * PIX_W / DstW : 0;
+    MousePY = DstH > 0 ? (wy - DstY) * PIX_H / DstH : 0;
 }
 
 static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
@@ -107,6 +165,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
         /* Alt combos (WM_SYSKEYDOWN with the menu key held) */
         if (GetKeyState(VK_MENU) & 0x8000) {
+            if (wp == VK_RETURN) {      /* host concern, not an IT key */
+                if (!(lp & (1u << 30))) /* suppress autorepeat */
+                    ToggleFullscreen();
+                return 0;
+            }
             if (wp >= 'A' && wp <= 'Z') {
                 PushKey(ITK_ALT_A + (int)(wp - 'A'));
                 return 0;
@@ -210,12 +273,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                                            delivered as VK keys above) */
         return 0;
     case WM_MOUSEMOVE:
-        MousePX = (int)(short)LOWORD(lp) / SCALE;
-        MousePY = (int)(short)HIWORD(lp) / SCALE;
+        MouseFromLParam(lp);
         return 0;
     case WM_LBUTTONDOWN:
-        MousePX = (int)(short)LOWORD(lp) / SCALE;
-        MousePY = (int)(short)HIWORD(lp) / SCALE;
+        MouseFromLParam(lp);
         MouseB = 1;
         SetCapture(h);
         PushKey(ITK_MOUSE);
@@ -243,7 +304,7 @@ static int W32_Init(void)
 {
     WNDCLASSA wc;
     RECT rc = { 0, 0, PIX_W * SCALE, PIX_H * SCALE };
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    DWORD style = WIN_STYLE;
 
     memset(&wc, 0, sizeof(wc));
     wc.lpfnWndProc = WndProc;

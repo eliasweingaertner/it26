@@ -96,12 +96,16 @@ transliteration) layered on top of the real engine.
   - **Win32 pixel window** (`it_screen_win32.c`): 640x400 logical
     pixels rendered with the real glyph bitmaps at 2x scale — the
     authentic VGA look. Default on Windows; `ITED_TERM=1` forces the
-    terminal. Window close = quit.
+    terminal. Window close = quit. Alt-Enter toggles borderless
+    fullscreen (letterboxed to 640:400; the blit rect also drives the
+    window→logical mouse map).
   - **SDL2 pixel window** (`it_screen_sdl.c`): the POSIX counterpart of
     the Win32 backend — same 640x400 logical pixels from the shared
     `Screen_Rasterize`, same `ITK_*` keys and cell+pixel mouse. Built
     when `HAVE_SDL` is defined (CMake option `ITED_SDL` + a found SDL2);
     selected on POSIX when a display is available. (Landed 2026-06-16.)
+    Alt-Enter toggles `SDL_WINDOW_FULLSCREEN_DESKTOP` (the renderer's
+    logical size keeps the letterbox and mouse mapping).
   - **VT/ANSI truecolor terminal** with damage tracking and Unicode
     approximations of the custom glyphs (the no-deps fallback, used when
     neither pixel backend is built or no display is available).

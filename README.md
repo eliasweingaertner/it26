@@ -122,14 +122,16 @@ variables and load screens use the original layout data from
 present the cells behind one `screen_backend_t` vtable: the Win32 pixel
 window (Windows), the SDL2 pixel window (Linux/macOS) — both the
 authentic look, rendered from the shared `Screen_Rasterize` — and a
-24-bit-truecolor VT terminal fallback.
+24-bit-truecolor VT terminal fallback. On the pixel backends Alt-Enter
+toggles borderless fullscreen (aspect-preserving, letterboxed; a host
+convenience, not an IT key).
 
 The in-depth sample/instrument editors (waveform view, Alt-key ops,
 envelopes), the F5 info page views, the message editor, saving (.IT
 writer with the IT215 compressor), module import (S3M/XM/MOD/MTM/669)
 and the sample/instrument library (rip from other modules) are all
-ported; remaining gaps are listed in `docs/HANDOFF.md` §6 (Alt-F12
-Fourier, small F3/F4 polish items).
+ported; remaining items are listed in `docs/HANDOFF.md` §6 (macOS
+verification pass, Ctrl-V default-volume display toggle).
 
 ## Fidelity notes (deviations from the DOS binary)
 
