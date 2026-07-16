@@ -713,8 +713,10 @@ static void Term_MouseReport(int b, int x, int y, int press)
 
     if (b & 64)                                 /* wheel: consumed */
         return;
-    if (x < 1) x = 1; if (x > SCREEN_W) x = SCREEN_W;
-    if (y < 1) y = 1; if (y > SCREEN_H) y = SCREEN_H;
+    if (x < 1) x = 1;
+    if (x > SCREEN_W) x = SCREEN_W;
+    if (y < 1) y = 1;
+    if (y > SCREEN_H) y = SCREEN_H;
     TermMousePX = (x - 1) * 8 + 4;
     TermMousePY = (y - 1) * 8 + 4;
     if ((b & 3) != 0)                           /* not the left button */

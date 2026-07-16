@@ -128,7 +128,7 @@ static int OutputEQEnabled = 0;
 static float EQBand[16];        /* LastFilter: 4 bands x stereo x (cur,old) */
 static float EQCoeff[8];        /* FilterCoefficients */
 static float EQVolume[4];       /* FilterVolumes */
-static uint8_t VolumeTable[8] = { 0, 16, 96, 127, 0, 0, 0, 0 };
+static IT_MAYBE_UNUSED uint8_t VolumeTable[8] = { 0, 16, 96, 127, 0, 0, 0, 0 };
 
 /* MIDI interpreter (SendUARTOut) state */
 static uint8_t InterpretState = 0;

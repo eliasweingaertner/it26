@@ -3,7 +3,7 @@
  * ------------
  * Native cross-platform port of Impulse Tracker 2.17's player engine.
  * Transliterated from the original x86 assembly source (IT_MUSIC.ASM,
- * IT_M_EFF.INC, SoundDrivers/*) by Jeffrey Lim (Pulse).
+ * IT_M_EFF.INC, the SoundDrivers/ tree) by Jeffrey Lim (Pulse).
  *
  * The host/slave channel layouts below mirror the original byte layouts
  * documented in InternalDocumentation/CHANNEL.TXT.  Offsets from the ASM
@@ -18,6 +18,16 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+
+/* Portable "this may legitimately go unreferenced" marker, for feature
+ * hooks and 1:1 ASM-audit tables that are compiled in but not yet wired
+ * to a caller.  Keeps -Wunused-{function,variable} quiet without deleting
+ * intentional code. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define IT_MAYBE_UNUSED __attribute__((unused))
+#else
+#  define IT_MAYBE_UNUSED
+#endif
 
 /* IT_MUSIC.ASM line 200-203 */
 #define MAXSLAVECHANNELS 256

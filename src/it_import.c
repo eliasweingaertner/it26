@@ -60,7 +60,7 @@ typedef struct rd_t {
     size_t size, pos;
 } rd_t;
 
-static uint32_t rdavail(const rd_t *r)
+static IT_MAYBE_UNUSED uint32_t rdavail(const rd_t *r)
 {
     return (uint32_t)(r->pos < r->size ? r->size - r->pos : 0);
 }
@@ -76,7 +76,7 @@ static uint16_t rd16(rd_t *r)
     return (uint16_t)(v | (rd8(r) << 8));
 }
 
-static uint16_t rd16be(rd_t *r)
+static IT_MAYBE_UNUSED uint16_t rd16be(rd_t *r)
 {
     uint16_t v = rd8(r);
     return (uint16_t)((v << 8) | rd8(r));

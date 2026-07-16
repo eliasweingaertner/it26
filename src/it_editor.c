@@ -115,8 +115,8 @@ typedef struct undoslot_t {             /* UndoBuffer: 10 snapshots */
     uint8_t     type;                   /* 0..22, UndoBufferTypes */
 } undoslot_t;
 static undoslot_t UndoRing[10];
-static editcell_t *ScratchData = NULL;  /* Alt-0 store/restore */
-static int       ScratchRows = 0;
+static IT_MAYBE_UNUSED editcell_t *ScratchData = NULL;  /* Alt-0 store/restore */
+static IT_MAYBE_UNUSED int       ScratchRows = 0;
 static int       TracePlayback = 0;
 static int       ViewTracking = 0;      /* ViewChannelTracking (891) */
 static int       TopRow = 0, LeftChan = 0;
@@ -1397,7 +1397,7 @@ static void draw_pattern(void)
         for (ch = 0; ch < NumChansEdit; ch++) {
             int c = LeftChan + ch;
             uint8_t a = (Song.Header.ChnlPan[c] & 0x80) ? 0x10 : 0x13;
-            char hdr[13];
+            char hdr[24];               /* worst-case %02d width; c+1 <= 64 */
             snprintf(hdr, sizeof(hdr), " Channel %02d ", c + 1);
             Screen_DrawString(defx0 + 14 * ch, 14, hdr, a);
         }
@@ -2883,7 +2883,7 @@ static void ins_op_clear_name(void)     /* Alt-C: I_InstrumentNameClear */
     ed_unlock();
 }
 
-static void ins_op_insert_slot(void)    /* Alt-Ins: I_InsertInstrument */
+static IT_MAYBE_UNUSED void ins_op_insert_slot(void)    /* Alt-Ins: I_InsertInstrument */
 {
     int cur = ListSel, i;
 
@@ -2899,7 +2899,7 @@ static void ins_op_insert_slot(void)    /* Alt-Ins: I_InsertInstrument */
         pattern_remap_ins(0, cur + 1, 0);
 }
 
-static void ins_op_remove_slot(void)    /* Alt-Del: I_RemoveInstrument */
+static IT_MAYBE_UNUSED void ins_op_remove_slot(void)    /* Alt-Del: I_RemoveInstrument */
 {
     int cur = ListSel, i;
 
@@ -7706,6 +7706,8 @@ static void instrument_library_requester(void);
 static void name_insert(char *nm, int pos, char c)
 {
     int i;
+    if (pos < 0 || pos > 24)            /* callers keep pos in [0,24] */
+        return;
     for (i = 24; i > pos; i--)
         nm[i] = nm[i - 1];
     nm[pos] = c;
@@ -7714,6 +7716,8 @@ static void name_insert(char *nm, int pos, char c)
 static void name_delete(char *nm, int pos)
 {
     int i;
+    if (pos < 0 || pos > 24)            /* callers keep pos in [0,24] */
+        return;
     for (i = pos; i < 24; i++)
         nm[i] = nm[i + 1];
     nm[24] = 0;
@@ -7897,8 +7901,9 @@ static int pan_col_lkey(int key, int base)
     case ITK_UP:   if (PanSel > base) PanSel--; return 1;
     case ITK_DOWN: if (PanSel < base + 31) PanSel++; return 1;
     case ITK_PGUP: PanSel -= 8; if (PanSel < base) PanSel = base; return 1;
-    case ITK_PGDN: PanSel += 8; if (PanSel > base + 31)
-                       PanSel = base + 31; return 1;
+    case ITK_PGDN: PanSel += 8;
+                   if (PanSel > base + 31) PanSel = base + 31;
+                   return 1;
     case ITK_HOME: PanSel = base; return 1;
     case ITK_END:  PanSel = base + 31; return 1;
     case ITK_LEFT:  pan_adjust(PanSel, -1); return 1;
@@ -8118,10 +8123,11 @@ static void req_scan(void)
                 if (S_ISDIR(st.st_mode)) {
                     if (ReqND < REQ_MAXDIRS)
                         snprintf(ReqDirs[ReqND++], sizeof(ReqDirs[0]),
-                                 "%s", e->d_name);
+                                 "%.*s", (int)sizeof(ReqDirs[0]) - 1, e->d_name);
                 } else if (has_it_ext(e->d_name) && ReqNF < REQ_MAXFILES) {
                     reqfile_t *f = &ReqFiles[ReqNF++];
-                    snprintf(f->name, sizeof(f->name), "%s", e->d_name);
+                    snprintf(f->name, sizeof(f->name),
+                             "%.*s", (int)sizeof(f->name) - 1, e->d_name);
                     f->size = (long)st.st_size;
                     req_read_songname(f);
                 }
@@ -8312,8 +8318,8 @@ static void draw_file_requester(void)
     }
     {
         char cwd[256] = "";
-        if (getcwd(cwd, sizeof(cwd)))
-            ;
+        if (!getcwd(cwd, sizeof(cwd)))  /* on failure keep the "" fallback */
+            cwd[0] = '\0';
         drawf(13, 47, 0x05, "%-64.64s", cwd);
     }
 }
@@ -8892,8 +8898,9 @@ static void file_requester_run(int save)
             case ITK_UP:   if (FSel > 0) FSel--; break;
             case ITK_DOWN: if (FSel < ReqNF - 1) FSel++; break;
             case ITK_PGUP: FSel -= 30; if (FSel < 0) FSel = 0; break;
-            case ITK_PGDN: FSel += 30; if (FSel >= ReqNF)
-                               FSel = ReqNF ? ReqNF - 1 : 0; break;
+            case ITK_PGDN: FSel += 30;
+                           if (FSel >= ReqNF) FSel = ReqNF ? ReqNF - 1 : 0;
+                           break;
             case ITK_HOME: FSel = 0; break;
             case ITK_END:  FSel = ReqNF ? ReqNF - 1 : 0; break;
             case ITK_ENTER: req_activate_file(&done); break;
@@ -8905,8 +8912,9 @@ static void file_requester_run(int save)
             case ITK_UP:   if (DSel > 0) DSel--; break;
             case ITK_DOWN: if (DSel < ReqND - 1) DSel++; break;
             case ITK_PGUP: DSel -= 20; if (DSel < 0) DSel = 0; break;
-            case ITK_PGDN: DSel += 20; if (DSel >= ReqND)
-                               DSel = ReqND ? ReqND - 1 : 0; break;
+            case ITK_PGDN: DSel += 20;
+                           if (DSel >= ReqND) DSel = ReqND ? ReqND - 1 : 0;
+                           break;
             case ITK_HOME: DSel = 0; break;
             case ITK_END:  DSel = ReqND ? ReqND - 1 : 0; break;
             case ITK_ENTER:
@@ -9136,11 +9144,14 @@ static void load_prefs(void)
         if (nl)
             *nl = 0;
         if (!strncmp(line, "moduledir=", 10))
-            snprintf(DirModule, sizeof(DirModule), "%s", line + 10);
+            snprintf(DirModule, sizeof(DirModule),
+                     "%.*s", (int)sizeof(DirModule) - 1, line + 10);
         else if (!strncmp(line, "sampledir=", 10))
-            snprintf(DirSample, sizeof(DirSample), "%s", line + 10);
+            snprintf(DirSample, sizeof(DirSample),
+                     "%.*s", (int)sizeof(DirSample) - 1, line + 10);
         else if (!strncmp(line, "instrdir=", 9))
-            snprintf(DirInstr, sizeof(DirInstr), "%s", line + 9);
+            snprintf(DirInstr, sizeof(DirInstr),
+                     "%.*s", (int)sizeof(DirInstr) - 1, line + 9);
         else if (!strncmp(line, "octave=", 7))
             BaseOctave = atoi(line + 7);
         else if (!strncmp(line, "step=", 5))
