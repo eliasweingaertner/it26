@@ -93,6 +93,7 @@ set(CPACK_PACKAGE_EXECUTABLES
     "ited"   "ited (editor)"
     "itplay" "itplay (player)")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.TXT")
 
 if(WIN32)
     set(CPACK_GENERATOR "NSIS;ZIP")
@@ -100,6 +101,9 @@ if(WIN32)
     set(CPACK_NSIS_DISPLAY_NAME "ittrack")
     set(CPACK_NSIS_PACKAGE_NAME "ittrack")
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+    # Executables are installed at the package root (not the NSIS default
+    # of bin/), so Start Menu / desktop shortcuts must be wired accordingly.
+    set(CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
 endif()
 
 include(CPack)
