@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2 (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+
+      - name: Install SDL2 (macOS)
+        if: runner.os == 'macOS'
+        run: brew install sdl2
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # The determinism regression: pattern round-trip idempotency + a
+      # byte-identical audio render before/after repacking. This is the
+      # correctness gate the port lives or dies by, so it fails the build.
+      - name: Determinism regression
+        shell: bash
+        run: |
+          bin=$(find build -type f \( -name test_pattern -o -name test_pattern.exe \) | head -1)
+          echo "using $bin"
+          fail=0
+          for m in beyond_network itdemo quests_end synthscape_filters; do
+            echo "--- $m"
+            "$bin" "testdata/$m.it" || fail=1
+          done
+          exit $fail

@@ -1,0 +1,199 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+
+# A push to master and a tag push can arrive together; let each ref build
+# independently but cancel a stale continuous build superseded by a newer one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ------------------------------------------------------------------------
+  # Decide what we are building: a numeric version for the installer, a
+  # human label for the filenames, and whether this is a prerelease.
+  #   tag v1.2.3  -> version 1.2.3, label v1.2.3, real release
+  #   master push -> version 0.0.0, label continuous-<sha>, prerelease
+  # ------------------------------------------------------------------------
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.m.outputs.version }}
+      label: ${{ steps.m.outputs.label }}
+      prerelease: ${{ steps.m.outputs.prerelease }}
+    steps:
+      - id: m
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+            echo "label=${tag}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+            echo "label=continuous-$(echo "$GITHUB_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ------------------------------------------------------------------------
+  # Windows: NSIS installer + portable ZIP (both self-contained).
+  # ------------------------------------------------------------------------
+  windows:
+    needs: meta
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: Configure
+        run: cmake -B build -DITTRACK_VERSION=${{ needs.meta.outputs.version }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Determinism regression
+        shell: bash
+        run: |
+          bin=$(find build -type f -name test_pattern.exe | head -1)
+          fail=0
+          for m in beyond_network itdemo quests_end synthscape_filters; do
+            echo "--- $m"; "$bin" "testdata/$m.it" || fail=1
+          done
+          exit $fail
+
+      - name: Package (CPack)
+        working-directory: build
+        run: cpack -C Release
+
+      - name: Rename artifacts
+        shell: bash
+        env:
+          LABEL: ${{ needs.meta.outputs.label }}
+        run: |
+          mkdir -p dist
+          mv build/ittrack-*.exe "dist/ittrack-${LABEL}-windows-x64-setup.exe"
+          mv build/ittrack-*.zip "dist/ittrack-${LABEL}-windows-x64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  # ------------------------------------------------------------------------
+  # Linux: an AppImage of the editor (bundles SDL2 for the authentic pixel
+  # window) plus the bare, dependency-free itplay binary.
+  # ------------------------------------------------------------------------
+  linux:
+    needs: meta
+    runs-on: ubuntu-latest
+    env:
+      LABEL: ${{ needs.meta.outputs.label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build + packaging deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev imagemagick file wget
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DITTRACK_VERSION=${{ needs.meta.outputs.version }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Determinism regression
+        run: |
+          fail=0
+          for m in beyond_network itdemo quests_end synthscape_filters; do
+            echo "--- $m"; ./build/test_pattern "testdata/$m.it" || fail=1
+          done
+          exit $fail
+
+      - name: Assemble AppDir
+        run: |
+          mkdir -p AppDir/usr/bin \
+                   AppDir/usr/share/applications \
+                   AppDir/usr/share/icons/hicolor/256x256/apps
+          cp build/ited AppDir/usr/bin/ited
+          cat > AppDir/usr/share/applications/ited.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=ited
+          Comment=Impulse Tracker editor
+          Exec=ited
+          Icon=ited
+          Categories=AudioVideo;Audio;
+          Terminal=false
+          EOF
+          # A plain IT-blue "IT" tile as the icon (no binary asset in-repo).
+          convert -size 256x256 canvas:'#0000AA' -gravity center \
+                  -pointsize 120 -fill '#FFFFFF' -font DejaVu-Sans-Bold \
+                  -annotate 0 'IT' \
+                  AppDir/usr/share/icons/hicolor/256x256/apps/ited.png
+
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --executable AppDir/usr/bin/ited \
+            --desktop-file AppDir/usr/share/applications/ited.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/ited.png \
+            --output appimage
+          mkdir -p dist
+          mv ited*.AppImage "dist/ited-${LABEL}-x86_64.AppImage"
+          cp build/itplay "dist/itplay-${LABEL}-linux-x86_64"
+          chmod +x "dist/itplay-${LABEL}-linux-x86_64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  # ------------------------------------------------------------------------
+  # Publish. Tag pushes get a normal release; master pushes refresh a single
+  # rolling "continuous" prerelease so the releases page stays clean.
+  # ------------------------------------------------------------------------
+  publish:
+    needs: [meta, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+          LABEL: ${{ needs.meta.outputs.label }}
+        run: |
+          R="$GITHUB_REPOSITORY"
+          if [[ "$PRERELEASE" == "true" ]]; then
+            gh release delete continuous -R "$R" --yes --cleanup-tag || true
+            gh release create continuous -R "$R" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Continuous build (${LABEL})" \
+              --notes "Rolling build of the latest \`master\` (${GITHUB_SHA})." \
+              dist/*
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+            gh release create "$tag" -R "$R" \
+              --title "$tag" \
+              --generate-notes \
+              dist/*
+          fi

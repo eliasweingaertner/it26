@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
-project(ittrack C)
+
+# Version used for packaging (CPack / the Windows installer). CI passes
+# -DITTRACK_VERSION=<x.y.z>; the default keeps local `cpack` runs working.
+if(NOT DEFINED ITTRACK_VERSION)
+    set(ITTRACK_VERSION "0.0.0")
+endif()
+project(ittrack VERSION ${ITTRACK_VERSION} LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -66,6 +72,37 @@ if(ITED_HAVE_SDL)
 endif()
 
 add_executable(test_pattern ${ENGINE_SOURCES} tests/test_pattern.c)
+
+# ---------------------------------------------------------------------------
+# Packaging (CPack)
+#
+# Windows: an NSIS installer plus a portable ZIP, both self-contained -- the
+# exes carry no DLL dependencies (WASAPI is reached via LoadLibrary and the
+# editor uses the Win32 GDI backend), so the ZIP is a genuine unzip-and-run.
+# Linux packaging (an AppImage for the editor, a bare itplay binary) is done
+# in the release workflow, not here.
+# ---------------------------------------------------------------------------
+install(TARGETS itplay ited RUNTIME DESTINATION .)
+
+set(CPACK_PACKAGE_NAME "ittrack")
+set(CPACK_PACKAGE_VENDOR "ittrack")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "A native cross-platform port of Impulse Tracker")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "ittrack")
+set(CPACK_PACKAGE_EXECUTABLES
+    "ited"   "ited (editor)"
+    "itplay" "itplay (player)")
+set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+
+if(WIN32)
+    set(CPACK_GENERATOR "NSIS;ZIP")
+    set(CPACK_SYSTEM_NAME "win64")
+    set(CPACK_NSIS_DISPLAY_NAME "ittrack")
+    set(CPACK_NSIS_PACKAGE_NAME "ittrack")
+    set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+endif()
+
+include(CPack)
 
 foreach(tgt itplay ited test_pattern)
     if(MSVC)
