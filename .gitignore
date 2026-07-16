@@ -24,8 +24,9 @@ screen_dump.txt
 # editor-generated WAV renders
 *.wav
 
-# ITED_SHOT pixel captures
+# ITED_SHOT pixel captures (but keep the corner-art source bitmap)
 *.bmp
+!/art/corner.bmp
 
 # OS cruft
 .DS_Store

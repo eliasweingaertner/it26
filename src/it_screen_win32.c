@@ -34,6 +34,10 @@ static WINDOWPLACEMENT SavedPlacement;
 static int       DstX, DstY;            /* letterboxed blit rect (for the */
 static int       DstW = PIX_W * SCALE;  /* window -> logical mouse map)   */
 static int       DstH = PIX_H * SCALE;
+static HDC       BackDC;                /* double buffer: compose offscreen, */
+static HBITMAP   BackBmp, BackBmpOld;   /* present with one BitBlt (direct   */
+static int       BackW, BackH;          /* StretchDIBits to the screen shows
+                                           mid-blit states = flicker)        */
 
 static void PushKey(int k)
 {
@@ -67,14 +71,28 @@ static int MapVKey(WPARAM vk)
     }
 }
 
+static void FreeBackBuffer(void)
+{
+    if (BackDC) {
+        SelectObject(BackDC, BackBmpOld);
+        DeleteObject(BackBmp);
+        DeleteDC(BackDC);
+        BackDC = NULL;
+        BackW = BackH = 0;
+    }
+}
+
 static void PaintWindow(HDC dc)
 {
+    HDC out;
     RECT rc;
     int cw, ch;
 
     GetClientRect(Wnd, &rc);
     cw = rc.right;
     ch = rc.bottom;
+    if (cw <= 0 || ch <= 0)
+        return;
 
     /* largest 640:400 rect that fits, centred; black bars around it
      * (only differs from the full client rect in fullscreen) */
@@ -87,13 +105,38 @@ static void PaintWindow(HDC dc)
     }
     DstX = (cw - DstW) / 2;
     DstY = (ch - DstH) / 2;
-    if (DstX || DstY)
-        FillRect(dc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
 
-    SetStretchBltMode(dc, COLORONCOLOR);
-    StretchDIBits(dc, DstX, DstY, DstW, DstH,
+    /* compose into the client-sized back buffer, then present with a
+     * single BitBlt.  Painting the visible surface directly flickers:
+     * the screen samples the window mid-draw, showing the black fill
+     * or a half-finished stretch (font shimmer at non-integer scale). */
+    if (BackW != cw || BackH != ch) {
+        FreeBackBuffer();
+        BackDC = CreateCompatibleDC(dc);
+        BackBmp = CreateCompatibleBitmap(dc, cw, ch);
+        if (BackDC && BackBmp) {
+            BackBmpOld = SelectObject(BackDC, BackBmp);
+            BackW = cw;
+            BackH = ch;
+        } else {                        /* out of GDI resources: draw
+                                           direct rather than nothing */
+            if (BackBmp)
+                DeleteObject(BackBmp);
+            if (BackDC)
+                DeleteDC(BackDC);
+            BackDC = NULL;
+        }
+    }
+    out = BackDC ? BackDC : dc;
+
+    if (DstX || DstY)
+        FillRect(out, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    SetStretchBltMode(out, COLORONCOLOR);
+    StretchDIBits(out, DstX, DstY, DstW, DstH,
                   0, 0, PIX_W, PIX_H,
                   Pixels, &Bmi, DIB_RGB_COLORS, SRCCOPY);
+    if (out == BackDC)
+        BitBlt(dc, 0, 0, cw, ch, BackDC, 0, 0, SRCCOPY);
 }
 
 static void ToggleFullscreen(void)
@@ -336,6 +379,7 @@ static int W32_Init(void)
 
 static void W32_UnInit(void)
 {
+    FreeBackBuffer();
     if (Wnd) {
         DestroyWindow(Wnd);
         Wnd = NULL;

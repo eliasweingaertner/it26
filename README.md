@@ -159,9 +159,10 @@ full input surface: Alt/Ctrl/Shift key combos via the xterm encodings
 reporting — clicking, dragging thumbbars and pattern-grid clicks work
 over SSH.
 
-The pixel output carries a small diagonal "2026 AI port" ribbon in
-the top-right corner marking the port (`ITED_NOBANNER=1` hides it —
-see the fidelity notes).
+The pixel output carries a small "2026 AI PORT" corner-art badge in
+the top-right corner marking the port; 10 seconds after startup — or
+as soon as the mouse touches it — it slides out of view
+(`ITED_NOBANNER=1` hides it entirely — see the fidelity notes).
 
 ## Editor (`ited`)
 
@@ -257,14 +258,16 @@ Behavioral:
 - MIDI *output hardware* is not implemented; the MIDI macro engine
   (`MIDITranslate`) is fully ported because Zxx macros drive the
   resonant filters through it.
-- A diagonal "2026 AI port" ribbon (green, #007000) is drawn across
-  the top-right corner of the pixel output (next to the header's
-  copyright line) to distinguish the port from the original at a
-  glance. It is painted at the rasterizer stage — hand-made 3x5
-  glyphs at half the cell font size, upright on the 45° baseline —
-  so text cells, dump hashes and the terminal backend are untouched.
-  `ITED_NOBANNER=1` hides it (e.g. for screenshot comparisons
-  against the DOS original).
+- A "2026 AI PORT" corner-art badge (76x72, `art/corner.bmp`,
+  embedded as `src/it_cornerart.c`) is blitted into the top-right
+  corner of the pixel output (next to the header's copyright line)
+  to distinguish the port from the original at a glance. It holds
+  for 10 seconds after startup — or until the mouse touches it —
+  then slides out diagonally towards the top-right and stays gone.
+  It is painted at the rasterizer
+  stage, so text cells, dump hashes and the terminal backend are
+  untouched. `ITED_NOBANNER=1` hides it (e.g. for screenshot
+  comparisons against the DOS original).
 
 Info page (F5):
 - IT 2.17 has **no oscilloscope**: what the track view draws are

@@ -37,9 +37,12 @@ the macOS verification pass (spec 001 T022 — needs a Mac); the only
 remaining fidelity leftover is the Ctrl-V default-volume display
 toggle. Selftest now reports 11 blocks OK
 (F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2/TERM/S3M/UPD/FFT) on Windows and
-Linux. 2026-07-15: the pixel output carries a diagonal "2026 AI port"
-corner ribbon (rasterizer-stage, `ITED_NOBANNER=1` hides it — see the
-capture-workflow note in §5).
+Linux. 2026-07-16: the pixel output carries a "2026 AI PORT"
+corner-art badge (art/corner.bmp embedded as it_cornerart.c,
+rasterizer-stage, slides out 10 s after startup or on mouse touch;
+`ITED_NOBANNER=1`
+hides it — see the capture-workflow note in §5). It replaced the
+earlier hand-drawn diagonal ribbon.
 
 ---
 
@@ -608,8 +611,9 @@ Non-interactive editor checks (no terminal/window/audio needed):
   **This is the visual-iteration workflow:** render, convert to PNG
   (PowerShell `System.Drawing`), compare against `..\screenshots\`.
   Set `ITED_NOBANNER=1` when comparing against original screenshots —
-  the pixel output otherwise carries the diagonal "2026 AI port"
-  corner ribbon (rasterizer-stage only; cells/dumps are unaffected).
+  the pixel output otherwise carries the "2026 AI PORT" corner-art
+  badge for the first 10 seconds (rasterizer-stage only; cells/dumps
+  are unaffected, but `ITED_SHOT` renders at t=0 and would show it).
 
 Test modules live in `testdata/` (`beyond_network.it`, `itdemo.it`,
 `quests_end.it`, `synthscape_filters.it`); the generated import/library
@@ -629,6 +633,8 @@ ittrack/
   docs/
     HANDOFF.md             <- this file
     EDITOR-PORT-PLAN.md    staged editor plan (stages 1-3 done, 4 = next phase)
+  art/
+    corner.bmp             corner-art badge source (8-bit BMP, 76x72) -> it_cornerart.c
   external/
     miniaudio.h            vendored single-header audio (do not edit)
   testdata/                4 .IT modules for regression
@@ -653,6 +659,9 @@ ittrack/
     it_vgadata.c/h         GENERATED (tools/gen_vgadata.py) — byte-exact from IT_S.ASM:
                            Camouflage palette, custom glyphs 128..201, 30 box styles,
                            + IBM VGA ROM 8x8 CP437 font. Regenerate, don't edit.
+    it_cornerart.c/h       GENERATED (tools/gen_cornerart.py, `make cornerart`) from
+                           art/corner.bmp: the "2026 AI PORT" badge as palette
+                           indices + RGB LUT. Regenerate, don't edit.
     it_screen.c            80x50 cell buffer, Screen_DrawStringCtl (S_DrawString codes),
                            S_DrawBox 1:1, rasterizer (cells->640x400 RGB), BMP writer,
                            DumpPlain, truecolor VT backend + backend dispatch
@@ -670,6 +679,7 @@ ittrack/
     main.c       (218)     player CLI
   tools/
     gen_vgadata.py         IT_S.ASM + romfont.bin -> src/it_vgadata.c
+    gen_cornerart.py       art/corner.bmp -> src/it_cornerart.c/.h
     IBM_VGA_8x8.bin        VGA ROM font dump (2048 B). NOT committed (see §3
                            "ROM font"): .gitignore'd, fetched by `make font`
                            from spacerace/romfont. Only needed to regenerate

@@ -11,6 +11,7 @@
 #   make test       determinism regression over testdata/ (must stay IDENTICAL)
 #   make font       fetch + verify tools/IBM_VGA_8x8.bin
 #   make vgadata    regenerate src/it_vgadata.c (needs the font + the IT ASM)
+#   make cornerart  regenerate src/it_cornerart.c (from art/corner.bmp)
 #   make clean      remove objects and binaries
 #   make distclean  also remove the fetched font
 #   make help       this list
@@ -92,7 +93,7 @@ endif
 ENGINE_SRCS := src/it_music.c src/it_effects.c src/it_tables.c src/it_driver.c \
                src/it_load.c src/it_pattern.c src/it_save.c
 EDITOR_SRCS := src/it_import.c src/it_ris.c src/it_screen.c src/it_vgadata.c \
-               src/it_editor.c
+               src/it_cornerart.c src/it_editor.c
 
 ENGINE_OBJS := $(ENGINE_SRCS:%.c=$(OBJDIR)/%.o)
 EDITOR_OBJS := $(EDITOR_SRCS:%.c=$(OBJDIR)/%.o) $(PLATFORM_OBJS)
@@ -208,6 +209,14 @@ vgadata: $(FONT)
 	$(PYTHON) tools/gen_vgadata.py "$(IT_ASM_SRC)" $(FONT) src/it_vgadata.c
 
 # ---------------------------------------------------------------------------
+# Regenerate src/it_cornerart.c/.h from the corner-art badge bitmap.
+# it_cornerart.c is committed; only needed when art/corner.bmp changes.
+# ---------------------------------------------------------------------------
+.PHONY: cornerart
+cornerart:
+	$(PYTHON) tools/gen_cornerart.py art/corner.bmp src/it_cornerart
+
+# ---------------------------------------------------------------------------
 .PHONY: clean distclean help
 clean:
 	rm -rf $(OBJDIR) $(BINS)
@@ -223,6 +232,7 @@ help:
 	@echo '  test           determinism regression (must stay IDENTICAL)'
 	@echo '  font           fetch + verify $(FONT)'
 	@echo '  vgadata        regenerate src/it_vgadata.c (font + IT_ASM_SRC)'
+	@echo '  cornerart      regenerate src/it_cornerart.c (art/corner.bmp)'
 	@echo '  clean          remove objects and binaries'
 	@echo '  distclean      also remove the fetched font'
 	@echo ''

@@ -12,6 +12,7 @@
 #include <string.h>
 #include "it_screen.h"
 #include "it_vgadata.h"
+#include "it_cornerart.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -20,6 +21,7 @@
 #include <termios.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
 #endif
 
 static screen_cell_t Back[SCREEN_H][SCREEN_W];
@@ -265,55 +267,68 @@ void Screen_SetOverlay(const uint8_t *pix, const uint8_t *pal6)
     }
 }
 
-/* "2026 AI port" corner ribbon (port marking, not in the original):
- * a diagonal strip across the top-right corner of the pixel output
- * only, with the text at half the cell font size -- hand-made 3x5
- * glyphs in the ROM font's style (the ROM font itself is unreadable
- * below ~6px), drawn upright and stepping down the 45-degree
- * baseline.  Cell contents (ITED_DUMP hashes) and the terminal
- * backend are untouched; ITED_NOBANNER=1 hides it for
- * reference-screenshot comparisons. */
-static void RasterizeBanner(uint32_t *px)
+/* "2026 AI PORT" corner art (port marking, not in the original): a
+ * 76x72 badge bitmap (art/corner.bmp, embedded as it_cornerart.c)
+ * blitted into the top-right corner of the pixel output only.  It
+ * holds for 10 seconds after the first rasterized frame -- or until
+ * the mouse touches it -- then slides out diagonally towards the
+ * top-right (40 px/s) and stays gone.  Cell contents (ITED_DUMP
+ * hashes) and the terminal backend are untouched; ITED_NOBANNER=1
+ * hides it for reference-screenshot comparisons. */
+#define CORNERART_HOLD_MS   10000
+#define CORNERART_MS_PER_PX 25           /* slide speed: 40 px/s */
+
+/* last mouse position seen by Screen_GetMouse (logical pixels).  The
+ * rasterizer reads this instead of polling the backend itself: the
+ * Win32 mouse poll pumps the message queue, which must not happen
+ * mid-present.  The editor polls every tick, so it stays fresh. */
+static int CornerMousePX = -1, CornerMousePY = -1;
+
+static uint64_t CornerArtMS(void)
 {
-    /* "2026 AI port"; bits 0x80/0x40/0x20 = glyph columns, col 3 =
-     * inter-character spacing (always clear) */
-    static const uint8_t tiny[][5] = {
-        {0xE0,0x20,0xE0,0x80,0xE0},  /* 2 */
-        {0xE0,0xA0,0xA0,0xA0,0xE0},  /* 0 */
-        {0xE0,0x80,0xE0,0xA0,0xE0},  /* 6 */
-        {0x00,0x00,0x00,0x00,0x00},  /* space */
-        {0xE0,0xA0,0xE0,0xA0,0xA0},  /* A */
-        {0xE0,0x40,0x40,0x40,0xE0},  /* I */
-        {0x00,0xC0,0xA0,0xC0,0x80},  /* p */
-        {0x00,0xE0,0xA0,0xA0,0xE0},  /* o */
-        {0x00,0xE0,0x80,0x80,0x80},  /* r */
-        {0x40,0xE0,0x40,0x40,0x60},  /* t */
-    };
-    static const uint8_t map[12] = {0,1,0,2,3,4,5,3,6,7,8,9};
+#ifdef _WIN32
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+#endif
+}
+
+static void RasterizeCornerArt(uint32_t *px)
+{
     static int state;                    /* 0 unknown, 1 on, 2 off */
-    int x, y, i, r, c;
+    static uint64_t t0;
+    uint64_t now, elapsed;
+    int off = 0, sx, sy;
 
     if (!state)
         state = getenv("ITED_NOBANNER") ? 2 : 1;
     if (state == 2)
         return;
 
-    /* the band: diagonal strip x-y in [578,590], darker edge lines */
-    for (y = 0; y <= 61; y++) {
-        int xhi = 590 + y < 639 ? 590 + y : 639;
-        for (x = 578 + y; x <= xhi; x++) {
-            int v = x - y;
-            px[y*640 + x] = (v == 578 || v == 590) ? 0x004000 : 0x007000;
+    now = CornerArtMS();
+    if (!t0)
+        t0 = now;
+    if (now - t0 < CORNERART_HOLD_MS &&  /* mouse touch: slide out now */
+        CornerMousePX >= 640 - IT_CORNERART_W &&
+        CornerMousePY <  IT_CORNERART_H)
+        t0 = now - CORNERART_HOLD_MS;
+    elapsed = now - t0;
+    if (elapsed > CORNERART_HOLD_MS) {
+        off = (int)((elapsed - CORNERART_HOLD_MS) / CORNERART_MS_PER_PX);
+        if (off >= IT_CORNERART_W || off >= IT_CORNERART_H) {
+            state = 2;                   /* fully slid out: stay gone */
+            return;
         }
     }
 
-    /* the text: upright glyphs stepping down the 45-degree baseline
-     * (rotated strokes alias into dots at this size) */
-    for (i = 0; i < 12; i++)
-        for (r = 0; r < 5; r++)
-            for (c = 0; c < 3; c++)
-                if (tiny[map[i]][r] & (0x80 >> c))
-                    px[(4 + i*4 + r)*640 + 589 + i*4 + c] = 0xFFFFFF;
+    /* blit shifted `off` pixels right and up, clipped to the screen:
+     * the right columns leave past x=639, the top rows past y=0 */
+    for (sy = off; sy < IT_CORNERART_H; sy++)
+        for (sx = 0; sx < IT_CORNERART_W - off; sx++)
+            px[(sy - off)*640 + (640 - IT_CORNERART_W + off + sx)] =
+                IT_CornerArtPal[IT_CornerArt[sy][sx]];
 }
 
 void Screen_Rasterize(uint32_t *px)
@@ -348,7 +363,7 @@ void Screen_Rasterize(uint32_t *px)
         }
     }
 
-    RasterizeBanner(px);
+    RasterizeCornerArt(px);
 }
 
 int Screen_WriteBMP(const char *path)
@@ -1099,6 +1114,9 @@ int Key_Get(void)
 void Screen_GetMouse(it_mouse_t *m)
 {
     memset(m, 0, sizeof(*m));
-    if (Backend && Backend->mouse)
+    if (Backend && Backend->mouse) {
         Backend->mouse(m);
+        CornerMousePX = m->px;           /* corner-art hover test */
+        CornerMousePY = m->py;
+    }
 }

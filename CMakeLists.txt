@@ -31,6 +31,7 @@ set(EDITOR_SOURCES
     src/it_ris.c
     src/it_screen.c
     src/it_vgadata.c
+    src/it_cornerart.c
     src/it_editor.c
 )
 if(WIN32)
