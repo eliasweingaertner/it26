@@ -460,6 +460,11 @@ task list — plus the project constitution in
 ## License / credits
 
 Impulse Tracker was written by Jeffrey Lim (Pulse), source released
-under the BSD-3 license (included here as `LICENSE.TXT`).
+under the BSD-3 license. The port is likewise BSD-3; `LICENSE.TXT`
+carries both copyright notices.
 This port keeps the original structure and names so it can be audited
 against the assembly side by side.
+
+This port is an independent project and is not affiliated with or
+endorsed by Jeffrey Lim. Bugs in this port are ours — please report
+them here, not to him.

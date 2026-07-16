@@ -1,6 +1,7 @@
 BSD 3-Clause License
 
-Copyright (c) 2017, Jeffrey Lim
+Copyright (c) 2017, Jeffrey Lim (original Impulse Tracker)
+Copyright (c) 2026, Elias Weingärtner (C port)
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without

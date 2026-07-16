@@ -366,7 +366,9 @@ static int W32_Init(void)
     Bmi.bmiHeader.biCompression = BI_RGB;
 
     AdjustWindowRect(&rc, style, FALSE);
-    Wnd = CreateWindowA("ITEDScreen", "Impulse Tracker", style,
+    Wnd = CreateWindowA("ITEDScreen",
+                        "Impulse Tracker - 2026 AI port by Elias W. / original by Jeffrey Lim",
+                        style,
                         CW_USEDEFAULT, CW_USEDEFAULT,
                         rc.right - rc.left, rc.bottom - rc.top,
                         NULL, NULL, wc.hInstance, NULL);

@@ -293,7 +293,7 @@ static int SDL_BInit(void)
         }
     }
 
-    Wnd = SDL_CreateWindow("Impulse Tracker",
+    Wnd = SDL_CreateWindow("Impulse Tracker - 2026 AI port by Elias W. / original by Jeffrey Lim",
                            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                            PIX_W * SCALE, PIX_H * SCALE,
                            SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
