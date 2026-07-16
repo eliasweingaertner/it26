@@ -508,6 +508,34 @@ cmake -B build && cmake --build build --config Release
 ```
 Produces `itplay` (player) and `ited` (editor).
 
+### GNU Make (POSIX quick path: Linux, macOS, MSYS2 / Git Bash)
+```
+make            # itplay + ited + test_pattern
+make test       # determinism regression (all four modules must stay IDENTICAL)
+make ITED_SDL=0 # build ited without the SDL2 pixel backend (terminal only)
+```
+The `Makefile` mirrors `CMakeLists.txt`'s source lists and platform logic
+(SDL2 auto-detected via `pkg-config`/`sdl2-config`; Win32 GDI backend under
+MSYS2). CMake stays canonical, especially for MSVC/Windows; the Makefile is
+the no-deps convenience path **and** the home of the ROM-font fetch:
+```
+make font       # download + verify tools/IBM_VGA_8x8.bin (see below)
+make vgadata    # regenerate src/it_vgadata.c (needs the font + IT_ASM_SRC)
+make help       # target/knob list + which backends this host will build
+```
+
+### ROM font — no longer vendored (fetched on demand)
+`tools/IBM_VGA_8x8.bin` (the IBM VGA ROM 8x8 CP437 font — a dump of IBM's
+VGA BIOS character ROM) is **not committed** (potentially copyrighted) and
+is `.gitignore`d. `make font` fetches it from
+[spacerace/romfont](https://github.com/spacerace/romfont/tree/master/font-bin),
+pinned to commit `73f2ba68…` and verified against a known-good SHA-256
+(`75c79a7e…`) and size (2048 B) before it is put in place — a wrong file or
+hash is rejected and nothing is left behind. It uses `curl`, else `wget`,
+else a shallow `git` fetch of that commit. **An ordinary build never needs
+it:** `src/it_vgadata.c` is generated *and committed*, so the font is only
+required to *regenerate* it (`make vgadata`).
+
 ### MSVC directly (Windows) — the command used this session
 ```
 cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" >nul 2>&1 && cl /nologo /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c src\it_load.c src\it_pattern.c src\it_save.c src\it_import.c src\it_ris.c src\it_screen.c src\it_screen_win32.c src\it_vgadata.c src\it_editor.c user32.lib gdi32.lib"
@@ -642,7 +670,10 @@ ittrack/
     main.c       (218)     player CLI
   tools/
     gen_vgadata.py         IT_S.ASM + romfont.bin -> src/it_vgadata.c
-    IBM_VGA_8x8.bin        VGA ROM font dump (2048 bytes, from spacerace/romfont)
+    IBM_VGA_8x8.bin        VGA ROM font dump (2048 B). NOT committed (see §3
+                           "ROM font"): .gitignore'd, fetched by `make font`
+                           from spacerace/romfont. Only needed to regenerate
+                           it_vgadata.c, which is itself committed.
 ```
 
 ### Key data-model facts (don't relearn the hard way)
@@ -822,8 +853,11 @@ rough priority order:
 - New backends go **behind the `screen_backend_t` vtable** in
   `it_screen.h`; the cell buffer, control-code renderer, box drawing and
   the rasterizer are backend-independent and shared.
-- Don't edit `src/it_vgadata.c` — regenerate via
-  `python tools/gen_vgadata.py ../impulsetracker tools/IBM_VGA_8x8.bin src/it_vgadata.c`.
+- Don't edit `src/it_vgadata.c` — regenerate via `make vgadata`
+  (`IT_ASM_SRC=../impulsetracker` by default; runs `make font` first if the
+  ROM font is missing), or by hand:
+  `python tools/gen_vgadata.py ../impulsetracker tools/IBM_VGA_8x8.bin src/it_vgadata.c`
+  (needs `tools/IBM_VGA_8x8.bin` — `make font` fetches it; it is not committed).
 - Use `ITED_SHOT` (pixel-exact BMP) + the reference screenshots to
   iterate on layout; `ITED_DUMP` for quick ASCII checks.
 ```

@@ -7,6 +7,17 @@
 *.pdb
 *.ilk
 
+# Makefile build tree + POSIX binaries
+/build-make/
+/itplay
+/ited
+/test_pattern
+
+# VGA ROM font: fetched on demand by `make font` (a dump of IBM's VGA BIOS
+# character ROM), never committed. See the Makefile "ROM font" section.
+/tools/IBM_VGA_8x8.bin
+/tools/IBM_VGA_8x8.bin.tmp
+
 # editor debug dumps
 screen_dump.txt
 

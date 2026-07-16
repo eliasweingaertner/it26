@@ -96,6 +96,33 @@ Python is only needed to regenerate the checked-in test fixtures
 (`tools/gen_vgadata.py` — `src/it_vgadata.c` is generated, never
 hand-edited); building requires neither.
 
+### GNU Make (POSIX quick path)
+
+On Linux, macOS or MSYS2/Git Bash a `Makefile` mirrors the CMake source
+lists as a no-deps convenience path:
+
+    make            # itplay + ited + test_pattern
+    make test       # determinism regression (must stay IDENTICAL)
+    make ITED_SDL=0 # ited without the SDL2 pixel backend
+    make help       # targets, knobs, and which backends this host builds
+
+SDL2 is auto-detected via `pkg-config`/`sdl2-config`. CMake stays the
+canonical cross-platform build (and the only supported path on
+MSVC/Windows).
+
+### The VGA ROM font (not committed)
+
+The editor's authentic look uses the IBM VGA ROM 8x8 CP437 font — the
+font `int 10h AX=1112h` loads, a dump of IBM's VGA BIOS character ROM.
+Those bytes are potentially copyrighted, so this repo does **not**
+redistribute them: `tools/IBM_VGA_8x8.bin` is `.gitignore`d and fetched
+on demand by `make font` from
+[spacerace/romfont](https://github.com/spacerace/romfont/tree/master/font-bin),
+pinned to a commit and verified by SHA-256 before use. An ordinary build
+needs nothing extra — `src/it_vgadata.c` (which bakes the font into C
+tables) is generated *and committed*; the font is only required to
+regenerate it (`make vgadata`).
+
 ### Verifying a build
 
     ITED_SELFTEST=1 ITED_TERM=1 ited testdata/itdemo.it    # scripted editor smoke test

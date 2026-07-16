@@ -11,6 +11,10 @@ that int 10h AX=1112h loads -- exactly what IT ran on top of).  Custom
 glyphs 128.. override the ROM font exactly as S_InitScreen's
 S_RedefineCharacters call does.
 
+The ROM font is not committed (potentially copyrighted); `make font`
+fetches tools/IBM_VGA_8x8.bin from spacerace/romfont and verifies it.
+Prefer `make vgadata`, which wires both inputs together.
+
 Usage: python gen_vgadata.py <impulsetracker-src-dir> <romfont.bin> <out.c>
 """
 import re
