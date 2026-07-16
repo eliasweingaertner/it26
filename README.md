@@ -1,16 +1,18 @@
 # ittrack — a native cross-platform port of Impulse Tracker
 
-TL;DR A 1:1 conversion of Jeffrey Lim's fantastic Impulse Tracker to modern operating systems. Originally written in pure (!) 486 x86 assembly code, this is the first near-complete 1:1 translation of both the playback engine and the editor to C/SDL. The conversion was carried out fully with Antrophic's Fable 5 and Opus 4.8 models.
+TL;DR A 1:1 conversion of Jeffrey Lim's fantastic Impulse Tracker to modern operating systems. Originally written in pure (!) 486 x86 assembly code, this is the first near-complete 1:1 translation of both the playback engine and the editor to C/SDL. The conversion was carried out fully with Anthropic's Fable 5 and Opus 4.8 models.
+
+![ited on Windows, directly after launch](docs/ited-launch.png)
 
 ## Background
-About 30 years ago I was a quite a nerdy teenager. My parents had just bought a 486 DX computer with a terrible Sound Blaster Pro clone. A little while a modem, BBS access and AOL followed. Somewhere I first downloaded the legendary [Scream Tracker 3](https://en.wikipedia.org/wiki/Scream_Tracker) (S3M) by the also legendary Future Crew. A short time later I learned about [Impulse Tracker](https://en.wikipedia.org/wiki/Impulse_Tracker) (IT) by Jeffrey Lim. I started jamming with it and wrote quite some songs, which I gladly never released :-) Impulse Tracker is a fantastic piece of software, and arguably one of the best trackers ever written. It sounds fantastic. Its usability is outstanding. At its resource usage was already low back in the day. One of the reasons was that it was brilliantly designed and really heavily optimized. It is written in pure x86 assembly code. That is one of the reasons it never got directly ported to modern operating systems. Since then, there have been repeated efforts to bring the "feel" of IT to the more modern world. One great and famous example is [Schism Tracker](https://schismtracker.org/), which combines an Impulse-Tracker-aligned interface with the [Modplug playback](https://openmpt.org/legacy_software) engine.
+About 30 years ago I was quite a nerdy teenager. My parents had just bought a 486 DX computer with a terrible Sound Blaster Pro clone. A little while later a modem, BBS access and AOL followed. Somewhere I first downloaded the legendary [Scream Tracker 3](https://en.wikipedia.org/wiki/Scream_Tracker) (S3M) by the also legendary Future Crew. A short time later I learned about [Impulse Tracker](https://en.wikipedia.org/wiki/Impulse_Tracker) (IT) by Jeffrey Lim. I started jamming with it and wrote quite some songs, which I gladly never released :-) Impulse Tracker is a fantastic piece of software, and arguably one of the best trackers ever written. It sounds fantastic. Its usability is outstanding. And its resource usage was already low back in the day. One of the reasons was that it was brilliantly designed and really heavily optimized. It is written in pure x86 assembly code. That is one of the reasons it never got directly ported to modern operating systems. Since then, there have been repeated efforts to bring the "feel" of IT to the more modern world. One great and famous example is [Schism Tracker](https://schismtracker.org/), which combines an Impulse-Tracker-aligned interface with the [Modplug playback](https://openmpt.org/legacy_software) engine.
 
 ### 30 years later - we have AI
-30 years later, we find ourselves in the middle of the AI revolution. The nerdy teenager has become an engineering manager who also has obtained a PhD in computer science over a decade ago. The nerd in me still enjoys jamming some times, mostly in [Reaper](https://www.reaper.fm/) and [Renoise](https://www.renoise.com/). But deep in my heart I am still obsessed with Impulse Tracker. And yes, I hate Suno! :P
+30 years later, we find ourselves in the middle of the AI revolution. The nerdy teenager has become an engineering manager who also obtained a PhD in computer science over a decade ago. The nerd in me still enjoys jamming sometimes, mostly in [Reaper](https://www.reaper.fm/) and [Renoise](https://www.renoise.com/). But deep in my heart I am still obsessed with Impulse Tracker. And yes, I hate Suno! :P
 
-Once Fable 5 became available I couldn't resist and put it to an extreme test: Can an AI model of this class create a working 1:1 port of Impulse Tracker for modern operating systems? Quite shockingly, the answer is yes. I threw Fable 5 (and in parts Opus 4.8) at it, using [spec-kit](https://github.com/github/spec-kit) to steer its progress. 
+Once Fable 5 became available I couldn't resist and put it to an extreme test: Can an AI model of this class create a working 1:1 port of Impulse Tracker for modern operating systems? Quite shockingly, the answer is yes. I threw Fable 5 (and in parts Opus 4.8) at it, using [spec-kit](https://github.com/github/spec-kit) to steer its progress. Of course it was not a one-shot miracle: we went through quite some testing iterations, for example to hunt down flickering in the editor screen. 
 
-After burning a quite a bunch of tokens, I am happy to present you an AI port of Impulse Tracker! By design, this port does not adopt new feature. We don't fix glitches of bugs of Impulse Tracker. If you run this code, you get what IT 2.17 did. Not more and not less!
+After burning quite a bunch of tokens, I am happy to present you an AI port of Impulse Tracker! By design, this port does not adopt new features. We don't fix glitches or bugs of Impulse Tracker. If you run this code, you get what IT 2.17 did. Not more and not less!
 
 ## Now we let Fable explain the rest :P
 
@@ -449,11 +451,14 @@ plan; `docs/HANDOFF.md` is the living project handbook — current
 status, build/verification commands with the expected determinism
 hashes, a file map, layout facts and the roadmap. The only open items
 are a macOS verification pass and the Ctrl-V default-volume display
-toggle.
+toggle. The spec-kit artifacts the port was driven with are in
+`specs/` — one numbered directory per feature with its spec, plan and
+task list — plus the project constitution in
+`.specify/memory/constitution.md`.
 
 ## License / credits
 
 Impulse Tracker was written by Jeffrey Lim (Pulse), source released
-under the BSD-3 license (see `LICENSE.TXT` in the original repository).
+under the BSD-3 license (included here as `LICENSE.TXT`).
 This port keeps the original structure and names so it can be audited
 against the assembly side by side.
