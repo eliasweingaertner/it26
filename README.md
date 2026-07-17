@@ -1,6 +1,6 @@
 # ittrack — a native cross-platform port of Impulse Tracker
 
-TL;DR A 1:1 conversion of Jeffrey Lim's fantastic Impulse Tracker to modern operating systems. Originally written in pure (!) 486 x86 assembly code, this is the first near-complete 1:1 translation of both the playback engine and the editor to C/SDL. The conversion was carried out fully with Anthropic's Fable 5 and Opus 4.8 models.
+TL;DR AI-vibed 1:1 conversion of Jeffrey Lim's fantastic Impulse Tracker to modern operating systems. Originally written in pure (!) 486 x86 assembly code, this aims to be the first near-complete 1:1 translation of both the playback engine and the editor to C/SDL. The conversion was carried out fully with Anthropic's Fable 5 and Opus 4.8 models. It generally works - but bugs exist!
 
 ![ited on Windows, directly after launch ](docs/ited-launch.png)
 (The AI port banner disappears after 10 secs)
