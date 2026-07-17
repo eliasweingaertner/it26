@@ -79,8 +79,9 @@ add_executable(test_pattern ${ENGINE_SOURCES} tests/test_pattern.c)
 # Windows: an NSIS installer plus a portable ZIP, both self-contained -- the
 # exes carry no DLL dependencies (WASAPI is reached via LoadLibrary and the
 # editor uses the Win32 GDI backend), so the ZIP is a genuine unzip-and-run.
-# Linux packaging (an AppImage for the editor, a bare itplay binary) is done
-# in the release workflow, not here.
+# Linux and macOS packaging is done in the release workflow, not here: a
+# Linux AppImage of the editor plus a bare itplay binary, and a macOS DMG
+# holding ited.app (SDL2 bundled inside) plus the bare itplay CLI.
 # ---------------------------------------------------------------------------
 install(TARGETS itplay ited RUNTIME DESTINATION .)
 

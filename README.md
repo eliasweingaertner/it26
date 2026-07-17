@@ -56,6 +56,22 @@ Any C11 compiler; there are no required external dependencies. Audio
 output is miniaudio (vendored, single header) — WASAPI on Windows,
 CoreAudio on macOS, ALSA/PulseAudio on Linux.
 
+### Prebuilt binaries
+
+The [releases page](../../releases) carries self-contained builds for
+each platform, refreshed on every push to `master` (the rolling
+`continuous` prerelease) and pinned for tagged versions:
+
+| Platform | Artifact | Notes |
+|----------|----------|-------|
+| Windows | `…-windows-x64-setup.exe`, `…-windows-x64.zip` | NSIS installer or portable ZIP |
+| Linux | `ited-…-x86_64.AppImage`, `itplay-…-linux-x86_64` | editor AppImage (bundles SDL2) + bare player |
+| macOS | `ittrack-…-macos-<arch>.dmg` | `ited.app` (SDL2 bundled inside) + the `itplay` CLI |
+
+The macOS DMG is not code-signed or notarised, so Gatekeeper quarantines
+it on first launch: right-click `ited.app` → **Open** (or `xattr -dr
+com.apple.quarantine ited.app`) once, and it runs normally thereafter.
+
 ### CMake (all platforms)
 
     cmake -B build
@@ -79,6 +95,23 @@ optional dependency: install the dev package (`libsdl2-dev` /
 automatically. Without SDL2 — or with `-DITED_SDL=OFF` — `ited` still
 builds and runs with the terminal backend, and `itplay` /
 `test_pattern` never need SDL.
+
+**macOS — stuck on the terminal backend?** If `ited` keeps opening in
+the terminal instead of the pixel window, SDL2 wasn't compiled in. CMake
+detects it at *configure* time and **caches the result**, so installing
+SDL2 after a first configure isn't enough — you must wipe the build
+directory:
+
+    brew install sdl2
+    rm -rf build            # clear the cached "SDL2 not found"
+    cmake -B build          # a clean configure now finds SDL2
+
+Watch the configure output: `ited: SDL2 not found; building editor with
+the terminal backend only` means it's still missing. On Apple Silicon,
+where Homebrew lives in `/opt/homebrew`, point CMake at it with
+`cmake -B build -DCMAKE_PREFIX_PATH="$(brew --prefix sdl2)"`. Also make
+sure `ITED_TERM` is unset — any non-empty value forces the terminal
+backend regardless of SDL.
 
 ### Direct compiler invocations (no CMake)
 
