@@ -1315,6 +1315,19 @@ static void GetPatternInfo(uint16_t num, const uint8_t **data,
     }
 }
 
+/* The editor may re-pack (free + realloc) a pattern's PackedData while
+ * the song is playing. The decoder caches PatternDataPos, a raw pointer
+ * into that buffer, across ticks (see UpdateNoteData) -- so a realloc of
+ * the pattern currently being decoded would leave it dangling. Called by
+ * Pattern_Pack under the engine lock: force the next UpdateNoteData to
+ * take the UpdateGOTONote path, which re-derives PatternDataPos from the
+ * new buffer for the current row. Harmless when not playing. */
+void Music_NotifyPatternRepacked(uint16_t patnum)
+{
+    if (patnum == CurrentPattern)
+        DecodeExpectedPattern = 0xFFFE;
+}
+
 static void UpdateGOTONote(void)
 {
     const uint8_t *si;

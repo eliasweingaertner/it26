@@ -159,6 +159,11 @@ void Update(void);
 
 uint8_t Random(void);            /* returns AL (low byte of Seed1)       */
 void    Music_ResetRNG(void);    /* restore Seed1/Seed2 to power-on state */
+/* editor -> engine: a pattern's PackedData buffer was just replaced
+ * (freed + reallocated). If it is the one being decoded, invalidate the
+ * cached decode cursor so the next tick re-derives it from the new
+ * buffer. Must be called under the engine lock. */
+void    Music_NotifyPatternRepacked(uint16_t patnum);
 void GetLoopInformation(slavechn_t *sc);
 /* Returns the allocated slave channel or NULL; *hflags is the caller's
  * working copy of the host flags low byte (CH in the original), bit 4

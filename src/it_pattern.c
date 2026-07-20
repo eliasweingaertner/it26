@@ -175,6 +175,9 @@ int Pattern_Pack(uint16_t patnum, const editcell_t *grid, uint16_t rows)
         p->PackedData = buf;
         p->DataLength = (uint16_t)len;
         p->Rows = rows;
+        /* invalidate the decoder's cached cursor into `old` before it is
+         * freed, in case the engine is decoding this pattern right now */
+        Music_NotifyPatternRepacked(patnum);
         free(old);
     }
     engine_unlock();
@@ -203,6 +206,7 @@ uint16_t Pattern_EnsureExists(uint16_t patnum, uint16_t rows)
         p->PackedData = buf;
         p->DataLength = rows;
         p->Rows = rows;
+        Music_NotifyPatternRepacked(patnum);
         engine_unlock();
     }
     return rows;
