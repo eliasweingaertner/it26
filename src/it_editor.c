@@ -1554,7 +1554,7 @@ static int confirm_box(const char *text)
         int key, tx;
 
         draw_screen();
-        Screen_DrawBox(24, 22, 55, 27, 27);
+        Screen_DrawBox(24, 22, 55, 27, 3);      /* ConfirmOverWriteBox: tan panel */
         tx = 40 - (int)strlen(text) / 2;
         Screen_DrawString(tx, 23, text, 0x20);
         draw_button_style(30, 24, 36, 26, 3, " Yes", 0, sel == 0);
@@ -1589,7 +1589,7 @@ static long prompt_number(const char *title, unsigned long def,
         int key;
 
         draw_screen();
-        Screen_DrawBox(24, 22, 55, 27, 27);
+        Screen_DrawBox(24, 22, 55, 27, 3);      /* numeric prompt: tan panel */
         Screen_DrawString(26, 23, title, 0x20);
         drawf(26, 25, 0x30, "%-10.10s", buf);
         Screen_Update();
@@ -1628,7 +1628,7 @@ static int quality_dialog(int to16)
         int key;
 
         draw_screen();
-        Screen_DrawBox(18, 21, 61, 28, 27);
+        Screen_DrawBox(18, 21, 61, 28, 3);      /* ConfirmConvert: tan panel */
         drawf(24, 22, 0x20, "Convert sample to %d bit?", to16 ? 16 : 8);
         draw_button_style(21, 24, 34, 26, 3, " Convert data", 0, sel == 0);
         draw_button_style(36, 24, 49, 26, 3, " Adjust  end", 0, sel == 1);
@@ -3876,10 +3876,14 @@ static void draw_order(void)
                 Screen_DrawString(bx + 1, 15 + i, "Muted", a);
             } else if ((pan & 0x7F) == 100) {
                 Screen_DrawString(bx, 15 + i, "Surround", a);
-            } else {
+            } else if ((pan & 0x7F) <= 64) {
                 int pos = (pan & 0x7F) * 8 / 64;
                 Screen_PutChar(bx + pos, 15 + i, 254, a);
             }
+            /* port safety: pan 65..99/101.. is out of range; draw no
+             * marker rather than one outside the (30/64,14)-(40/74,47)
+             * box. Such values cannot come from the pan editor (clamped)
+             * -- they indicate corrupt ChnlPan data. */
         }
     }
 
@@ -4450,7 +4454,7 @@ static void view_hostchannel(dispwin_t *w)
                 Screen_DrawString(64, y, "Left     ", 2);
             else if (p == 64)
                 Screen_DrawString(64, y, "    Right", 2);
-            else {
+            else if (p < 64) {          /* thumb; 1..63 keeps it in box */
                 int v = p + 1;
                 Screen_PutChar(64 + (v >> 3), y,
                                (uint8_t)(155 + (v & 7)), 2);
@@ -4458,6 +4462,10 @@ static void view_hostchannel(dispwin_t *w)
                     Screen_PutChar(64 + (v >> 3) + 1, y,
                                    (uint8_t)(155 + (v & 7) + 5), 2);
             }
+            /* port safety: out-of-range pan (>64, not surround) draws
+             * nothing rather than a thumb painted outside the box. The
+             * engine guarantees FP in {0..64,100}; a value outside that
+             * is corrupt data, which the original would mis-render. */
         }
 
         /* velocity / volume bar at x=5.. (24 cells max):
@@ -8335,7 +8343,7 @@ static int confirm_overwrite(void (*bg)(void))
         int key;
 
         bg();
-        Screen_DrawBox(24, 22, 55, 27, 27);
+        Screen_DrawBox(24, 22, 55, 27, 3);      /* ConfirmOverWriteBox: tan panel */
         Screen_DrawString(32, 23, "Overwrite file?", 0x20);
         draw_button_style(30, 24, 36, 26, 3, " Yes", 0, sel == 0);
         draw_button_style(43, 24, 48, 26, 3, " No", 0, sel == 1);
