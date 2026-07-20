@@ -1328,6 +1328,42 @@ void Music_NotifyPatternRepacked(uint16_t patnum)
         DecodeExpectedPattern = 0xFFFE;
 }
 
+/* Music_ClearAllInstruments (IT_MUSIC.ASM 3316 -> Music_ClearInstrument):
+ * reset instruments 1..99 to the default InstrumentHeader template --
+ * identity note map to sample 0, flat-64 volume envelope, off pan/pitch
+ * envelopes, GbV 128, DfP centre, PPC 60, MPr/MIDIBnk = FF. */
+void Music_ClearAllInstruments(void)
+{
+    int i, n;
+
+    for (i = 0; i < MAX_INSTRUMENTS - 1; i++) {     /* instruments 1..99 */
+        instrument_t *in = &Song.Ins[i];
+
+        memset(in, 0, sizeof(*in));
+        in->ID      = 0x49504D49u;      /* "IMPI" */
+        in->PPC     = 60;               /* pitch-pan centre */
+        in->GbV     = 128;
+        in->DfP     = 0x80 | 32;        /* default pan, centre */
+        in->MPr     = 0xFF;
+        in->MIDIBnk = 0xFFFF;
+        for (n = 0; n < 120; n++) {
+            in->NoteSampleTable[n * 2]     = (uint8_t)n;
+            in->NoteSampleTable[n * 2 + 1] = 0;
+        }
+        /* volume envelope: 2 nodes, flat 64 at ticks 0 and 100 (off) */
+        in->VEnvelope.Num = 2;
+        in->VEnvelope.NodePoints[0].Magnitude = 64;
+        in->VEnvelope.NodePoints[0].Tick      = 0;
+        in->VEnvelope.NodePoints[1].Magnitude = 64;
+        in->VEnvelope.NodePoints[1].Tick      = 100;
+        /* pan + pitch envelopes: 2 nodes, flat 0 (mags 0 via memset) */
+        in->PEnvelope.Num  = 2;
+        in->PEnvelope.NodePoints[1].Tick  = 100;
+        in->PtEnvelope.Num = 2;
+        in->PtEnvelope.NodePoints[1].Tick = 100;
+    }
+}
+
 static void UpdateGOTONote(void)
 {
     const uint8_t *si;

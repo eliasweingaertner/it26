@@ -760,6 +760,7 @@ static void order_list_lclick(int row, int mx, int mpx);
 static void pan_left_lclick(int row, int mx, int mpx);
 static void pan_right_lclick(int row, int mx, int mpx);
 static void act_stereo_changed(void);
+static void act_enable_instruments(void);
 static void act_tempo_changed(void);
 static void act_speed_changed(void);
 static void act_gv_changed(void);
@@ -3930,7 +3931,7 @@ static void draw_vars(void)
     wtogglef(17, 27, &Song.Header.Flags, ITF_LINK_G_TO_EF);
 
     wradiof(16, 29, 30, 31, " Instruments", &Song.Header.Flags,
-            ITF_INSTRUMENTS, 0);
+            ITF_INSTRUMENTS, 0)->action = act_enable_instruments;
     wradiof(31, 29, 45, 31, " Samples", &Song.Header.Flags,
             ITF_INSTRUMENTS, 1);
     wradiof(16, 32, 30, 34, " Stereo", &Song.Header.Flags,
@@ -7962,6 +7963,36 @@ static void act_stereo_changed(void)
     ed_lock();
     Music_InitStereo();
     ed_unlock();
+}
+
+/* F_SetControlInstrument (IT_F.ASM 4810): the F12 "Instruments" radio.
+ * The flag bit is already set by button_press; offer to initialise the
+ * instruments from the samples (O1_InitialiseInstrumentList prompt). On
+ * yes, reset all instruments to the default template, then for each
+ * populated sample copy its name into the matching instrument and map all
+ * 120 notes to that sample. Declining leaves instrument mode on with the
+ * existing instruments untouched. */
+static void act_enable_instruments(void)
+{
+    int s, n;
+
+    if (!confirm_box("Initialise instruments?"))
+        return;
+
+    ed_lock();
+    Music_ClearAllInstruments();
+    for (s = 0; s < MAX_SAMPLES - 1; s++) {     /* samples 1..99 */
+        sample_t     *smp = &Song.Smp[s];
+        instrument_t *in  = &Song.Ins[s];
+
+        if (!(smp->Flags & 1))                  /* sample present? */
+            continue;
+        memcpy(in->InstrumentName, smp->SampleName, sizeof(in->InstrumentName));
+        for (n = 0; n < 120; n++)
+            in->NoteSampleTable[n * 2 + 1] = (uint8_t)(s + 1);
+    }
+    ed_unlock();
+    status("Instruments initialised from samples.");
 }
 
 /* "Initial Tempo" is the song's start tempo (re-seeded into the runtime

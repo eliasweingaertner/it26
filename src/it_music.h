@@ -164,6 +164,9 @@ void    Music_ResetRNG(void);    /* restore Seed1/Seed2 to power-on state */
  * cached decode cursor so the next tick re-derives it from the new
  * buffer. Must be called under the engine lock. */
 void    Music_NotifyPatternRepacked(uint16_t patnum);
+/* reset all 99 instruments to the default template (used when switching a
+ * sample-mode module into instrument mode; IT_MUSIC.ASM 3316) */
+void    Music_ClearAllInstruments(void);
 void GetLoopInformation(slavechn_t *sc);
 /* Returns the allocated slave channel or NULL; *hflags is the caller's
  * working copy of the host flags low byte (CH in the original), bit 4
