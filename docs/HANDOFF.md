@@ -511,6 +511,14 @@ cmake -B build && cmake --build build --config Release
 ```
 Produces `itplay` (player) and `ited` (editor).
 
+**Release packaging** lives in `.github/workflows/release.yml`, not in
+CPack: a Windows NSIS installer + portable ZIP, a Linux editor AppImage
+(SDL2 bundled) + bare `itplay`, and a macOS DMG holding `ited.app` (SDL2
+copied in via `dylibbundler`, ad-hoc signed) + the `itplay` CLI. Every
+`master` push refreshes the rolling `continuous` prerelease; tags cut a
+pinned release. The DMG is unsigned/unnotarised — first launch needs a
+right-click → Open past Gatekeeper.
+
 ### GNU Make (POSIX quick path: Linux, macOS, MSYS2 / Git Bash)
 ```
 make            # itplay + ited + test_pattern

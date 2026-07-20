@@ -163,11 +163,108 @@ jobs:
           path: dist/*
 
   # ------------------------------------------------------------------------
+  # macOS: a drag-to-install DMG holding ited.app -- the authentic SDL2
+  # pixel window, with SDL2 bundled *inside* the app so it runs on a Mac
+  # that has no Homebrew -- plus the bare, dependency-free itplay CLI. The
+  # runner is Apple Silicon (arm64); the arch goes in the filename.
+  # ------------------------------------------------------------------------
+  macos:
+    needs: meta
+    runs-on: macos-latest
+    env:
+      LABEL: ${{ needs.meta.outputs.label }}
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build + packaging deps
+        run: brew install sdl2 dylibbundler imagemagick
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DITTRACK_VERSION=${VERSION}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Determinism regression
+        run: |
+          fail=0
+          for m in beyond_network itdemo quests_end synthscape_filters; do
+            echo "--- $m"; ./build/test_pattern "testdata/$m.it" || fail=1
+          done
+          exit $fail
+
+      - name: Assemble ited.app
+        run: |
+          APP="ited.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp build/ited "$APP/Contents/MacOS/ited"
+
+          # A plain IT-blue "IT" tile as the icon (mirrors the Linux AppImage;
+          # no binary asset in-repo). sips fans it out to the .icns sizes.
+          magick -size 512x512 canvas:'#0000AA' -gravity center \
+                 -fill '#FFFFFF' -font '/System/Library/Fonts/Helvetica.ttc' \
+                 -pointsize 240 -annotate 0 'IT' /tmp/icon.png
+          mkdir -p ited.iconset
+          for s in 16 32 64 128 256 512; do
+            sips -z $s $s          /tmp/icon.png --out "ited.iconset/icon_${s}x${s}.png"    >/dev/null
+            sips -z $((s*2)) $((s*2)) /tmp/icon.png --out "ited.iconset/icon_${s}x${s}@2x.png" >/dev/null
+          done
+          iconutil -c icns ited.iconset -o "$APP/Contents/Resources/ited.icns"
+
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>ited</string>
+            <key>CFBundleDisplayName</key><string>ited</string>
+            <key>CFBundleExecutable</key><string>ited</string>
+            <key>CFBundleIdentifier</key><string>org.ittrack.ited</string>
+            <key>CFBundleIconFile</key><string>ited</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>LSMinimumSystemVersion</key><string>10.13</string>
+          </dict>
+          </plist>
+          EOF
+
+          # Copy SDL2 (and any other non-system dylib) into the app and
+          # rewrite the load paths to @executable_path/../libs so it runs
+          # without Homebrew. dylibbundler ad-hoc re-signs what it touches;
+          # sign the whole bundle too so it launches on Apple Silicon.
+          dylibbundler -od -b -cd \
+            -x "$APP/Contents/MacOS/ited" \
+            -d "$APP/Contents/libs" \
+            -p '@executable_path/../libs'
+          codesign --force --deep --sign - "$APP" || true
+
+      - name: Build DMG
+        run: |
+          arch=$(uname -m)
+          mkdir -p dmgroot
+          cp -R ited.app dmgroot/
+          cp build/itplay dmgroot/itplay
+          chmod +x dmgroot/itplay
+          ln -s /Applications dmgroot/Applications
+          mkdir -p dist
+          hdiutil create -volname "ittrack ${LABEL}" \
+            -srcfolder dmgroot -ov -format UDZO \
+            "dist/ittrack-${LABEL}-macos-${arch}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  # ------------------------------------------------------------------------
   # Publish. Tag pushes get a normal release; master pushes refresh a single
   # rolling "continuous" prerelease so the releases page stays clean.
   # ------------------------------------------------------------------------
   publish:
-    needs: [meta, windows, linux]
+    needs: [meta, windows, linux, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
