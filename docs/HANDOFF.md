@@ -490,7 +490,7 @@ instrument transfers with remap checks. Capture aids:
 feature-008 leftovers (IFF/TXWave loading, the WAV stereo prompt)
 landed with feature 013.
 
-**Composition-flow fix batch — DONE (2026-08-19, uncommitted):** three
+**Composition-flow fix batch — DONE (2026-08-19, commit `497c96e`):** three
 bugs found by side-by-side composing against real IT 2.14 in DOSBox.
 (1) **F11 order list was a stub** (navigation clamped to OrdNum, only
 +/- editing) — rewritten to the `OrderListKeys` table (IT_PE.ASM 959):
