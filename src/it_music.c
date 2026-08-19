@@ -1328,40 +1328,113 @@ void Music_NotifyPatternRepacked(uint16_t patnum)
         DecodeExpectedPattern = 0xFFFE;
 }
 
+/* The InstrumentHeader template (IT_MUSIC.ASM data): the pristine
+ * instrument every blank slot holds -- identity note map to sample 0,
+ * flat-64 volume envelope, off pan/pitch envelopes, GbV 128, DfP
+ * centre, PPC 60, MPr/MIDIBnk = FF. */
+void Music_InitInstrument(instrument_t *in)
+{
+    int n;
+
+    memset(in, 0, sizeof(*in));
+    in->ID      = 0x49504D49u;      /* "IMPI" */
+    in->PPC     = 60;               /* pitch-pan centre */
+    in->GbV     = 128;
+    in->DfP     = 0x80 | 32;        /* default pan, centre */
+    in->MPr     = 0xFF;
+    in->MIDIBnk = 0xFFFF;
+    for (n = 0; n < 120; n++) {
+        in->NoteSampleTable[n * 2]     = (uint8_t)n;
+        in->NoteSampleTable[n * 2 + 1] = 0;
+    }
+    /* volume envelope: 2 nodes, flat 64 at ticks 0 and 100 (off) */
+    in->VEnvelope.Num = 2;
+    in->VEnvelope.NodePoints[0].Magnitude = 64;
+    in->VEnvelope.NodePoints[0].Tick      = 0;
+    in->VEnvelope.NodePoints[1].Magnitude = 64;
+    in->VEnvelope.NodePoints[1].Tick      = 100;
+    /* pan + pitch envelopes: 2 nodes, flat 0 (mags 0 via memset) */
+    in->PEnvelope.Num  = 2;
+    in->PEnvelope.NodePoints[1].Tick  = 100;
+    in->PtEnvelope.Num = 2;
+    in->PtEnvelope.NodePoints[1].Tick = 100;
+}
+
 /* Music_ClearAllInstruments (IT_MUSIC.ASM 3316 -> Music_ClearInstrument):
- * reset instruments 1..99 to the default InstrumentHeader template --
- * identity note map to sample 0, flat-64 volume envelope, off pan/pitch
- * envelopes, GbV 128, DfP centre, PPC 60, MPr/MIDIBnk = FF. */
+ * reset instruments 1..99 to the InstrumentHeader template. */
 void Music_ClearAllInstruments(void)
 {
-    int i, n;
+    int i;
 
-    for (i = 0; i < MAX_INSTRUMENTS - 1; i++) {     /* instruments 1..99 */
-        instrument_t *in = &Song.Ins[i];
+    for (i = 0; i < MAX_INSTRUMENTS - 1; i++)       /* instruments 1..99 */
+        Music_InitInstrument(&Song.Ins[i]);
+}
 
-        memset(in, 0, sizeof(*in));
-        in->ID      = 0x49504D49u;      /* "IMPI" */
-        in->PPC     = 60;               /* pitch-pan centre */
-        in->GbV     = 128;
-        in->DfP     = 0x80 | 32;        /* default pan, centre */
-        in->MPr     = 0xFF;
-        in->MIDIBnk = 0xFFFF;
-        for (n = 0; n < 120; n++) {
-            in->NoteSampleTable[n * 2]     = (uint8_t)n;
-            in->NoteSampleTable[n * 2 + 1] = 0;
-        }
-        /* volume envelope: 2 nodes, flat 64 at ticks 0 and 100 (off) */
-        in->VEnvelope.Num = 2;
-        in->VEnvelope.NodePoints[0].Magnitude = 64;
-        in->VEnvelope.NodePoints[0].Tick      = 0;
-        in->VEnvelope.NodePoints[1].Magnitude = 64;
-        in->VEnvelope.NodePoints[1].Tick      = 100;
-        /* pan + pitch envelopes: 2 nodes, flat 0 (mags 0 via memset) */
-        in->PEnvelope.Num  = 2;
-        in->PEnvelope.NodePoints[1].Tick  = 100;
-        in->PtEnvelope.Num = 2;
-        in->PtEnvelope.NodePoints[1].Tick = 100;
+/* Blank test = byte-equality with the InstrumentHeader template, as the
+ * original's RepE CmpsB scans do. Port deviation: an all-zero header
+ * (slots never stamped, e.g. after an importer ran) also counts blank. */
+int Music_InstrumentIsBlank(const instrument_t *in)
+{
+    static instrument_t tmpl;
+    static int tmpl_ready = 0;
+    static const instrument_t zero;
+
+    if (!tmpl_ready) {
+        Music_InitInstrument(&tmpl);
+        tmpl_ready = 1;
     }
+    return memcmp(in, &tmpl, sizeof(tmpl)) == 0 ||
+           memcmp(in, &zero, sizeof(zero)) == 0;
+}
+
+/* Music_GetNumberOfInstruments (IT_MUSIC.ASM 5460): index of the last
+ * slot that differs from the pristine InstrumentHeader template. */
+int Music_GetNumberOfInstruments(void)
+{
+    int n;
+
+    for (n = 99; n >= 1; n--)
+        if (!Music_InstrumentIsBlank(&Song.Ins[n - 1]))
+            break;
+    return n;
+}
+
+/* Music_AssignSampleToInstrument (IT_MUSIC.ASM 6672): host the sample in
+ * an instrument -- the same-numbered slot if blank, else the first blank
+ * slot. Copies the sample name and maps all 120 notes to the sample.
+ * smp0 = 0-based sample; returns the 1-based instrument, 0 = no slot. */
+int Music_AssignSampleToInstrument(int smp0)
+{
+    instrument_t *in = NULL;
+    int i, num = 0, n;
+
+    if (Music_InstrumentIsBlank(&Song.Ins[smp0])) {
+        in  = &Song.Ins[smp0];
+        num = smp0 + 1;
+    } else {
+        for (i = 0; i < MAX_INSTRUMENTS - 1; i++)
+            if (Music_InstrumentIsBlank(&Song.Ins[i])) {
+                in  = &Song.Ins[i];
+                num = i + 1;
+                break;
+            }
+    }
+    if (!in)
+        return 0;
+
+    Music_InitInstrument(in);           /* zero-blank slots need stamping */
+    memcpy(in->InstrumentName, Song.Smp[smp0].SampleName,
+           sizeof(in->InstrumentName));
+    for (n = 0; n < 120; n++)
+        in->NoteSampleTable[n * 2 + 1] = (uint8_t)(smp0 + 1);
+    return num;
+}
+
+/* Music_SetNextOrder (IT_MUSIC.ASM 7131): queue an order to jump to when
+ * the current pattern finishes (song playback). */
+void Music_SetNextOrder(uint16_t order)
+{
+    ProcessOrder = (uint16_t)(order - 1);
 }
 
 static void UpdateGOTONote(void)

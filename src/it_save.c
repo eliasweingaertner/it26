@@ -380,8 +380,8 @@ static int mem_nonzero(const void *p, size_t n)
     return 0;
 }
 
-/* Music_GetNumberOfSamples / ...Instruments: index of the last slot
- * that differs from a pristine (all-zero in this port) header. */
+/* Music_GetNumberOfSamples: index of the last sample slot that differs
+ * from a pristine (all-zero in this port) header. */
 static int count_samples(void)
 {
     int n;
@@ -393,11 +393,10 @@ static int count_samples(void)
 
 static int count_instruments(void)
 {
-    int n;
-    for (n = 99; n >= 1; n--)
-        if (mem_nonzero(&Song.Ins[n - 1], 554))
-            break;
-    return n;
+    /* Music_GetNumberOfInstruments: last slot differing from the
+     * pristine InstrumentHeader template (an all-zero scan would count
+     * every template-stamped blank slot and save all 99). */
+    return Music_GetNumberOfInstruments();
 }
 
 static int max_pattern(void)            /* PE_GetMaxPattern */

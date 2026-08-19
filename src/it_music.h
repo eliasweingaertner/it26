@@ -167,6 +167,17 @@ void    Music_NotifyPatternRepacked(uint16_t patnum);
 /* reset all 99 instruments to the default template (used when switching a
  * sample-mode module into instrument mode; IT_MUSIC.ASM 3316) */
 void    Music_ClearAllInstruments(void);
+/* stamp one instrument with the pristine InstrumentHeader template */
+void    Music_InitInstrument(instrument_t *in);
+/* blank = byte-equal to the template (or all-zero, a port extension) */
+int     Music_InstrumentIsBlank(const instrument_t *in);
+/* last non-blank instrument slot, 0..99 (IT_MUSIC.ASM 5460) */
+int     Music_GetNumberOfInstruments(void);
+/* host a sample in an instrument: same-numbered slot if blank, else the
+ * first blank one; returns the 1-based instrument or 0 (IT_MUSIC.ASM 6672) */
+int     Music_AssignSampleToInstrument(int smp0);
+/* queue the order to play when the current pattern ends (IT_MUSIC.ASM 7131) */
+void    Music_SetNextOrder(uint16_t order);
 void GetLoopInformation(slavechn_t *sc);
 /* Returns the allocated slave channel or NULL; *hflags is the caller's
  * working copy of the host flags low byte (CH in the original), bit 4

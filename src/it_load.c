@@ -580,7 +580,11 @@ int Music_LoadIT(const char *path)
     }
     Save_LoadTime = time(NULL);
 
-    /* instruments */
+    /* instruments; slots beyond InsNum (and unstored ones) hold the
+     * pristine InstrumentHeader template, as the original's song data
+     * area always does */
+    for (i = 0; i < MAX_INSTRUMENTS - 1; i++)
+        Music_InitInstrument(&Song.Ins[i]);
     for (i = 0; i < Song.Header.InsNum; i++) {
         if (insoffs[i] == 0 || !rd_seek(r, insoffs[i]))
             continue;

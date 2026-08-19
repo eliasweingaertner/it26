@@ -490,6 +490,43 @@ instrument transfers with remap checks. Capture aids:
 feature-008 leftovers (IFF/TXWave loading, the WAV stereo prompt)
 landed with feature 013.
 
+**Composition-flow fix batch — DONE (2026-08-19, uncommitted):** three
+bugs found by side-by-side composing against real IT 2.14 in DOSBox.
+(1) **F11 order list was a stub** (navigation clamped to OrdNum, only
++/- editing) — rewritten to the `OrderListKeys` table (IT_PE.ASM 959):
+all 256 slots always navigable, the 3-position digit cursor
+(`OrderCursor`, Left/Right wrap, PE_PreOrderList single-cell 30h) with
+per-digit pattern-number entry (clamp 199, auto-advance,
+row-advance after units), `-`/`+` = ---/+++ then down, Ins/Del row
+shifting, End = first ---, `N` = previous+1, `G`/Enter goto pattern,
+Space/Ctrl-F7 = `Music_SetNextOrder` queue while playing (info line
+"Playing order N next"), Alt-R = PE_PostOrderListReorder (pattern
+renumber incl. the order-list/pattern-data/current-pattern swaps),
+PE_ShowOrder playing-row 23h highlight, values attr 02h,
+scroll-into-view. Header order-count now uses a `PE_GetMaxOrder` scan
+(first 0FFh - 1) instead of the stale header OrdNum. (2) **Loading a
+sample in instrument mode didn't host it in an instrument** — the
+LSWindow_Enter flow (IT_DISK.ASM 7297) is now in
+`lib_load_sample_entry`: "Create host instrument?" prompt (default Yes
+when the slot was empty, No when replacing) and
+`Music_AssignSampleToInstrument` (IT_MUSIC.ASM 6672, new in
+it_music.c: same-numbered slot if blank else first blank, name copy +
+120-note map; info line "Sample assigned to Instrument N" / "Error: No
+available Instruments!"). (3) **Saved .ITs carried InsNum=99** (+54KB
+of blanks): count_instruments compared against all-zero, but blank
+slots hold the template — now `Music_GetNumberOfInstruments`
+(IT_MUSIC.ASM 5460) compares against the pristine `InstrumentHeader`
+template (`Music_InitInstrument`, factored out of ClearAllInstruments;
+`Music_InstrumentIsBlank` also accepts all-zero as a port extension for
+importer paths). The .IT loader and F_FileNew (`song_defaults`) now
+stamp the template into blank slots, as the original song data area
+always holds. `confirm_box_def` adds a default-button parameter.
+Verified: determinism ×4 + roundtrip ×4×3 IDENTICAL, selftest 12 blocks
+incl. the new `ORD` (digit entry, +/-/Ins/Del/N/End, Alt-R with
+swap-back, host-instrument transfer both branches, count stability).
+Default channel-pan setup was checked against a real 2.14 save —
+byte-identical (all 20h, ChnlVol 40h, Sep 128) — no change needed.
+
 **Not done yet** (see §6): the Ctrl-V default-volume display toggle.
 Header FreeMem/FreeEMS show host
 free RAM / 0. NB: the selftest script must never send ITK_ENTER while

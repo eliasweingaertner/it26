@@ -759,6 +759,7 @@ static void instr_list_lclick(int row, int mx, int mpx);
 static void order_list_lclick(int row, int mx, int mpx);
 static void pan_left_lclick(int row, int mx, int mpx);
 static void pan_right_lclick(int row, int mx, int mpx);
+static int  max_order(void);
 static void act_stereo_changed(void);
 static void act_enable_instruments(void);
 static void act_tempo_changed(void);
@@ -854,7 +855,7 @@ static void draw_chrome(const char *title)
 
     ed_lock();
     draw3num(12, 5, (PlayMode == 2) ? CurrentOrder : 0, 0x05);
-    draw3num(16, 5, Song.Header.OrdNum ? Song.Header.OrdNum - 1 : 0, 0x05);
+    draw3num(16, 5, max_order(), 0x05);         /* PE_GetMaxOrder */
     draw3num(12, 6, CurPattern, 0x05);
     draw3num(16, 6, Song.Header.PatNum ? Song.Header.PatNum - 1 : 0, 0x05);
     draw3num(12, 7, CurRow, 0x05);
@@ -888,7 +889,7 @@ static void draw_chrome(const char *title)
     if (PlayMode == 2) {
         int nums9[6];
         nums9[0] = CurrentOrder;
-        nums9[1] = Song.Header.OrdNum ? Song.Header.OrdNum - 1 : 0;
+        nums9[1] = max_order();
         nums9[2] = CurrentPattern;
         nums9[3] = CurrentRow;
         nums9[4] = NumberOfRows;
@@ -1506,6 +1507,19 @@ static const uint8_t InstParamText[] =
     " Quality\015  Length";
 
 static int SmpListTop, InsListTop, OrdListTop;
+static int OrderCursor;                 /* F11 digit cursor, 0..2 */
+
+/* PE_GetMaxOrder (IT_PE.ASM 1109): index of the first 0FFh terminator
+ * minus one, floored at 0 (255 if the list is full) */
+static int max_order(void)
+{
+    int i;
+
+    for (i = 0; i < 256; i++)
+        if (Song.Orders[i] == 0xFF)
+            break;
+    return i > 0 ? i - 1 : 0;
+}
 static int PanSel;                              /* selected pan channel */
 /* in-list name editing (feature 013; IT_I.ASM I_PostSampleList /
  * I_PostInstrumentWindow): F3 cursor position within the sample name
@@ -1547,9 +1561,9 @@ static int ed_mem_nonzero(const void *p, size_t n)
 }
 
 /* generic Yes/No confirm (O1_Confirm*List), default No */
-static int confirm_box(const char *text)
+static int confirm_box_def(const char *text, int default_yes)
 {
-    int sel = 1;
+    int sel = default_yes ? 0 : 1;
 
     for (;;) {
         int key, tx;
@@ -1574,6 +1588,11 @@ static int confirm_box(const char *text)
         default: break;
         }
     }
+}
+
+static int confirm_box(const char *text)
+{
+    return confirm_box_def(text, 0);
 }
 
 /* numeric prompt (GetNumberInput / O1_*List): returns -1 on cancel */
@@ -3817,12 +3836,11 @@ static const uint8_t PanHeaderText[] =
 
 static void draw_order(void)
 {
-    int i, n = Song.Header.OrdNum;
+    int i;
     int focusw = FocusIdx[SCR_ORDER];
 
-    if (n <= 0) n = 1;
     if (ListSel < 0) ListSel = 0;
-    if (ListSel >= n) ListSel = n - 1;
+    if (ListSel > 255) ListSel = 255;
     if (PanSel < 0) PanSel = 0;
     if (PanSel > 63) PanSel = 63;
 
@@ -3831,27 +3849,42 @@ static void draw_order(void)
     wlist(20, 15, 39, 46, 15, pan_left_lkey, pan_left_lclick);
     wlist(54, 15, 73, 46, 15, pan_right_lkey, pan_right_lclick);
 
-    /* order list, type-12 object at (2,15), 32 entries */
+    /* order list, type-12 object at (2,15), 32 entries: all 256 slots
+     * are always navigable (PE_DrawOrderList scroll-into-view; values
+     * attr 02h, "---"/"+++" for 255/254, playing order 23h row number,
+     * the PE_PreOrderList single-digit 30h cursor when focused) */
     {
-        int top = ListSel - 16;
-        if (top > n - 32) top = n - 32;
+        int top = OrdListTop;
+
+        if (top > ListSel) top = ListSel;
+        if (top + 32 <= ListSel) top = ListSel - 31;
+        if (top > 256 - 32) top = 256 - 32;
         if (top < 0) top = 0;
         OrdListTop = top;
 
         Screen_DrawBox(5, 14, 10, 47, 27);
         for (i = 0; i < 32; i++) {
             int idx = top + i;
-            uint8_t a;
-            if (idx >= n || idx >= MAX_ORDERS)
-                break;
-            a = (idx == ListSel) ? 0x30 : 0x03;
-            draw3num(1, 15 + i, idx, 0x20);
-            if (Song.Orders[idx] == 255)
-                Screen_DrawString(6, 15 + i, "---", a);
-            else if (Song.Orders[idx] == 254)
-                Screen_DrawString(6, 15 + i, "+++", a);
+            uint8_t o = Song.Orders[idx];
+            uint8_t na = 0x20;
+            char val[8];
+
+            if (PlayMode == 2 && idx == (int)CurrentOrder)
+                na = 0x23;                      /* PE_ShowOrder */
+            draw3num(1, 15 + i, idx, na);
+            if (o == 255)
+                memcpy(val, "---", 4);
+            else if (o == 254)
+                memcpy(val, "+++", 4);
             else
-                draw3num(6, 15 + i, Song.Orders[idx], a);
+                snprintf(val, sizeof(val), "%03d", o);
+            Screen_DrawString(6, 15 + i, val, 0x02);
+            if (idx == ListSel && focusw == 0) {
+                char c[2];
+                c[0] = val[OrderCursor];
+                c[1] = 0;
+                Screen_DrawString(6 + OrderCursor, 15 + i, c, 0x30);
+            }
         }
     }
 
@@ -7836,43 +7869,192 @@ static void instr_list_lclick(int row, int mx, int mpx)
     }
 }
 
+/* PE_PostOrderListSwapPatterns: renumber pattern b as d and vice versa
+ * everywhere -- the order list, the pattern data slots, and the pattern
+ * currently open in the editor (*cur). Caller holds the engine lock. */
+static void order_swap_patterns(int b, int d, int *cur)
+{
+    pattern_t tmp;
+    int i;
+
+    if (*cur == b)
+        *cur = d;
+    else if (*cur == d)
+        *cur = b;
+    for (i = 0; i < 256; i++) {
+        if (Song.Orders[i] == b)
+            Song.Orders[i] = (uint8_t)d;
+        else if (Song.Orders[i] == d)
+            Song.Orders[i] = (uint8_t)b;
+    }
+    tmp = Song.Patterns[b];
+    Song.Patterns[b] = Song.Patterns[d];
+    Song.Patterns[d] = tmp;
+}
+
+/* PE_PostOrderListReorder (Alt-R): renumber the patterns so the order
+ * list plays 0, 1, 2, ... */
+static void order_reorder_patterns(void)
+{
+    int i, d = 0, cur;
+
+    stop_song();
+    commit_current_pattern();
+    cur = CurPattern;
+    ed_lock();
+    for (i = 0; i < 256; i++) {
+        int al = Song.Orders[i];
+
+        if (al >= 200 || al < d)
+            continue;
+        if (al > d)
+            order_swap_patterns(al, d, &cur);
+        d++;
+    }
+    ed_unlock();
+    load_pattern((uint16_t)cur);
+}
+
+/* the OrderListKeys table (IT_PE.ASM 959) over the full 256-slot list */
 static int order_list_lkey(int key)
 {
-    int n = Song.Header.OrdNum ? Song.Header.OrdNum : 1;
+    int o = ListSel;
+
     switch (key) {
-    case ITK_UP:   if (ListSel > 0) ListSel--; return 1;
-    case ITK_DOWN: if (ListSel < n - 1) ListSel++; return 1;
-    case ITK_PGUP: ListSel -= 16; if (ListSel < 0) ListSel = 0; return 1;
-    case ITK_PGDN: ListSel += 16; if (ListSel >= n) ListSel = n-1; return 1;
-    case ITK_HOME: ListSel = 0; return 1;
-    case ITK_END:  ListSel = n - 1; return 1;
-    case '=': case '+':
+    case ITK_UP:                                /* PE_PostOrderList1 */
+        if (ListSel > 0) ListSel--;
+        return 1;
+    case ITK_DOWN:                              /* PE_PostOrderList3 */
+        if (ListSel < 255) ListSel++;
+        return 1;
+    case ITK_PGUP:                              /* PE_PostOrderList4 */
+        ListSel -= 16; if (ListSel < 0) ListSel = 0;
+        return 1;
+    case ITK_PGDN:                              /* PE_PostOrderList6 */
+        ListSel += 16; if (ListSel > 255) ListSel = 255;
+        return 1;
+    case ITK_HOME:
+        ListSel = 0;
+        return 1;
+    case ITK_END: {                             /* first --- terminator */
+        int i;
+        for (i = 0; i < 255; i++)
+            if (Song.Orders[i] == 0xFF)
+                break;
+        ListSel = i;
+        return 1;
+    }
+    case ITK_LEFT:                              /* PE_PostOrderList7 */
+        OrderCursor = OrderCursor ? OrderCursor - 1 : 2;
+        return 1;
+    case ITK_RIGHT:                             /* PE_PostOrderList9 */
+        OrderCursor = OrderCursor < 2 ? OrderCursor + 1 : 0;
+        return 1;
+    case '-':                                   /* PE_PostOrderList16 */
         ed_lock();
-        if (Song.Orders[ListSel] < 199) Song.Orders[ListSel]++;
-        ed_unlock(); return 1;
-    case '-':
+        Song.Orders[o] = 0xFF;
+        ed_unlock();
+        OrderCursor = 0;
+        if (ListSel < 255) ListSel++;
+        return 1;
+    case '+': case '=':                         /* PE_PostOrderList17 */
         ed_lock();
-        if (Song.Orders[ListSel] > 0 && Song.Orders[ListSel] < 200)
-            Song.Orders[ListSel]--;
-        ed_unlock(); return 1;
+        Song.Orders[o] = 0xFE;
+        ed_unlock();
+        OrderCursor = 0;
+        if (ListSel < 255) ListSel++;
+        return 1;
+    case ITK_INS: {                             /* PE_PostOrderList19 */
+        int i;
+        ed_lock();
+        for (i = 255; i > o; i--)
+            Song.Orders[i] = Song.Orders[i - 1];
+        Song.Orders[o] = 0xFF;
+        ed_unlock();
+        return 1;
+    }
+    case ITK_DEL: {                             /* PE_PostOrderList18 */
+        int i;
+        ed_lock();
+        for (i = o; i < 255; i++)
+            Song.Orders[i] = Song.Orders[i + 1];
+        Song.Orders[255] = 0xFF;
+        ed_unlock();
+        return 1;
+    }
+    case 'n': case 'N': {                       /* PE_PostOrderList22 */
+        int prev;
+        if (o == 0)
+            return 0;
+        prev = Song.Orders[o - 1];
+        if (prev > 198)
+            return 0;
+        ed_lock();
+        Song.Orders[o] = (uint8_t)(prev + 1);
+        ed_unlock();
+        if (ListSel < 255) ListSel++;
+        return 1;
+    }
+    case ' ': case ITK_CTRL_F7:                 /* PE_PostOrderListNextOrder */
+        if (PlayMode == 2) {
+            status("Playing order %d next", o);
+            ed_lock();
+            Music_SetNextOrder((uint16_t)o);
+            ed_unlock();
+        }
+        return 1;
+    case ITK_ALT_A + ('R' - 'A'):               /* PE_PostOrderListReorder */
+        order_reorder_patterns();
+        return 1;
+    case 'g': case 'G':                         /* PE_PostOrderList24 */
     case ITK_ENTER:
-        if (Song.Orders[ListSel] < 200) {
+        if (Song.Orders[o] < 200) {
             commit_current_pattern();
-            load_pattern(Song.Orders[ListSel]);
+            load_pattern(Song.Orders[o]);
             Screen = SCR_PATTERN;
         }
         return 1;
-    default: break;
+    default:
+        break;
+    }
+
+    /* digit entry (PE_PostOrderList11/15): replace one decimal digit of
+     * the pattern number, clamp to 199, then advance the digit cursor
+     * (order advances after the units digit) */
+    if (key >= '0' && key <= '9') {
+        int cur = Song.Orders[o];
+        int dig[3], val;
+
+        if (cur > 199)
+            cur = 0;
+        dig[0] = cur / 100;
+        dig[1] = (cur / 10) % 10;
+        dig[2] = cur % 10;
+        dig[OrderCursor] = key - '0';
+        val = dig[0] * 100 + dig[1] * 10 + dig[2];
+        if (val > 199)
+            val = 199;
+        ed_lock();
+        Song.Orders[o] = (uint8_t)val;
+        ed_unlock();
+        if (OrderCursor < 2) {
+            OrderCursor++;
+        } else if (ListSel < 255) {
+            OrderCursor = 0;
+            ListSel++;
+        }
+        return 1;
     }
     return 0;
 }
 
 static void order_list_lclick(int row, int mx, int mpx)
 {
-    int n = Song.Header.OrdNum ? Song.Header.OrdNum : 1;
-    (void)mx; (void)mpx;
-    if (row >= 0 && OrdListTop + row < n)
+    (void)mpx;
+    if (row >= 0 && OrdListTop + row <= 255) {
         ListSel = OrdListTop + row;
+        OrderCursor = (mx >= 6 && mx <= 8) ? mx - 6 : 0;
+    }
 }
 
 /* F11 pan columns: Up/Down select channel, Left/Right slide the pan,
@@ -8593,6 +8775,7 @@ static int lib_load_sample_entry(const slibent_t *e)
 {
     sample_t *dst = &Song.Smp[ListSel];
     sample_t tmp;
+    int mkins = 0;
     char msg[64];
 
     if ((dst->Flags & 1) && dst->Length) {
@@ -8600,6 +8783,12 @@ static int lib_load_sample_entry(const slibent_t *e)
         if (!confirm_box(msg))
             return 0;
     }
+    /* LSWindow_Enter (IT_DISK.ASM 7297): in instrument mode, offer to
+     * host the sample in an instrument -- default Yes when the slot had
+     * no sample, No when one is being replaced */
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        mkins = confirm_box_def("Create host instrument?",
+                                !(dst->Flags & 1));
     memset(&tmp, 0, sizeof(tmp));
     if (!RIS_LoadSample(e, &tmp)) {
         status("Unable to load sample.");
@@ -8612,6 +8801,17 @@ static int lib_load_sample_entry(const slibent_t *e)
     if (ListSel >= Song.Header.SmpNum)
         Song.Header.SmpNum = (uint16_t)(ListSel + 1);
     ed_unlock();
+    if (mkins) {
+        int in;
+        ed_lock();
+        in = Music_AssignSampleToInstrument(ListSel);
+        ed_unlock();
+        if (in)
+            status("Sample assigned to Instrument %d", in);
+        else
+            status("Error: No available Instruments!");
+        return 1;
+    }
     status("Sample %d loaded.", ListSel + 1);
     return 1;
 }
@@ -9146,6 +9346,9 @@ static void song_defaults(void)
         Song.Header.ChnlPan[i] = 32;
         Song.Header.ChnlVol[i] = 64;
     }
+    /* blank slots hold the pristine InstrumentHeader template, as the
+     * original's song data area always does */
+    Music_ClearAllInstruments();
 }
 
 static void new_song(void)
@@ -11008,6 +11211,101 @@ int main(int argc, char **argv)
                     f_ok = 0;
             fprintf(stderr, "ITED selftest: [%s]\n",
                     f_ok ? "FFT OK" : "FFT FAIL");
+        }
+
+        /* F11 order list (OrderListKeys) + Music_AssignSampleToInstrument:
+         * full-range navigation, digit entry, +/-/Ins/Del/N/End, Alt-R
+         * reorder, and the sample->host-instrument transfer. All state is
+         * restored afterwards. */
+        {
+            int o_ok = 1, keepsel = ListSel, keepcur = OrderCursor;
+            int c0 = Music_GetNumberOfInstruments();
+            uint8_t keepord[256];
+
+            memcpy(keepord, Song.Orders, 256);
+            memset(Song.Orders, 0xFF, 256);
+            Song.Orders[0] = 0;
+            ListSel = 0;
+            OrderCursor = 0;
+
+            if (max_order() != 0)
+                o_ok = 0;
+            order_list_lkey(ITK_DOWN);          /* past the terminator */
+            if (ListSel != 1)
+                o_ok = 0;
+            order_list_lkey('0');               /* digit entry: 005 */
+            order_list_lkey('0');
+            order_list_lkey('5');
+            if (Song.Orders[1] != 5 || ListSel != 2 || OrderCursor != 0)
+                o_ok = 0;
+            order_list_lkey('9');               /* 900 clamps to 199 */
+            if (Song.Orders[2] != 199 || OrderCursor != 1)
+                o_ok = 0;
+            order_list_lkey('+');               /* +++ then down */
+            if (Song.Orders[2] != 0xFE || ListSel != 3 || OrderCursor != 0)
+                o_ok = 0;
+            order_list_lkey('-');               /* --- then down */
+            if (Song.Orders[3] != 0xFF || ListSel != 4)
+                o_ok = 0;
+            ListSel = 1;                        /* Ins/Del row shifting */
+            order_list_lkey(ITK_INS);
+            if (Song.Orders[1] != 0xFF || Song.Orders[2] != 5)
+                o_ok = 0;
+            order_list_lkey(ITK_DEL);
+            if (Song.Orders[1] != 5 || Song.Orders[2] != 0xFE)
+                o_ok = 0;
+            ListSel = 2;                        /* N = previous + 1 */
+            order_list_lkey('N');
+            if (Song.Orders[2] != 6 || ListSel != 3)
+                o_ok = 0;
+            order_list_lkey(ITK_END);           /* first --- */
+            if (ListSel != 3 || max_order() != 2)
+                o_ok = 0;
+
+            /* Alt-R: orders 0,5,6 renumber to 0,1,2 (patterns swapped
+             * 1<->5, 2<->6; swapped back below) */
+            order_list_lkey(ITK_ALT_A + ('R' - 'A'));
+            if (Song.Orders[0] != 0 || Song.Orders[1] != 1 ||
+                Song.Orders[2] != 2)
+                o_ok = 0;
+            {
+                int cur = (int)CurPattern;
+                ed_lock();
+                order_swap_patterns(2, 6, &cur);
+                order_swap_patterns(1, 5, &cur);
+                ed_unlock();
+                load_pattern((uint16_t)cur);
+            }
+
+            /* host-instrument transfer: blank same-numbered slot gets
+             * the sample name + a full 120-note map */
+            {
+                int n = Music_AssignSampleToInstrument(97);
+                if (n != 98 ||
+                    Music_InstrumentIsBlank(&Song.Ins[97]) ||
+                    Song.Ins[97].NoteSampleTable[1] != 98 ||
+                    Song.Ins[97].NoteSampleTable[2 * 119 + 1] != 98 ||
+                    memcmp(Song.Ins[97].InstrumentName,
+                           Song.Smp[97].SampleName, 26) != 0)
+                    o_ok = 0;
+                /* occupied slot: falls through to the first blank one */
+                n = Music_AssignSampleToInstrument(97);
+                if (n == 0 || n == 98 ||
+                    Song.Ins[n - 1].NoteSampleTable[1] != 98)
+                    o_ok = 0;
+                if (n > 0)
+                    Music_InitInstrument(&Song.Ins[n - 1]);
+                Music_InitInstrument(&Song.Ins[97]);
+            }
+            if (Music_GetNumberOfInstruments() != c0)
+                o_ok = 0;
+
+            memcpy(Song.Orders, keepord, 256);
+            ListSel = keepsel;
+            OrderCursor = keepcur;
+            redraw();
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    o_ok ? "ORD OK" : "ORD FAIL");
         }
 
         commit_current_pattern();
