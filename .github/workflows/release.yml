@@ -23,6 +23,7 @@ jobs:
   # ------------------------------------------------------------------------
   meta:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.m.outputs.version }}
       label: ${{ steps.m.outputs.label }}
@@ -47,10 +48,12 @@ jobs:
   windows:
     needs: meta
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Install NSIS
+        timeout-minutes: 10
         run: choco install nsis -y --no-progress
 
       - name: Configure
@@ -94,15 +97,24 @@ jobs:
   linux:
     needs: meta
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       LABEL: ${{ needs.meta.outputs.label }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build + packaging deps
+        timeout-minutes: 12
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev imagemagick file wget
+          set +e
+          pkgs="libsdl2-dev imagemagick file wget"
+          for i in 1 2 3; do
+            timeout 240 sudo apt-get update -o Acquire::Retries=3 || { sleep 15; continue; }
+            timeout 300 sudo apt-get install -y -o Acquire::Retries=3 $pkgs && exit 0
+            echo "apt attempt $i stalled or failed; retrying" >&2
+            sleep 15
+          done
+          exit 1
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DITTRACK_VERSION=${{ needs.meta.outputs.version }}
@@ -144,7 +156,7 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q --tries=3 --timeout=60 https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
           ./linuxdeploy-x86_64.AppImage \
             --appdir AppDir \
@@ -171,6 +183,7 @@ jobs:
   macos:
     needs: meta
     runs-on: macos-latest
+    timeout-minutes: 30
     env:
       LABEL: ${{ needs.meta.outputs.label }}
       VERSION: ${{ needs.meta.outputs.version }}
@@ -178,6 +191,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install build + packaging deps
+        timeout-minutes: 15
         run: brew install sdl2 dylibbundler imagemagick
 
       - name: Configure
@@ -266,6 +280,7 @@ jobs:
   publish:
     needs: [meta, windows, linux, macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/download-artifact@v4
         with:
