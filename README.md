@@ -282,6 +282,48 @@ verification pass, Ctrl-V default-volume display toggle).
 
 ## Fidelity notes (deviations from the DOS binary)
 
+Keyboard (feature 014):
+- Like the original, a keypress carries **two** values: the physical key
+  position and the character the active layout produced from it
+  (`K_GetKey` returns them as `CX`/`DX`, `IT_K.ASM:1108`). Note entry
+  matches the position only — `IT_I.ASM:1344` compares the scancode and
+  never the character — so the tracker's two note rows stay under the
+  same physical keys on every keyboard layout, exactly as they do in
+  DOS. Text fields use the character, which is where national characters
+  (ä ö ü ß …) come from. Alt/Ctrl letter shortcuts follow the *printed*
+  keycap, matching what `Keyboard/DE.ASM` does by remapping their return
+  values.
+- Deviation: the character comes from the **host OS keyboard layout**
+  rather than a loaded `KEYBOARD.CFG`, so any layout the host supports
+  works with no configuration. The original's file format is still
+  supported for exact DOS parity or layouts the host lacks — set
+  `keyboard_cfg=` in `ited.cfg`; `tools/asm_keyboard_cfg.py` assembles
+  the shipped `Keyboard/*.ASM` tables without a DOS toolchain.
+- Deviation: `MuteNext` is bound to the main-row `/` **position** as in
+  the original (`IT_PE.ASM:801`, `DW 135h`), and *additionally* to the
+  keypad `/`, which the original does not do. The keypad binding has
+  shipped since feature 010 and is kept for compatibility.
+- Limitation: the terminal backend cannot obtain physical key positions
+  (ANSI reports characters only), so it infers them from the character
+  using a US layout. Keys that differ only by position — main-row versus
+  keypad `/` — are indistinguishable there.
+- Characters the tracker's CP437 repertoire cannot represent are
+  rejected on input rather than transliterated; the module format stores
+  single CP437 bytes and has no way to carry them.
+- **Deviation (layout not ported):** Ctrl-F1 opens a keypress table on the
+  pixel backends. The *binding and purpose* are the original's — the
+  `Keyboard/*.ASM` headers point at "the keypress table in IT on Ctrl-F1"
+  as the way to read key codes when writing a layout file — but the
+  **layout is this port's own, not a transliteration**. The original
+  (`K_DrawTables`, `IT_K.ASM:1522`) draws two 256-entry hex grids: the
+  raw `KeyboardBuffer` queue at cell (2,15) and the `KeyBoardTable`
+  key-down map at (29,15), each 32 rows x 8 columns, with a brighter
+  attribute on any scancode currently held. Ours is a 12-row scrolling
+  log of recent events with scancode, character, code and modifier
+  columns. Porting the original's right-hand grid faithfully needs a live
+  256-entry key-down map, which needs key-*up* events for every key; the
+  backends currently report releases only for Shift.
+
 Mechanical translations:
 - Segmented addressing → pointers/indices. Instrument offsets became
   1-based instrument numbers, sample header offsets became 0-based

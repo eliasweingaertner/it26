@@ -6,6 +6,13 @@
 *.o
 *.pdb
 *.ilk
+# shared/static libs from out-of-tree builds
+*.a
+*.so
+*.dll
+
+# editor runtime config (per-user; feature 014 adds keyboard_cfg/keyboard_layout)
+/ited.cfg
 
 # Makefile build tree + POSIX binaries
 /build-make/

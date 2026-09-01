@@ -31,19 +31,99 @@ static SDL_Window   *Wnd;
 static SDL_Renderer *Ren;
 static SDL_Texture  *Tex;
 static uint32_t      Pixels[PIX_W * PIX_H];
-static int           KeyQueue[64];
+static it_key_t      KeyQueue[64];
+/* feature 014: physical half of the current event, captured on
+ * SDL_KEYDOWN and still valid for the SDL_TEXTINPUT that follows. */
+static uint8_t       CurScan, CurFlags;
 static int           KeyHead, KeyTail;
 static int           WantQuit;
 static int           MousePX, MousePY;      /* logical pixels 0..639/0..399 */
 static int           MouseB;
 
-static void PushKey(int k)
+/* SDL reports USB HID usage ids; the ported ASM tables are all indexed
+ * by PC set-1 scancodes (research R6), so translate. Only the keys the
+ * tables reference need to be here; anything else yields 0 = "position
+ * unknown", which no consumer requires. */
+static uint8_t SDLScanToSet1(SDL_Scancode s)
+{
+    switch (s) {
+    case SDL_SCANCODE_A: return 0x1E; case SDL_SCANCODE_B: return 0x30;
+    case SDL_SCANCODE_C: return 0x2E; case SDL_SCANCODE_D: return 0x20;
+    case SDL_SCANCODE_E: return 0x12; case SDL_SCANCODE_F: return 0x21;
+    case SDL_SCANCODE_G: return 0x22; case SDL_SCANCODE_H: return 0x23;
+    case SDL_SCANCODE_I: return 0x17; case SDL_SCANCODE_J: return 0x24;
+    case SDL_SCANCODE_K: return 0x25; case SDL_SCANCODE_L: return 0x26;
+    case SDL_SCANCODE_M: return 0x32; case SDL_SCANCODE_N: return 0x31;
+    case SDL_SCANCODE_O: return 0x18; case SDL_SCANCODE_P: return 0x19;
+    case SDL_SCANCODE_Q: return 0x10; case SDL_SCANCODE_R: return 0x13;
+    case SDL_SCANCODE_S: return 0x1F; case SDL_SCANCODE_T: return 0x14;
+    case SDL_SCANCODE_U: return 0x16; case SDL_SCANCODE_V: return 0x2F;
+    case SDL_SCANCODE_W: return 0x11; case SDL_SCANCODE_X: return 0x2D;
+    case SDL_SCANCODE_Y: return 0x15; case SDL_SCANCODE_Z: return 0x2C;
+    case SDL_SCANCODE_1: return 0x02; case SDL_SCANCODE_2: return 0x03;
+    case SDL_SCANCODE_3: return 0x04; case SDL_SCANCODE_4: return 0x05;
+    case SDL_SCANCODE_5: return 0x06; case SDL_SCANCODE_6: return 0x07;
+    case SDL_SCANCODE_7: return 0x08; case SDL_SCANCODE_8: return 0x09;
+    case SDL_SCANCODE_9: return 0x0A; case SDL_SCANCODE_0: return 0x0B;
+    case SDL_SCANCODE_MINUS:        return 0x0C;
+    case SDL_SCANCODE_EQUALS:       return 0x0D;
+    case SDL_SCANCODE_LEFTBRACKET:  return 0x1A;
+    case SDL_SCANCODE_RIGHTBRACKET: return 0x1B;
+    case SDL_SCANCODE_BACKSLASH:    return 0x2B;
+    case SDL_SCANCODE_SEMICOLON:    return 0x27;
+    case SDL_SCANCODE_APOSTROPHE:   return 0x28;
+    case SDL_SCANCODE_GRAVE:        return 0x29;
+    case SDL_SCANCODE_COMMA:        return 0x33;
+    case SDL_SCANCODE_PERIOD:       return 0x34;
+    case SDL_SCANCODE_SLASH:        return 0x35;
+    case SDL_SCANCODE_SPACE:        return 0x39;
+    case SDL_SCANCODE_RETURN:       return 0x1C;
+    case SDL_SCANCODE_ESCAPE:       return 0x01;
+    case SDL_SCANCODE_BACKSPACE:    return 0x0E;
+    case SDL_SCANCODE_TAB:          return 0x0F;
+    case SDL_SCANCODE_CAPSLOCK:     return 0x3A;
+    case SDL_SCANCODE_NONUSBACKSLASH: return 0x56;
+    /* E0-extended: the original encodes these as +80h (IT_K.ASM:1156) */
+    case SDL_SCANCODE_KP_DIVIDE:    return 0xB5;
+    case SDL_SCANCODE_LCTRL:        return 0x1D;
+    case SDL_SCANCODE_LSHIFT:       return 0x2A;
+    case SDL_SCANCODE_LALT:         return 0x38;
+    case SDL_SCANCODE_RCTRL:        return 0x9D;
+    case SDL_SCANCODE_RSHIFT:       return 0x36;
+    case SDL_SCANCODE_RALT:         return 0xB8;
+    default: return 0;
+    }
+}
+
+/* the original's CH (IT_K.ASM:1216) from SDL's live modifier state */
+static uint8_t ModFlags(void)
+{
+    SDL_Keymod m = SDL_GetModState();
+    uint8_t f = ITKF_PRESSED;
+    if (m & KMOD_LSHIFT) f |= ITKF_LSHIFT;
+    if (m & KMOD_RSHIFT) f |= ITKF_RSHIFT;
+    if (m & KMOD_LCTRL)  f |= ITKF_LCTRL;
+    if (m & KMOD_RCTRL)  f |= ITKF_RCTRL;
+    if (m & KMOD_LALT)   f |= ITKF_LALT;
+    if (m & KMOD_RALT)   f |= ITKF_RALT;
+    return f;
+}
+
+static void PushKeyCh(int k, uint16_t ch)
 {
     int next = (KeyTail + 1) % 64;
     if (next != KeyHead) {
-        KeyQueue[KeyTail] = k;
+        KeyQueue[KeyTail].scan  = CurScan;
+        KeyQueue[KeyTail].flags = CurFlags;
+        KeyQueue[KeyTail].ch    = ch;
+        KeyQueue[KeyTail].code  = k;
         KeyTail = next;
     }
+}
+
+static void PushKey(int k)
+{
+    PushKeyCh(k, 0);
 }
 
 /* Non-text keys -> ITK_*. Printable characters arrive via SDL_TEXTINPUT
@@ -110,6 +190,8 @@ static void PumpEvents(void)
             break;
         case SDL_KEYDOWN: {
             SDL_Keycode kc = e.key.keysym.sym;
+            CurScan  = SDLScanToSet1(e.key.keysym.scancode);
+            CurFlags = ModFlags();
             SDL_Keymod  mod = SDL_GetModState();
             if (kc == SDLK_LSHIFT || kc == SDLK_RSHIFT) {
                 if (!e.key.repeat)
@@ -202,6 +284,7 @@ static void PumpEvents(void)
                 case SDLK_INSERT:   PushKey(ITK_CTRL_INS);       break;
                 case SDLK_DELETE:   PushKey(ITK_CTRL_DEL);       break;
                 case SDLK_BACKSPACE:PushKey(ITK_CTRL_BACKSPACE); break;
+                case SDLK_F1:       PushKey(ITK_CTRL_F1);        break;
                 case SDLK_F7:       PushKey(ITK_CTRL_F7);        break;
                 case SDLK_F2:       PushKey(ITK_CTRL_F2);        break;
                 default:
@@ -248,11 +331,28 @@ static void PumpEvents(void)
                 PushKey(ITK_SHIFT_RELEASE);
             break;
         case SDL_TEXTINPUT: {
-            const char *p = e.text.text;
-            for (; *p; ++p) {
-                unsigned char c = (unsigned char)*p;
-                if (c >= 32 && c < 127)
-                    PushKey((int)c);
+            /* UTF-8 -> code point -> CP437. The legacy `code` keeps the
+             * old ASCII-only filter so this phase changes no behaviour;
+             * `ch` carries the national characters (feature 014). */
+            const unsigned char *p = (const unsigned char *)e.text.text;
+            while (*p) {
+                uint32_t u;
+                int extra;
+                if (*p < 0x80)            { u = *p;         extra = 0; }
+                else if ((*p & 0xE0) == 0xC0) { u = *p & 0x1F; extra = 1; }
+                else if ((*p & 0xF0) == 0xE0) { u = *p & 0x0F; extra = 2; }
+                else if ((*p & 0xF8) == 0xF0) { u = *p & 0x07; extra = 3; }
+                else                      { p++; continue; }
+                p++;
+                while (extra-- > 0 && (*p & 0xC0) == 0x80)
+                    u = (u << 6) | (*p++ & 0x3F);
+                {
+                    uint16_t cp = Screen_UnicodeToCP437(u);
+                    if (u >= 32 && u < 127)
+                        PushKeyCh((int)u, cp);
+                    else if (u >= 127 && cp >= 32)
+                        PushKeyCh((int)cp, cp);   /* national chars */
+                }
             }
             break;
         }
@@ -355,10 +455,28 @@ static int SDL_BKey(void)
     if (KeyHead == KeyTail)
         return ITK_NONE;
     {
-        int k = KeyQueue[KeyHead];
+        int k = KeyQueue[KeyHead].code;
         KeyHead = (KeyHead + 1) % 64;
         return k;
     }
+}
+
+/* feature 014: the same queue, with the physical half attached */
+static int SDL_BKeyEvent(it_key_t *k)
+{
+    PumpEvents();
+    if (WantQuit) {
+        k->scan = 0;
+        k->flags = ITKF_PRESSED;
+        k->ch = 0;
+        k->code = ITK_QUIT;
+        return 1;
+    }
+    if (KeyHead == KeyTail)
+        return 0;
+    *k = KeyQueue[KeyHead];
+    KeyHead = (KeyHead + 1) % 64;
+    return 1;
 }
 
 static void SDL_BMouse(it_mouse_t *m)
@@ -372,7 +490,8 @@ static void SDL_BMouse(it_mouse_t *m)
 }
 
 const screen_backend_t Screen_BackendSDL = {
-    SDL_BInit, SDL_BUnInit, SDL_BPresent, SDL_BKey, SDL_BMouse
+    SDL_BInit, SDL_BUnInit, SDL_BPresent, SDL_BKey, SDL_BMouse,
+    SDL_BKeyEvent
 };
 
 #endif /* HAVE_SDL */

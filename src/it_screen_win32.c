@@ -24,8 +24,13 @@
 static HWND      Wnd;
 static uint32_t  Pixels[PIX_W * PIX_H];
 static BITMAPINFO Bmi;
-static int       KeyQueue[64];
+static it_key_t  KeyQueue[64];
 static int       KeyHead, KeyTail;
+/* feature 014: the physical half of the event. Set on every
+ * WM_KEYDOWN/WM_SYSKEYDOWN and still valid for the WM_CHAR that
+ * TranslateMessage synthesizes immediately afterwards, which is how the
+ * scancode and the character get paired. */
+static uint8_t   CurScan, CurFlags;
 static int       WantQuit;
 static int       MousePX, MousePY;      /* logical pixels 0..639/0..399 */
 static int       MouseB;
@@ -39,13 +44,44 @@ static HBITMAP   BackBmp, BackBmpOld;   /* present with one BitBlt (direct   */
 static int       BackW, BackH;          /* StretchDIBits to the screen shows
                                            mid-blit states = flicker)        */
 
-static void PushKey(int k)
+/* the original's CH, rebuilt from the live key state (IT_K.ASM:1216) */
+static uint8_t ModFlags(void)
+{
+    uint8_t f = ITKF_PRESSED;
+    if (GetKeyState(VK_LSHIFT)   & 0x8000) f |= ITKF_LSHIFT;
+    if (GetKeyState(VK_RSHIFT)   & 0x8000) f |= ITKF_RSHIFT;
+    if (GetKeyState(VK_LCONTROL) & 0x8000) f |= ITKF_LCTRL;
+    if (GetKeyState(VK_RCONTROL) & 0x8000) f |= ITKF_RCTRL;
+    if (GetKeyState(VK_LMENU)    & 0x8000) f |= ITKF_LALT;
+    if (GetKeyState(VK_RMENU)    & 0x8000) f |= ITKF_RALT;
+    return f;
+}
+
+/* lParam bits 16-23 are the OEM set-1 scancode; bit 24 marks the
+ * E0-extended variant, which the original encodes as +80h. */
+static void CaptureScan(LPARAM lp)
+{
+    CurScan  = (uint8_t)((lp >> 16) & 0xFF);
+    if (lp & (1L << 24))
+        CurScan |= 0x80;
+    CurFlags = ModFlags();
+}
+
+static void PushKeyCh(int k, uint16_t ch)
 {
     int next = (KeyTail + 1) % 64;
     if (next != KeyHead) {
-        KeyQueue[KeyTail] = k;
+        KeyQueue[KeyTail].scan  = CurScan;
+        KeyQueue[KeyTail].flags = CurFlags;
+        KeyQueue[KeyTail].ch    = ch;
+        KeyQueue[KeyTail].code  = k;
         KeyTail = next;
     }
+}
+
+static void PushKey(int k)
+{
+    PushKeyCh(k, 0);
 }
 
 static int MapVKey(WPARAM vk)
@@ -188,6 +224,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
+        CaptureScan(lp);                /* feature 014: physical half */
         if (wp == VK_SHIFT) {           /* shift press event (2Ah/36h) */
             if (!(lp & (1u << 30)))     /* suppress autorepeat */
                 PushKey(ITK_SHIFT_PRESS);
@@ -268,6 +305,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_INSERT: PushKey(ITK_CTRL_INS);       return 0;
             case VK_DELETE: PushKey(ITK_CTRL_DEL);       return 0;
             case VK_BACK:   PushKey(ITK_CTRL_BACKSPACE); return 0;
+            case VK_F1:     PushKey(ITK_CTRL_F1);        return 0;
             case VK_F7:     PushKey(ITK_CTRL_F7);        return 0;
             case VK_F2:     PushKey(ITK_CTRL_F2);        return 0;
             case 'H':       PushKey(0x08);               return 0;
@@ -308,11 +346,22 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             PushKey(ITK_SHIFT_RELEASE);
         break;
     case WM_CHAR:
+        /* wp is a UTF-16 code unit; CP437 has nothing outside the BMP,
+         * so an unpaired surrogate simply converts to 0 = reject. */
         if (wp >= 32 && wp < 127)
-            PushKey((int)wp);
+            PushKeyCh((int)wp, (uint16_t)wp);
+        else if (wp >= 127) {
+            /* National characters (feature 014). Only what CP437 can
+             * represent gets through: a character with no CP437 code
+             * produces NO event at all, so the field and cursor are
+             * left untouched rather than taking a wrong glyph. */
+            uint16_t cp = Screen_UnicodeToCP437((uint32_t)wp);
+            if (cp >= 32)
+                PushKeyCh((int)cp, cp);
+        }
         else if (wp >= 1 && wp <= 26 &&
                  wp != 8 && wp != 9 && wp != 13)
-            PushKey((int)wp);           /* Ctrl-A..Z (BS/Tab/CR are
+            PushKeyCh((int)wp, 0);      /* Ctrl-A..Z (BS/Tab/CR are
                                            delivered as VK keys above) */
         return 0;
     case WM_MOUSEMOVE:
@@ -409,10 +458,28 @@ static int W32_Key(void)
     if (KeyHead == KeyTail)
         return ITK_NONE;
     {
-        int k = KeyQueue[KeyHead];
+        int k = KeyQueue[KeyHead].code;
         KeyHead = (KeyHead + 1) % 64;
         return k;
     }
+}
+
+/* feature 014: the same queue, with the physical half attached */
+static int W32_KeyEvent(it_key_t *k)
+{
+    PumpMessages();
+    if (WantQuit) {
+        k->scan = 0;
+        k->flags = ITKF_PRESSED;
+        k->ch = 0;
+        k->code = ITK_QUIT;
+        return 1;
+    }
+    if (KeyHead == KeyTail)
+        return 0;
+    *k = KeyQueue[KeyHead];
+    KeyHead = (KeyHead + 1) % 64;
+    return 1;
 }
 
 static void W32_Mouse(it_mouse_t *m)
@@ -426,7 +493,7 @@ static void W32_Mouse(it_mouse_t *m)
 }
 
 const screen_backend_t Screen_BackendWin32 = {
-    W32_Init, W32_UnInit, W32_Present, W32_Key, W32_Mouse
+    W32_Init, W32_UnInit, W32_Present, W32_Key, W32_Mouse, W32_KeyEvent
 };
 
 #endif /* _WIN32 */

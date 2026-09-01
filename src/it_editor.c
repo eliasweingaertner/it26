@@ -68,7 +68,8 @@ int  Music_LoadIT(const char *path);
 void Music_FreeIT(void);
 
 enum { SCR_HELP, SCR_PATTERN, SCR_SAMPLES, SCR_INSTRUMENTS,
-       SCR_ORDER, SCR_VARS, SCR_INFO, SCR_MESSAGE, SCR_COUNT };
+       SCR_ORDER, SCR_VARS, SCR_INFO, SCR_MESSAGE, SCR_KEYS,
+       SCR_COUNT };
 
 /* ---- editor state ---- */
 static int      Screen = SCR_PATTERN;
@@ -108,6 +109,51 @@ static uint8_t   LastVolume = 0xFF;
 static uint8_t   LastCommand = 0, LastCommandValue = 0;
 static int       PlayMarkPattern = 0, PlayMarkRow = 0, PlayMarkOn = 0;
 static int       LastKeys[3];           /* LastKeyBoard1..3 history */
+
+/* ---- feature 014: the live key event -------------------------------
+ * The original keeps both halves of a keypress in scope at once
+ * (K_GetKey returns CX/DX = input/translated, IT_K.ASM:1108). Note
+ * entry needs the physical half -- IT_I.ASM:1344 matches the scancode
+ * and never looks at the character -- which no `int key` argument can
+ * carry. So the whole event lives here, filled by ed_get_key() in every
+ * key loop and synthesized by ed_sync_key() when a key is injected
+ * directly (the selftest scripts, and the internal handle_global()
+ * calls that stand in for real presses). */
+static it_key_t  CurKey;
+static char      KeyboardCfg[260];      /* ited.cfg keyboard_cfg= */
+
+static void ed_sync_key(int key)
+{
+    if (CurKey.code == key && (CurKey.flags & ITKF_PRESSED))
+        return;                         /* already the live event */
+    memset(&CurKey, 0, sizeof(CurKey));
+    CurKey.code  = key;
+    CurKey.flags = ITKF_PRESSED;
+    if (key > 0 && key < 0x100)
+        CurKey.ch = (uint16_t)key;
+    CurKey.scan = Key_ReverseScan(CurKey.ch);
+}
+
+/* Ctrl-F1 keypress table (feature 014): a rolling log of what the
+ * tracker actually received. This is the screen Keyboard/DE.ASM's header
+ * comment points at ("the value in the keypress table in IT on Ctrl-F1")
+ * as the way to read key codes when writing a layout file. */
+#define KEYLOG_N 12
+static it_key_t KeyLog[KEYLOG_N];
+static int      KeyLogCount;
+
+static int ed_get_key(void)
+{
+    if (!Key_GetEvent(&CurKey)) {
+        memset(&CurKey, 0, sizeof(CurKey));
+        return ITK_NONE;
+    }
+    memmove(&KeyLog[1], &KeyLog[0], sizeof(KeyLog) - sizeof(KeyLog[0]));
+    KeyLog[0] = CurKey;
+    if (KeyLogCount < KEYLOG_N)
+        KeyLogCount++;
+    return CurKey.code;
+}
 typedef struct undoslot_t {             /* UndoBuffer: 10 snapshots */
     editcell_t *cells;
     uint16_t    rows;
@@ -699,7 +745,11 @@ static int widgets_key(int key)
                 w->text[len - 1] = 0;
             return 1;
         }
-        if (key >= 32 && key < 127) {
+        if (key >= 32 && key < 256) {   /* CP437, incl. national chars
+                                           (feature 014); anything the
+                                           host layout produces that
+                                           CP437 cannot carry never
+                                           reaches us at all */
             if (len < w->tmax) {
                 w->text[len] = (char)key;
                 if (len + 1 <= w->tmax)
@@ -1576,7 +1626,7 @@ static int confirm_box_def(const char *text, int default_yes)
         draw_button_style(43, 24, 48, 26, 3, " No", 0, sel == 1);
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
         switch (key) {
         case ITK_QUIT: Running = 0; return 0;
@@ -1614,7 +1664,7 @@ static long prompt_number(const char *title, unsigned long def,
         drawf(26, 25, 0x30, "%-10.10s", buf);
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
         switch (key) {
         case ITK_QUIT: Running = 0; return -1;
@@ -1655,7 +1705,7 @@ static int quality_dialog(int to16)
         draw_button_style(51, 24, 59, 26, 3, " Cancel", 0, sel == 2);
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
         switch (key) {
         case ITK_QUIT: Running = 0; return 0;
@@ -2765,7 +2815,7 @@ static void draw_samples(void)
  * I_DrawNoteWindow, I_DrawEnvelope (+node editing), and
  * I_DrawPitchPanCenter. FILTERENVELOPES=1 layout (the 2.17 build).
  * =================================================================== */
-static int key_to_note(int key);
+static int key_to_note(const it_key_t *k);
 static void jam_note(int gnote, int chan);
 
 static uint8_t InsTab = 0;         /* InstrumentScreen: 0=General 1=Vol
@@ -3581,7 +3631,7 @@ static int notewin_ckey(int key)           /* NoteListKeys+PostNoteWindow */
     }
 
     if (NotePos == 0) {                    /* piano keys set note+sample */
-        int gn = key_to_note(key);
+        int gn = key_to_note(&CurKey);
         if (gn > 0 && gn <= 120) {
             ed_lock();
             entry[0] = (uint8_t)(gn - 1);
@@ -3992,6 +4042,62 @@ static void draw_vars(void)
 /* ===================================================================
  * Help (F1)
  * =================================================================== */
+/* Ctrl-F1 keypress table. Shows both halves of the last few key events
+ * side by side: the physical position the tracker matched note entry
+ * against, and the character the active layout produced from it. On a
+ * German keyboard the key printed Z reads scan 15h / char 'z' -- which
+ * is exactly the evidence needed to hand-write a KEYBOARD.CFG. */
+static void draw_keys(void)
+{
+    static const char *modname[7] = { "LSh", "RSh", "LCt", "RCt",
+                                      "LAl", "RAl", NULL };
+    const char *layout = Key_LayoutName();
+    char line[80];
+    int i, b, x;
+
+    Screen_Clear(0x11);
+    Screen_DrawBox(1, 1, 78, 46, 1);
+    Screen_DrawString(3, 2, "Key press table", 0x0F);
+    Screen_DrawString(3, 4,
+        "Positions come from the hardware, characters from the layout.",
+        0x0A);
+    snprintf(line, sizeof(line), "Layout: %s",
+             layout[0] ? layout : "host keyboard layout (no override)");
+    Screen_DrawString(3, 5, line, 0x0A);
+
+    Screen_DrawString(3, 7, "scan  char  code   modifiers", 0x0F);
+    Screen_DrawString(3, 8,
+        "----  ----  ----   ---------------------------------", 0x09);
+
+    for (i = 0; i < KeyLogCount; i++) {
+        const it_key_t *k = &KeyLog[i];
+        uint8_t attr = i == 0 ? 0x0F : 0x09;
+
+        snprintf(line, sizeof(line), "%02X    ", k->scan);
+        Screen_DrawString(3, 9 + i, line, attr);
+        if (k->ch >= 32)
+            Screen_PutChar(9, 9 + i, (uint8_t)k->ch, attr);
+        else
+            Screen_PutChar(9, 9 + i, '-', attr);
+        snprintf(line, sizeof(line), "%02X   %04X", k->ch, (unsigned)k->code);
+        Screen_DrawString(11, 9 + i, line, attr);
+
+        x = 26;
+        if (!(k->flags & ITKF_PRESSED)) {
+            Screen_DrawString(x, 9 + i, "release", attr);
+        } else {
+            for (b = 0; b < 6; b++)
+                if (k->flags & (2 << b)) {
+                    Screen_DrawString(x, 9 + i, modname[b], attr);
+                    x += 4;
+                }
+        }
+    }
+
+    Screen_DrawString(3, 44, "Press any key to log it; ESC or F2 returns "
+                             "to the pattern editor.", 0x0A);
+}
+
 static void draw_help(void)
 {
     static const char *lines[] = {
@@ -5216,7 +5322,7 @@ static void fourier_view(void)
         fourier_frame(&xoff);
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         switch (key) {
         case ITK_QUIT:
             Running = 0;
@@ -5769,6 +5875,7 @@ static void draw_screen(void)
     case SCR_ORDER:       draw_order(); break;
     case SCR_VARS:        draw_vars(); break;
     case SCR_HELP:        draw_help(); break;
+    case SCR_KEYS:        NW = 0; draw_keys(); break;
     case SCR_INFO:        NW = 0; draw_info(); break;
     case SCR_MESSAGE:     NW = 0; draw_message(); break;
     }
@@ -5783,24 +5890,34 @@ static void redraw(void)
 /* ===================================================================
  * Note entry: IT piano keyboard -> grid note (or -1)
  * =================================================================== */
-static int key_to_note(int key)
+static int key_to_note(const it_key_t *k)
 {
-    /* exactly the original KeyBoardTable (IT_PE.ASM 254..261):
-     * Z-row 12 semitones + Q-row 17. No ; , . l / extension --
-     * those keys carry their original bindings (feature 009). */
-    static const struct { char k; int semitone, oct; } map[] = {
-        {'z',0,0},{'s',1,0},{'x',2,0},{'d',3,0},{'c',4,0},{'v',5,0},
-        {'g',6,0},{'b',7,0},{'h',8,0},{'n',9,0},{'j',10,0},{'m',11,0},
-        {'q',0,1},{'2',1,1},{'w',2,1},{'3',3,1},{'e',4,1},{'r',5,1},
-        {'5',6,1},{'t',7,1},{'6',8,1},{'y',9,1},{'7',10,1},{'u',11,1},
-        {'i',12,1},{'9',13,1},{'o',14,1},{'0',15,1},{'p',16,1},
+    /* KeyBoardTable, IT_I.ASM:333 -- transliterated verbatim, including
+     * the 0FFFFh terminator. The entries are `DW 12Ch, 0` pairs: the
+     * high byte is the press flag (CH bit 0) and the LOW byte is the
+     * SCANCODE. The original's lookup at IT_I.ASM:1344 is `Cmp BL, CL`,
+     * comparing the scancode alone, so note entry is purely positional:
+     * the rows sit at fixed physical places on every keyboard layout.
+     * That is the whole point of feature 014 -- on a German QWERTZ board
+     * scancode 15h is the key printed Z and 2Ch the key printed Y, and
+     * matching characters instead cross-wired exactly those two. */
+    static const uint16_t KeyBoardTable[] = {
+        0x12C,  0, 0x11F,  1, 0x12D,  2, 0x120,  3, 0x12E,  4,
+        0x12F,  5, 0x122,  6, 0x130,  7, 0x123,  8, 0x131,  9,
+        0x124, 10, 0x132, 11, 0x110, 12, 0x103, 13, 0x111, 14,
+        0x104, 15, 0x112, 16, 0x113, 17, 0x106, 18, 0x114, 19,
+        0x107, 20, 0x115, 21, 0x108, 22, 0x116, 23, 0x117, 24,
+        0x10A, 25, 0x118, 26, 0x10B, 27, 0x119, 28, 0xFFFF
     };
-    size_t i;
-    int lk = (key >= 'A' && key <= 'Z') ? key - 'A' + 'a' : key;
+    const uint16_t *si = KeyBoardTable;
 
-    for (i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
-        if (map[i].k == lk) {
-            int note = (BaseOctave + map[i].oct) * 12 + map[i].semitone;
+    if (!k || k->scan == 0)
+        return -1;
+    while (*si != 0xFFFF) {
+        uint16_t bx = *si++;
+        uint16_t semitone = *si++;
+        if ((bx & 0xFF) == k->scan) {           /* Cmp BL, CL */
+            int note = BaseOctave * 12 + (int)semitone;
             if (note < 0 || note > 119)
                 return -1;
             return note + 1;
@@ -6304,7 +6421,7 @@ static int pe_col_key(int key)
 
     switch (CurCol) {
     case 0: {                               /* note */
-        int gn = key_to_note(key);
+        int gn = key_to_note(&CurKey);
         if (gn > 0) {
             int noteval = gn - 1;
             if (noteval <= 119)
@@ -7227,7 +7344,7 @@ static void pe_undo_requester(void)
         }
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
         if (key == ITK_QUIT) { Running = 0; return; }
         if (key == ITK_UP)   { if (sel > 0) sel--; continue; }
@@ -7456,7 +7573,7 @@ static void pe_set_pattern_length(void)
         draw_button_style(35, 30, 44, 32, 8, "   OK", 0, focus == 3);
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
         switch (key) {
         case ITK_QUIT: Running = 0; return;
@@ -7492,8 +7609,35 @@ static void pe_set_pattern_length(void)
     }
 }
 
+/* PEFunction_MuteNext. IT_PE.ASM:801 binds this with type byte 0 --
+ * a raw key code -- to `DW 135h`, i.e. 100h (pressed) | scancode 35h:
+ * the MAIN-ROW '/' position, not the keypad (the keypad divide is
+ * E0 35, which K_GetKey reports as 1B5h, and it is absent from the
+ * table). The very next entry binds MutePrevious with type byte 1 -- a
+ * CHARACTER -- to '?', which on a US board is Shift+/ : the same
+ * physical key, split by shift. So this is a position binding and its
+ * partner is a character binding, in the original's own encoding.
+ *
+ * Deviation, deliberately kept: the port also fires MuteNext from the
+ * keypad '/' (ITK_KP_DIVIDE). That is not in the original's table, but
+ * it is behaviour this port has shipped since feature 010 and the
+ * selftest exercises it. The authentic main-row binding is added
+ * alongside it rather than replacing it. */
+static void pe_mute_next(void)
+{
+    ed_lock(); Music_ToggleChannel((uint16_t)CurChan); ed_unlock();
+    if (CurChan < 63) { CurCol = 0; CurChan++; }
+}
+
 static void handle_pattern_key(int key)
 {
+    /* position-dispatched bindings go before the character switch */
+    if ((CurKey.flags & ITKF_PRESSED) && CurKey.scan == 0x35 &&
+        !(CurKey.flags & ITKF_SHIFT) && key != '?') {
+        pe_mute_next();
+        return;
+    }
+
     /* LastKeyBoard history (PE_PostPatternEdit 3215..3222) */
     LastKeys[2] = LastKeys[1];
     LastKeys[1] = LastKeys[0];
@@ -7551,9 +7695,10 @@ static void handle_pattern_key(int key)
     case ITK_ALT_F9:
         ed_lock(); Music_ToggleChannel((uint16_t)CurChan); ed_unlock();
         return;
-    case ITK_KP_DIVIDE:                 /* MuteNext: toggle + Tab */
-        ed_lock(); Music_ToggleChannel((uint16_t)CurChan); ed_unlock();
-        if (CurChan < 63) { CurCol = 0; CurChan++; }
+    case ITK_KP_DIVIDE:                 /* MuteNext on the keypad: a
+                                           documented convenience, see
+                                           pe_mute_next() */
+        pe_mute_next();
         return;
     case '?':                           /* MutePrevious (clamp at 0) */
         if (CurChan > 0)
@@ -7729,7 +7874,7 @@ static int generic_list_lkey(int key, int n)
     default: break;
     }
     {
-        int gn = key_to_note(key);
+        int gn = key_to_note(&CurKey);
         if (gn > 0) {
             CurInstr = ListSel + 1;
             jam_note(gn, 40);
@@ -7782,7 +7927,7 @@ static int sample_list_lkey(int key)
     default: break;
     }
     if (SamplePos < 25) {                   /* editing inside the name */
-        if (key >= 32 && key < 127) {
+        if (key >= 32 && key < 256) {       /* CP437 (feature 014) */
             name_insert(nm, SamplePos, (char)key);
             SamplePos++;
             return 1;
@@ -7811,7 +7956,7 @@ static int instr_list_lkey(int key)
             InstrumentEdit = 0;
             return 1;
         }
-        if (key >= 32 && key < 127) {
+        if (key >= 32 && key < 256) {       /* CP437 (feature 014) */
             name_insert(nm, InstrumentPos, (char)key);
             if (InstrumentPos < 24)         /* I_InstrumentRight */
                 InstrumentPos++;
@@ -8231,9 +8376,10 @@ static void act_save_prefs(void)
     }
     fprintf(fp, "moduledir=%s\nsampledir=%s\ninstrdir=%s\n"
             "octave=%d\nstep=%d\n"
-            "peconfig=%d\nviewdivision=%d\nviewtracking=%d\n",
+            "peconfig=%d\nviewdivision=%d\nviewtracking=%d\n"
+            "keyboard_cfg=%s\n",
             DirModule, DirSample, DirInstr, BaseOctave, EditStep,
-            PEConfig, ViewDivision, ViewTracking);
+            PEConfig, ViewDivision, ViewTracking, KeyboardCfg);
     fclose(fp);
     status("Preferences saved to ited.cfg.");
 }
@@ -8562,7 +8708,7 @@ static int confirm_overwrite(void (*bg)(void))
         draw_button_style(43, 24, 48, 26, 3, " No", 0, sel == 1);
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
         switch (key) {
         case ITK_QUIT: Running = 0; return 0;
@@ -8598,7 +8744,7 @@ static int stereo_choice_prompt(void)
         draw_button_style(40, 26, 50, 28, 8, "  Right", 0, sel == 1);
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
         switch (key) {
         case ITK_QUIT: Running = 0; return 64;
@@ -8652,12 +8798,12 @@ static void save_s3m_keywait(void)
 {
     if (!Save_S3MWarned)
         return;
-    while (Key_Get() != ITK_NONE)
+    while (ed_get_key() != ITK_NONE)
         ;                               /* clear the queue */
     for (;;) {
         int key;
         Screen_Update();
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_QUIT) { Running = 0; return; }
         if (key != ITK_NONE)
             return;
@@ -8748,7 +8894,7 @@ static void lib_release_check(void)
  * (D_PostLoadSampleWindow -> LoadSample(99) + Music_PlaySample) */
 static void lib_preview_key(const slibent_t *e, int idx, int key)
 {
-    int gn = key_to_note(key);
+    int gn = key_to_note(&CurKey);
     sample_t tmp;
 
     if (gn <= 0)
@@ -8939,7 +9085,7 @@ static int lib_browse_run(int inslib, const char *srcname)
 
         draw_lib_browser(inslib, srcname);
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
 
         switch (key) {
@@ -9076,7 +9222,7 @@ static void file_requester_run(int save)
         draw_file_requester();
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
 
         switch (key) {
@@ -9404,6 +9550,9 @@ static void load_prefs(void)
             ViewDivision = (uint8_t)(atoi(line + 13) & 1);
         else if (!strncmp(line, "viewtracking=", 13))
             ViewTracking = atoi(line + 13) & 1;
+        else if (!strncmp(line, "keyboard_cfg=", 13))
+            snprintf(KeyboardCfg, sizeof(KeyboardCfg),
+                     "%.*s", (int)sizeof(KeyboardCfg) - 1, line + 13);
     }
     fclose(fp);
     if (BaseOctave < 0) BaseOctave = 0;
@@ -9462,7 +9611,7 @@ static int run_menu(const menudef_t *d, void (*under)(void), int *psel)
         menu_draw(d, sel);
         Screen_Update();
 
-        key = Key_Get();
+        key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
 
         switch (key) {
@@ -9672,6 +9821,7 @@ static void pattern_click(void)
 
 static void handle_global(int key)
 {
+    ed_sync_key(key);
     switch (key) {
     case ITK_QUIT: Running = 0; return;
     case ITK_ESC:
@@ -9691,6 +9841,9 @@ static void handle_global(int key)
         Screen = SCR_MESSAGE;
         return;
     case ITK_F1:  Screen = SCR_HELP; return;
+    case ITK_CTRL_F1:                   /* keypress table (feature 014) */
+        Screen = SCR_KEYS;
+        return;
     case ITK_F2:                        /* Glbl_F2 loads the packed-cell
                                            charsets for the small views */
         if (Screen != SCR_PATTERN) {
@@ -9791,6 +9944,21 @@ int main(int argc, char **argv)
         load_prefs();
     }
 
+    /* Optional layout override (feature 014, FR-009/FR-010). A bad file
+     * is reported and ignored -- the host layout stays in effect and
+     * startup continues, because losing the whole editor over a broken
+     * keyboard table would be a far worse outcome than losing the
+     * override. */
+    if (KeyboardCfg[0]) {
+        const char *why = Key_LoadLayout(KeyboardCfg);
+        if (why)
+            fprintf(stderr, "ited: keyboard layout '%s' not loaded (%s); "
+                    "using the host layout\n", KeyboardCfg, why);
+        else
+            fprintf(stderr, "ited: keyboard layout '%s' loaded\n",
+                    KeyboardCfg);
+    }
+
     WAVDriver_SetMixSpeed(mixspeed);
     mixspeed = WAVDriver_GetMixSpeed();
     Driver = &WAVDriver;
@@ -9839,10 +10007,17 @@ int main(int argc, char **argv)
         if (dump || shot) {
             int scr = dump ? atoi(dump) : (getenv("ITED_SHOT_SCREEN")
                             ? atoi(getenv("ITED_SHOT_SCREEN")) : SCR_PATTERN);
+            /* NB the capture numbers above SCR_INFO are their own
+             * namespace of overlay aids (7 main menu, 8 file requester,
+             * 9 message editor, 10/11 library browsers), so they do NOT
+             * line up with the SCR_ enum past SCR_INFO. The feature-014
+             * keypress table takes the next free one, 12. */
             if (scr >= 0 && scr <= SCR_INFO)
                 Screen = scr;
             else if (scr == 9)              /* message editor */
                 Screen = SCR_MESSAGE;
+            else if (scr == 12)             /* keypress table (Ctrl-F1) */
+                Screen = SCR_KEYS;
             if (getenv("ITED_SHOT_TAB"))   /* F4 tab 0..3 for captures */
                 InsTab = (uint8_t)(atoi(getenv("ITED_SHOT_TAB")) & 3);
             if (getenv("ITED_SHOT_SAMPLE"))    /* F3 list selection */
@@ -11308,6 +11483,196 @@ int main(int argc, char **argv)
                     o_ok ? "ORD OK" : "ORD FAIL");
         }
 
+        /* Feature 014: the two-layer key event. Note entry must depend
+         * on the PHYSICAL position only (IT_I.ASM:1344 compares the
+         * scancode), so the same scancode sequence must yield the same
+         * notes under a US and a German layout even though the
+         * characters those positions produce differ. Driven through
+         * Screen_KeyFeedTest, so this runs on any host with no German
+         * keyboard attached. */
+        {
+            int k_ok = 1, i;
+            /* the 12 lower-row positions, in the original's order:
+             * Z S X D C V G B H N J M (US labels) */
+            static const uint8_t rowscan[12] = {
+                0x2C,0x1F,0x2D,0x20,0x2E,0x2F,
+                0x22,0x30,0x23,0x31,0x24,0x32
+            };
+            /* what those same positions PRINT on each layout: US has
+             * z..m, German swaps y/z (Keyboard/DE.ASM keycodes 21/44) */
+            static const char us_ch[12] = {
+                'z','s','x','d','c','v','g','b','h','n','j','m'
+            };
+            static const char de_ch[12] = {
+                'y','s','x','d','c','v','g','b','h','n','j','m'
+            };
+            int us_note[12], de_note[12];
+
+            for (i = 0; i < 12; i++) {
+                it_key_t k;
+                memset(&k, 0, sizeof(k));
+                k.scan = rowscan[i];
+                k.flags = ITKF_PRESSED;
+                k.ch = (uint16_t)us_ch[i];
+                k.code = us_ch[i];
+                Screen_KeyFeedTest(&k, 1);
+                ed_get_key();
+                us_note[i] = key_to_note(&CurKey);
+
+                memset(&k, 0, sizeof(k));
+                k.scan = rowscan[i];
+                k.flags = ITKF_PRESSED;
+                k.ch = (uint16_t)de_ch[i];
+                k.code = de_ch[i];
+                Screen_KeyFeedTest(&k, 1);
+                ed_get_key();
+                de_note[i] = key_to_note(&CurKey);
+            }
+            for (i = 0; i < 12; i++) {
+                /* identical notes from identical positions ... */
+                if (us_note[i] != de_note[i])
+                    k_ok = 0;
+                /* ... and a real ascending chromatic run */
+                if (us_note[i] != BaseOctave * 12 + i + 1)
+                    k_ok = 0;
+            }
+            /* ... while the characters genuinely differ at the swapped
+             * key, which is what makes the parity assertion meaningful */
+            if (us_ch[0] == de_ch[0])
+                k_ok = 0;
+
+            /* the upper row's root (Q, scancode 10h) is one octave up */
+            {
+                it_key_t k;
+                memset(&k, 0, sizeof(k));
+                k.scan = 0x10;
+                k.flags = ITKF_PRESSED;
+                k.ch = 'q';
+                k.code = 'q';
+                Screen_KeyFeedTest(&k, 1);
+                ed_get_key();
+                if (key_to_note(&CurKey) != BaseOctave * 12 + 12 + 1)
+                    k_ok = 0;
+            }
+
+            /* a position with no note binding stays unbound, and an
+             * event carrying a character but no position yields none */
+            {
+                it_key_t k;
+                memset(&k, 0, sizeof(k));
+                k.scan = 0x1E;              /* A: not in KeyBoardTable */
+                k.flags = ITKF_PRESSED;
+                k.ch = 'a';
+                k.code = 'a';
+                Screen_KeyFeedTest(&k, 1);
+                ed_get_key();
+                if (key_to_note(&CurKey) != -1)
+                    k_ok = 0;
+
+                memset(&k, 0, sizeof(k));
+                k.flags = ITKF_PRESSED;     /* scan 0 = position unknown */
+                k.ch = 'z';
+                k.code = 'z';
+                Screen_KeyFeedTest(&k, 1);
+                ed_get_key();
+                if (key_to_note(&CurKey) != -1)
+                    k_ok = 0;
+            }
+
+            /* the terminal path: characters only, position inferred
+             * from the US reverse map, so 'z' still means C */
+            if (Key_ReverseScan('z') != 0x2C) k_ok = 0;
+            if (Key_ReverseScan('y') != 0x15) k_ok = 0;
+            if (Key_ReverseScan('Q') != 0x10) k_ok = 0;
+
+            /* CP437 conversion for the seven German letters (R7) */
+            if (Screen_UnicodeToCP437(0x00E4) != 0x84) k_ok = 0;  /* a" */
+            if (Screen_UnicodeToCP437(0x00F6) != 0x94) k_ok = 0;  /* o" */
+            if (Screen_UnicodeToCP437(0x00FC) != 0x81) k_ok = 0;  /* u" */
+            if (Screen_UnicodeToCP437(0x00DF) != 0xE1) k_ok = 0;  /* ss */
+            if (Screen_UnicodeToCP437(0x00C4) != 0x8E) k_ok = 0;
+            if (Screen_UnicodeToCP437(0x00D6) != 0x99) k_ok = 0;
+            if (Screen_UnicodeToCP437(0x00DC) != 0x9A) k_ok = 0;
+            if (Screen_UnicodeToCP437('A')    != 'A')  k_ok = 0;
+            if (Screen_UnicodeToCP437(0x0142) != 0)    k_ok = 0;  /* l/ */
+
+            /* National characters round-trip through a save/reload
+             * (FR-015). The seven German letters as CP437 bytes:
+             * a" o" u" ss A" O" U" */
+            {
+                static const unsigned char umlauts[7] = {
+                    0x84, 0x94, 0x81, 0xE1, 0x8E, 0x99, 0x9A
+                };
+                const char *tmp = "st_kbd.it";
+                char keep[26];
+                int j;
+
+                memcpy(keep, Song.Smp[0].SampleName, 26);
+                memset(Song.Smp[0].SampleName, 0, 26);
+                for (j = 0; j < 7; j++)
+                    Song.Smp[0].SampleName[j] = (char)umlauts[j];
+
+                commit_current_pattern();
+                if (!Save_ITModule(tmp))
+                    k_ok = 0;
+                else if (!do_load_named(tmp))
+                    k_ok = 0;
+                else if (memcmp(Song.Smp[0].SampleName, umlauts, 7) != 0)
+                    k_ok = 0;               /* bytes must survive intact */
+                remove(tmp);
+                memcpy(Song.Smp[0].SampleName, keep, 26);
+            }
+
+            /* The two layers must stay independent: an Alt shortcut is
+             * carried by `code` and must survive whatever position it
+             * arrived from (research R5 -- Alt follows the keycap, so
+             * the German Z key at scancode 15h still means Alt-Z). */
+            {
+                it_key_t k;
+                memset(&k, 0, sizeof(k));
+                k.scan = 0x15;              /* German Z position */
+                k.flags = ITKF_PRESSED | ITKF_LALT;
+                k.code = ITK_ALT_A + 25;    /* Alt-Z */
+                Screen_KeyFeedTest(&k, 1);
+                if (ed_get_key() != ITK_ALT_A + 25)
+                    k_ok = 0;
+                if (CurKey.scan != 0x15)    /* position still reported */
+                    k_ok = 0;
+            }
+
+            /* A malformed layout override must be refused and must
+             * leave the host layout in place, never fail startup
+             * (FR-010). */
+            {
+                const char *tmp = "st_kbd.cfg";
+                FILE *fp = fopen(tmp, "wb");
+                if (fp) {
+                    /* FileLength claims far more than the file holds */
+                    static const unsigned char bad[6] =
+                        { 0xFF, 0x7F, 0x15, 0x00, 0x7A, 0x00 };
+                    fwrite(bad, 1, sizeof(bad), fp);
+                    fclose(fp);
+                    if (Key_LoadLayout(tmp) == NULL)
+                        k_ok = 0;           /* must have been rejected */
+                    if (Key_LayoutName()[0])
+                        k_ok = 0;           /* must not be active */
+                    remove(tmp);
+                }
+                /* a missing file is a reported failure, not a crash */
+                if (Key_LoadLayout("st_kbd_absent.cfg") == NULL)
+                    k_ok = 0;
+                /* clearing returns to the host layout */
+                if (Key_LoadLayout(NULL) != NULL)
+                    k_ok = 0;
+                if (Key_LayoutName()[0])
+                    k_ok = 0;
+            }
+
+            memset(&CurKey, 0, sizeof(CurKey));
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    k_ok ? "KBD OK" : "KBD FAIL");
+        }
+
         commit_current_pattern();
         fprintf(stderr, "ITED selftest: completed %zu actions, "
                 "pattern %u, %u rows, cursor r%d c%d col%d, "
@@ -11351,7 +11716,7 @@ int main(int argc, char **argv)
     Load_StereoChoice = stereo_choice_prompt;
 
     while (Running && !g_sig) {
-        int key = Key_Get();
+        int key = ed_get_key();
         if (key != ITK_NONE) {
             if (key == 0x11 /* Ctrl-Q */) break;
             handle_global(key);

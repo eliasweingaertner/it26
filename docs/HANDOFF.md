@@ -5,7 +5,33 @@
 > code is organised**, and **what to do next**. For the staged editor plan
 > see `EDITOR-PORT-PLAN.md`; for the user-facing overview see `../README.md`.
 
-Last updated: 2026-07-15.
+Last updated: 2026-08-20.
+
+**Feature 014 (scancode keyboard input) landed 2026-08-20.** The port used
+to dispatch note entry on the *translated character*, while IT dispatches on
+the *physical scancode* (`IT_I.ASM:1344` compares `BL, CL`); on a German
+QWERTZ board that cross-wired the note rows at the keys printed Y and Z and
+made umlauts untypable. The key event now carries both halves like the
+original's `CX`/`DX` (`K_GetKey`, `IT_K.ASM:1108`): `it_key_t {scan, flags,
+ch, code}` from `Key_GetEvent()`, with `Key_Get()` kept as a shim so no call
+site broke. Notes and position-dispatched bindings read `scan`; text reads
+`ch` (CP437, converted at the backend boundary); Alt/Ctrl letter shortcuts
+stay on the character layer, which is what `Keyboard/DE.ASM` proves the
+original does. Scancodes come from `lParam` bits 16-23 (Win32) and a
+HID→set-1 table (SDL); the terminal infers them from a US reverse map.
+Optional `KEYBOARD.CFG` override via `ited.cfg keyboard_cfg=`; Ctrl-F1 opens
+a keypress table (`ITED_DUMP=12`) — **binding authentic, layout NOT ported**:
+the original `K_DrawTables` (`IT_K.ASM:1522`) draws two 32x8 hex grids, the
+`KeyboardBuffer` queue at (2,15) and the `KeyBoardTable` key-down map at
+(29,15) with held scancodes in a brighter attribute; ours is a 12-row event
+log. A faithful port needs a live key-down map, i.e. key-up events for every
+key, which the backends do not yet report (Shift only). New selftest block:
+**KBD**. Full decode
+contract in `specs/014-scancode-keyboard-input/research.md`, binding survey
+in that feature's `binding-audit.md`. **Still open:** manual DOSBox parity
+check on a real German keyboard, and the filename requesters deliberately
+stay ASCII-only (a CP437 byte in a filename would be reinterpreted by the
+host's ANSI codepage at `fopen` and create a wrongly-named file).
 
 **State in one paragraph:** the engine has been done and verified since
 the start; the editor now covers the full planned surface — the real IT
@@ -586,7 +612,7 @@ required to *regenerate* it (`make vgadata`).
 
 ### MSVC directly (Windows) — the command used this session
 ```
-cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" >nul 2>&1 && cl /nologo /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c src\it_load.c src\it_pattern.c src\it_save.c src\it_import.c src\it_ris.c src\it_screen.c src\it_screen_win32.c src\it_vgadata.c src\it_editor.c user32.lib gdi32.lib"
+cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" >nul 2>&1 && cl /nologo /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c src\it_load.c src\it_pattern.c src\it_save.c src\it_import.c src\it_ris.c src\it_screen.c src\it_screen_win32.c src\it_cornerart.c src\it_vgadata.c src\it_editor.c user32.lib gdi32.lib"
 ```
 `/std:c11` is **required** (for `_Static_assert`); `/D_CRT_SECURE_NO_WARNINGS`
 silences CRT warnings. The editor needs `user32.lib gdi32.lib` (pixel

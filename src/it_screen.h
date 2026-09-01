@@ -147,8 +147,18 @@ enum {
     ITK_CTRL_HOME, ITK_CTRL_END, ITK_CTRL_PGUP, ITK_CTRL_PGDN,
     ITK_CTRL_INS, ITK_CTRL_DEL, ITK_CTRL_BACKSPACE, ITK_SCROLL_LOCK,
     ITK_ALT_F9, ITK_ALT_F10, ITK_CTRL_F7, ITK_CTRL_F2,
+    /* feature 014: the original's Ctrl-F1 keypress table, the screen
+     * Keyboard/DE.ASM's header points at for reading key codes.
+     * Pixel backends only -- it is the backends that have real
+     * scancodes to show. */
+    ITK_CTRL_F1 = 0x258,    /* explicit: the implicit successor of
+                             * ITK_CTRL_F2 (0x24F) would be 0x250,
+                             * which is ITK_SHIFT_UP */
     /* feature 010: Alt-'\' (UnmuteAll, 12Bh) and the keypad slash
-     * (MuteNext, scan 135h -- distinct from the free main-row '/');
+     * (keypad '/', E0 35 -> 1B5h. NB the original's MuteNext is bound
+     * to 135h = the MAIN-ROW '/' position, IT_PE.ASM:801; this keypad
+     * binding is a port convenience kept from feature 010 -- see
+     * pe_mute_next() in it_editor.c and specs/014 binding-audit.md);
      * feature 013: Alt-F12 (spectrum analyser, scan 158h) */
     ITK_ALT_BACKSLASH = 0x238, ITK_KP_DIVIDE, ITK_ALT_F12,
     ITK_SHIFT_UP = 0x250, ITK_SHIFT_DOWN, ITK_SHIFT_LEFT,
@@ -164,6 +174,62 @@ enum {
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };
 int Key_Get(void);          /* non-blocking, K_GetKey-style             */
+
+/* ---- the two-layer key event (feature 014) ----
+ * K_GetKey returns CX/DX = input/translated (IT_K.ASM:1108): the raw
+ * physical key in CX, the layout-translated character in DX. Consumers
+ * pick one. Note entry reads the position only (IT_I.ASM:1344 compares
+ * `BL, CL` -- the scancode low byte), so the tracker rows sit at fixed
+ * physical places on every keyboard layout; text fields read the
+ * character only, which is where national characters come from.
+ *
+ * `scan` is the original's CL: a PC set-1 scancode, +80h for the
+ * E0-extended variant (so right Ctrl = 9Dh, right Alt = B8h, exactly
+ * as IT_K.ASM:1216..1250 probes them). 0 = the source cannot supply a
+ * position (terminal backend; see Key_ReverseScan).
+ * `flags` is the original's CH, same bit assignment.
+ * `ch` is CP437, never Unicode -- conversion happens in the backend.
+ * `code` is the legacy value Key_Get() has always returned. */
+enum {
+    ITKF_PRESSED = 1,       /* clear = key release                      */
+    ITKF_LSHIFT  = 2,
+    ITKF_RSHIFT  = 4,
+    ITKF_LCTRL   = 8,
+    ITKF_RCTRL   = 16,
+    ITKF_LALT    = 32,
+    ITKF_RALT    = 64,      /* AltGr                                    */
+    ITKF_SHIFT   = ITKF_LSHIFT | ITKF_RSHIFT,
+    ITKF_CTRL    = ITKF_LCTRL  | ITKF_RCTRL,
+    ITKF_ALT     = ITKF_LALT   | ITKF_RALT
+};
+
+typedef struct it_key_t {
+    uint8_t  scan;          /* PC set-1 scancode, +80h = E0-extended    */
+    uint8_t  flags;         /* ITKF_* -- the original's CH              */
+    uint16_t ch;            /* CP437 character, 0 = none                */
+    int      code;          /* legacy: ASCII char or ITK_* value        */
+} it_key_t;
+
+/* Non-blocking. Returns 0 when nothing is pending, else 1 and fills *k.
+ * Key_Get() is exactly this, returning .code. */
+int Key_GetEvent(it_key_t *k);
+
+/* Unicode -> CP437; 0 = the character has no CP437 code and the
+ * keystroke must be rejected (the module format cannot carry it). */
+uint16_t Screen_UnicodeToCP437(uint32_t u);
+
+/* Character -> US set-1 scancode; 0 = unknown. For backends that report
+ * characters but no physical position (the terminal). */
+uint8_t Key_ReverseScan(uint16_t ch);
+
+/* Optional layout override in the original's KEYBOARD.CFG format (the
+ * files IT shipped load unchanged). Affects the CHARACTER half only --
+ * note entry never consults it. NULL/empty path clears any override and
+ * returns to the host layout. Returns NULL on success, else a static
+ * reason string; on failure the host layout stays in effect and the
+ * caller is expected to surface the reason rather than fail startup. */
+const char *Key_LoadLayout(const char *path);
+const char *Key_LayoutName(void);   /* "" when no override is loaded */
 
 /* ---- mouse (pixel backends + POSIX terminal via SGR reporting;
  * the Windows console path reports none) ----
@@ -196,6 +262,11 @@ screen_cell_t Screen_GetCell(int x, int y);
 int  Screen_TermFeedTest(const uint8_t *buf, int n, int flush);
 void Screen_TermMouseTest(it_mouse_t *m);
 
+/* test hook for the key event path (feature 014; selftest): queue
+ * synthetic it_key_t events so US/German layout behaviour can be
+ * exercised on any host, with no German keyboard attached. */
+int  Screen_KeyFeedTest(const it_key_t *k, int n);
+
 typedef struct screen_backend_t {
     int  (*init)(void);
     void (*uninit)(void);
@@ -203,6 +274,10 @@ typedef struct screen_backend_t {
     void (*present)(const screen_cell_t *cells);
     int  (*key)(void);
     void (*mouse)(it_mouse_t *m);   /* NULL = no mouse support */
+    /* feature 014: full two-layer event. NULL = this backend cannot
+     * report physical positions; Key_GetEvent() then synthesizes one
+     * from key() and fills scan from the configured reverse map. */
+    int  (*key_event)(it_key_t *k);
 } screen_backend_t;
 
 #ifdef _WIN32

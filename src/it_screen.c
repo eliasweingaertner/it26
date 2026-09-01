@@ -1057,10 +1057,13 @@ static void Term_Mouse(it_mouse_t *m)
 static const screen_backend_t Screen_BackendTerm = {
     Term_Init, Term_UnInit, Term_Present, Term_Key,
 #ifdef _WIN32
-    NULL                        /* console: pixel backend has the mouse */
+    NULL,                       /* console: pixel backend has the mouse */
 #else
-    Term_Mouse
+    Term_Mouse,
 #endif
+    NULL                        /* no physical positions from a terminal:
+                                 * Key_GetEvent() infers scan via the
+                                 * reverse map (feature 014, research R8) */
 };
 
 /* ---- public init/update/key dispatch --------------------------------- */
@@ -1108,9 +1111,274 @@ void Screen_Update(void)
         Backend->present(&Back[0][0]);
 }
 
+/* ===================================================================
+ * Feature 014: the two-layer key event (IT_K.ASM K_GetKey, CX/DX)
+ * =================================================================== */
+
+/* CP437 -> Unicode for the 128 high codes; the low half is ASCII.
+ * Module files carry these bytes directly and the editor draws them
+ * from the hi-ASCII font bank installed by Screen_DefineHiASCII
+ * (feature 013), so this table IS the tracker's character repertoire.
+ * Anything a host layout produces that is not in here cannot be stored
+ * and is rejected at the field-input layer rather than transliterated. */
+static const uint16_t CP437High[128] = {
+    0x00C7,0x00FC,0x00E9,0x00E2,0x00E4,0x00E0,0x00E5,0x00E7, /* 80 */
+    0x00EA,0x00EB,0x00E8,0x00EF,0x00EE,0x00EC,0x00C4,0x00C5, /* 88 */
+    0x00C9,0x00E6,0x00C6,0x00F4,0x00F6,0x00F2,0x00FB,0x00F9, /* 90 */
+    0x00FF,0x00D6,0x00DC,0x00A2,0x00A3,0x00A5,0x20A7,0x0192, /* 98 */
+    0x00E1,0x00ED,0x00F3,0x00FA,0x00F1,0x00D1,0x00AA,0x00BA, /* A0 */
+    0x00BF,0x2310,0x00AC,0x00BD,0x00BC,0x00A1,0x00AB,0x00BB, /* A8 */
+    0x2591,0x2592,0x2593,0x2502,0x2524,0x2561,0x2562,0x2556, /* B0 */
+    0x2555,0x2563,0x2551,0x2557,0x255D,0x255C,0x255B,0x2510, /* B8 */
+    0x2514,0x2534,0x252C,0x251C,0x2500,0x253C,0x255E,0x255F, /* C0 */
+    0x255A,0x2554,0x2569,0x2566,0x2560,0x2550,0x256C,0x2567, /* C8 */
+    0x2568,0x2564,0x2565,0x2559,0x2558,0x2552,0x2553,0x256B, /* D0 */
+    0x256A,0x2518,0x250C,0x2588,0x2584,0x258C,0x2590,0x2580, /* D8 */
+    0x03B1,0x00DF,0x0393,0x03C0,0x03A3,0x03C3,0x00B5,0x03C4, /* E0 */
+    0x03A6,0x0398,0x03A9,0x03B4,0x221E,0x03C6,0x03B5,0x2229, /* E8 */
+    0x2261,0x00B1,0x2265,0x2264,0x2320,0x2321,0x00F7,0x2248, /* F0 */
+    0x00B0,0x2219,0x00B7,0x221A,0x207F,0x00B2,0x25A0,0x00A0  /* F8 */
+};
+
+/* Unicode -> CP437. Returns 0 when the character has no CP437 code,
+ * which the caller must treat as "reject the keystroke". */
+uint16_t Screen_UnicodeToCP437(uint32_t u)
+{
+    int i;
+    if (u == 0 || u > 0xFFFF)
+        return 0;
+    if (u < 0x80)
+        return (uint16_t)u;
+    for (i = 0; i < 128; i++)
+        if (CP437High[i] == (uint16_t)u)
+            return (uint16_t)(0x80 + i);
+    return 0;
+}
+
+/* US set-1 scancode -> the characters that position produces. Used in
+ * reverse: a backend that reports characters but no physical position
+ * (the terminal; ANSI has no scancodes) gets its `scan` inferred from
+ * this. That keeps the terminal backend behaving exactly as it did
+ * before this feature, and is the default the original assumed. */
+static const struct { uint8_t scan; char plain, shifted; } USSet1[] = {
+    {0x02,'1','!'}, {0x03,'2','@'}, {0x04,'3','#'}, {0x05,'4','$'},
+    {0x06,'5','%'}, {0x07,'6','^'}, {0x08,'7','&'}, {0x09,'8','*'},
+    {0x0A,'9','('}, {0x0B,'0',')'}, {0x0C,'-','_'}, {0x0D,'=','+'},
+    {0x10,'q','Q'}, {0x11,'w','W'}, {0x12,'e','E'}, {0x13,'r','R'},
+    {0x14,'t','T'}, {0x15,'y','Y'}, {0x16,'u','U'}, {0x17,'i','I'},
+    {0x18,'o','O'}, {0x19,'p','P'}, {0x1A,'[','{'}, {0x1B,']','}'},
+    {0x1E,'a','A'}, {0x1F,'s','S'}, {0x20,'d','D'}, {0x21,'f','F'},
+    {0x22,'g','G'}, {0x23,'h','H'}, {0x24,'j','J'}, {0x25,'k','K'},
+    {0x26,'l','L'}, {0x27,';',':'}, {0x28,'\'','"'},{0x29,'`','~'},
+    {0x2B,'\\','|'},{0x2C,'z','Z'}, {0x2D,'x','X'}, {0x2E,'c','C'},
+    {0x2F,'v','V'}, {0x30,'b','B'}, {0x31,'n','N'}, {0x32,'m','M'},
+    {0x33,',','<'}, {0x34,'.','>'}, {0x35,'/','?'}, {0x39,' ',' '}
+};
+
+uint8_t Key_ReverseScan(uint16_t ch)
+{
+    size_t i;
+    if (ch == 0 || ch > 0x7F)
+        return 0;
+    for (i = 0; i < sizeof(USSet1) / sizeof(USSet1[0]); i++)
+        if (USSet1[i].plain == (char)ch || USSet1[i].shifted == (char)ch)
+            return USSet1[i].scan;
+    return 0;
+}
+
+/* ---- optional KEYBOARD.CFG layout override -------------------------
+ * The original's replaceable translation table (IT_K.ASM:96), loaded
+ * from a file in the format documented in Keyboard/DE.ASM's header and
+ * parsed at IT_K.ASM:1274. The files Impulse Tracker shipped are DOS
+ * .COM images: `FileLength DW` at ORG 100h, then repeated
+ *   keycode:u8  { condition:u8  value:u16 } ... 0FFh
+ * Conditions: 0 none, 1 shift^caps, 2 shift^!caps, 3 shift, 4 ctrl,
+ * 5 either alt, 6 lalt, 7 ralt(AltGr), 8 numlock, 9 !numlock, FFh end.
+ *
+ * This affects the CHARACTER half only. Note entry never consults it
+ * (FR-002) -- that is the whole point of the two-layer split. */
+static uint8_t *KbdTable;
+static size_t   KbdTableLen;
+static char     KbdTableName[260];
+
+/* 0 = loaded, else a static reason string */
+const char *Key_LoadLayout(const char *path)
+{
+    FILE *fp;
+    long  fsize;
+    uint8_t *buf;
+    size_t got;
+    uint16_t declared;
+
+    free(KbdTable);
+    KbdTable = NULL;
+    KbdTableLen = 0;
+    KbdTableName[0] = 0;
+    if (!path || !*path)
+        return NULL;                    /* no override: host layout */
+
+    fp = fopen(path, "rb");
+    if (!fp)
+        return "cannot open";
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return "not seekable"; }
+    fsize = ftell(fp);
+    rewind(fp);
+    if (fsize < 4 || fsize > (1L << 20)) { fclose(fp); return "bad size"; }
+    buf = (uint8_t *)malloc((size_t)fsize);
+    if (!buf) { fclose(fp); return "out of memory"; }
+    got = fread(buf, 1, (size_t)fsize, fp);
+    fclose(fp);
+    if (got != (size_t)fsize) { free(buf); return "short read"; }
+
+    /* FileLength counts the table only; it must fit inside the file */
+    declared = (uint16_t)(buf[0] | (buf[1] << 8));
+    if (declared == 0 || (size_t)declared + 2 > got) {
+        free(buf);
+        return "bad FileLength";
+    }
+    /* walk it once: every list must terminate inside the declared span */
+    {
+        size_t i = 2, end = (size_t)declared + 2;
+        while (i < end) {
+            i++;                                /* keycode */
+            for (;;) {
+                if (i >= end)      { free(buf); return "unterminated"; }
+                if (buf[i] == 0xFF) { i++; break; }
+                if (i + 3 > end)   { free(buf); return "truncated entry"; }
+                i += 3;                         /* condition + word */
+            }
+        }
+    }
+    KbdTable = buf;
+    KbdTableLen = (size_t)declared + 2;
+    snprintf(KbdTableName, sizeof(KbdTableName), "%s", path);
+    return NULL;
+}
+
+const char *Key_LayoutName(void)
+{
+    return KbdTable ? KbdTableName : "";
+}
+
+/* Does `flags` satisfy the original's condition code? Caps/Num Lock
+ * state is not tracked by the host backends, so conditions 1/2 collapse
+ * to "shift or not" and 8/9 to "numlock-independent", which is what a
+ * modern host's own layout already resolved for us. */
+static int KbdCondMatch(uint8_t cond, uint8_t flags)
+{
+    int shift = (flags & ITKF_SHIFT) != 0;
+    int ctrl  = (flags & ITKF_CTRL)  != 0;
+    int alt   = (flags & ITKF_ALT)   != 0;
+    switch (cond) {
+    case 0: return !shift && !ctrl && !alt;
+    case 1: return  shift && !ctrl && !alt;
+    case 2: return !shift && !ctrl && !alt;
+    case 3: return  shift;
+    case 4: return  ctrl;
+    case 5: return  alt;
+    case 6: return (flags & ITKF_LALT) != 0;
+    case 7: return (flags & ITKF_RALT) != 0;
+    case 8: case 9: return !ctrl && !alt;
+    default: return 0;
+    }
+}
+
+/* Apply the loaded table to one event. Returns 1 when it produced a
+ * value (which may legitimately be an Alt remap in the high byte). */
+static int KbdTranslate(it_key_t *k)
+{
+    size_t i = 2, end = KbdTableLen;
+
+    if (!KbdTable || k->scan == 0 || !(k->flags & ITKF_PRESSED))
+        return 0;
+    while (i < end) {
+        uint8_t keycode = KbdTable[i++];
+        int mine = (keycode == k->scan);
+        for (;;) {
+            uint8_t cond;
+            uint16_t val;
+            if (i >= end || KbdTable[i] == 0xFF) { i++; break; }
+            cond = KbdTable[i];
+            val  = (uint16_t)(KbdTable[i + 1] | (KbdTable[i + 2] << 8));
+            i += 3;
+            if (mine && KbdCondMatch(cond, k->flags)) {
+                if ((val & 0xFF) == 0 && (val >> 8) != 0) {
+                    /* Alt remap: scancode in the high byte. Keeps the
+                     * shortcut on the printed keycap (research R5). */
+                    k->ch = 0;
+                } else {
+                    k->ch = (uint16_t)(val & 0xFF);
+                    k->code = (int)(val & 0xFF);
+                }
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* synthetic event queue for the selftest (Screen_KeyFeedTest) */
+#define KEYFEED_MAX 64
+static it_key_t KeyFeed[KEYFEED_MAX];
+static int      KeyFeedHead, KeyFeedTail;
+
+int Screen_KeyFeedTest(const it_key_t *k, int n)
+{
+    int i, pushed = 0;
+    for (i = 0; i < n; i++) {
+        int nx = (KeyFeedTail + 1) % KEYFEED_MAX;
+        if (nx == KeyFeedHead)
+            break;                      /* full; caller drains and retries */
+        KeyFeed[KeyFeedTail] = k[i];
+        KeyFeedTail = nx;
+        pushed++;
+    }
+    return pushed;
+}
+
+static int KeyFeed_Pop(it_key_t *k)
+{
+    if (KeyFeedHead == KeyFeedTail)
+        return 0;
+    *k = KeyFeed[KeyFeedHead];
+    KeyFeedHead = (KeyFeedHead + 1) % KEYFEED_MAX;
+    return 1;
+}
+
+int Key_GetEvent(it_key_t *k)
+{
+    int c;
+
+    memset(k, 0, sizeof(*k));
+    if (KeyFeed_Pop(k))
+        return 1;
+    if (!Backend)
+        return 0;
+    if (Backend->key_event) {
+        if (!Backend->key_event(k))
+            return 0;
+        KbdTranslate(k);        /* no-op unless a layout file is loaded */
+        return 1;
+    }
+
+    /* Backend reports the legacy code only (terminal). Rebuild the
+     * event around it: the character is the code when it is printable,
+     * and the position comes from the US reverse map. */
+    c = Backend->key();
+    if (c == ITK_NONE)
+        return 0;
+    k->code  = c;
+    k->flags = ITKF_PRESSED;
+    if (c > 0 && c < 0x100)
+        k->ch = (uint16_t)c;
+    k->scan = Key_ReverseScan(k->ch);
+    return 1;
+}
+
 int Key_Get(void)
 {
-    return Backend ? Backend->key() : ITK_NONE;
+    it_key_t k;
+    return Key_GetEvent(&k) ? k.code : ITK_NONE;
 }
 
 void Screen_GetMouse(it_mouse_t *m)
