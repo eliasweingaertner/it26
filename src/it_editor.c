@@ -1600,16 +1600,6 @@ static int smp_has_data(const sample_t *s)
     return (s->Flags & 1) && s->Data && s->Length;
 }
 
-static int ed_mem_nonzero(const void *p, size_t n)
-{
-    const uint8_t *b = (const uint8_t *)p;
-    size_t i;
-    for (i = 0; i < n; i++)
-        if (b[i])
-            return 1;
-    return 0;
-}
-
 /* generic Yes/No confirm (O1_Confirm*List), default No */
 static int confirm_box_def(const char *text, int default_yes)
 {
@@ -2428,7 +2418,10 @@ static void smp_op_insert_slot(void)    /* Alt-Ins: I_InsertSample */
 {
     int cur = ListSel, i;
 
-    if (ed_mem_nonzero(&Song.Smp[98], 80) || cur >= 98)
+    /* the last slot must be free -- blank means the SampleHeader
+     * template (or all-zero), not all-zero alone, since empty slots are
+     * template-stamped (278cb25; fix from PR #3 by esaruoho) */
+    if (!Music_SampleIsBlank(&Song.Smp[98]) || cur >= 98)
         return;
     stop_song();
     ed_lock();
@@ -5908,7 +5901,8 @@ static void draw_screen(void)
         "Help (F1)", "Pattern Editor (F2)", "Sample List (F3)",
         "Instrument List (F4)", "Order List and Panning (F11)",
         "Song Variables & Directory Configuration (F12)",
-        "Information (F5)", "Message Editor (Shift-F9)",
+        "Info Page (F5)", "Message Editor (Shift-F9)",   /* DisplayHeader,
+                                                        IT_OBJ1.ASM 6580 */
     };
 
     Screen_Clear(0x20);
@@ -12624,6 +12618,47 @@ int main(int argc, char **argv)
 
             for (i = 89; i <= 92; i++)
                 Music_InitInstrument(&Song.Ins[i]);
+
+            /* F3 Alt-Ins with template-stamped empty slots (fix from PR #3
+             * by esaruoho): the last slot is blank, so the insert must run
+             * and move slot 91 down to 92 */
+            {
+                uint16_t keepflags = Song.Header.Flags;
+                sample_t keep91 = Song.Smp[90], keep92 = Song.Smp[91];
+                Song.Header.Flags &= (uint16_t)~ITF_INSTRUMENTS;
+                Music_InitSample(&Song.Smp[90]);
+                memcpy(Song.Smp[90].SampleName, "shift me", 9);
+                ListSel = 90;
+                smp_op_insert_slot();
+                if (memcmp(Song.Smp[91].SampleName, "shift me", 9) ||
+                    !Music_SampleIsBlank(&Song.Smp[90]))
+                    i_ok = 0;
+                smp_op_remove_slot();           /* and back */
+                if (memcmp(Song.Smp[90].SampleName, "shift me", 9))
+                    i_ok = 0;
+                Song.Smp[90] = keep91;
+                Song.Smp[91] = keep92;
+                Song.Header.Flags = keepflags;
+            }
+
+            /* F5 title is the original's DisplayHeader, "Info Page (F5)"
+             * (IT_OBJ1.ASM 6580; reported in PR #3 by esaruoho) */
+            {
+                static const char title[] = "Info Page (F5)";
+                int x, j, found = 0;
+                Screen = SCR_INFO;
+                redraw();
+                for (x = 0; x + (int)sizeof(title) - 1 <= SCREEN_W && !found;
+                     x++) {
+                    for (j = 0; title[j]; j++)
+                        if (Screen_GetCell(x + j, 11).ch != (uint8_t)title[j])
+                            break;
+                    if (!title[j])
+                        found = 1;
+                }
+                if (!found)
+                    i_ok = 0;
+            }
             Screen = keep_scr;
             ListSel = keep_sel;
             InsTab = keep_tab;
