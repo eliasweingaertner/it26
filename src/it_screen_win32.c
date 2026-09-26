@@ -345,6 +345,23 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == VK_SHIFT)
             PushKey(ITK_SHIFT_RELEASE);
         break;
+    case WM_SYSCHAR:
+        /* TranslateMessage turns every Alt+key into a WM_SYSCHAR after
+         * the WM_SYSKEYDOWN we already handled. Left to DefWindowProc it
+         * is treated as a menu mnemonic; there is no menu, so Windows
+         * plays the "default beep" on every Alt shortcut. Swallow it --
+         * except Alt+Space, which opens the system menu. */
+        if (wp == ' ')
+            break;
+        return 0;
+    case WM_SYSCOMMAND:
+        /* A lone Alt tap (or F10, IT's save key) sends SC_KEYMENU with
+         * lParam 0, which puts the window into menu mode: the next key
+         * is eaten and beeps. Refuse keyboard menu activation; mouse
+         * and Alt+Space (lParam = ' ') still work. */
+        if ((wp & 0xFFF0) == SC_KEYMENU && lp != ' ')
+            return 0;
+        break;
     case WM_CHAR:
         /* wp is a UTF-16 code unit; CP437 has nothing outside the BMP,
          * so an unpaired surrogate simply converts to 0 = reject. */
