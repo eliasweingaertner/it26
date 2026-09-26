@@ -370,23 +370,13 @@ static int save_sample_compressed(const sample_t *s)
 
 /* ---- helpers for the header pass ----------------------------------- */
 
-static int mem_nonzero(const void *p, size_t n)
-{
-    const uint8_t *b = (const uint8_t *)p;
-    size_t i;
-    for (i = 0; i < n; i++)
-        if (b[i])
-            return 1;
-    return 0;
-}
-
 /* Music_GetNumberOfSamples: index of the last sample slot that differs
- * from a pristine (all-zero in this port) header. */
+ * from the pristine empty sample header. */
 static int count_samples(void)
 {
     int n;
     for (n = 99; n >= 1; n--)
-        if (mem_nonzero(&Song.Smp[n - 1], 80))
+        if (!Music_SampleIsBlank(&Song.Smp[n - 1]))
             break;
     return n;
 }

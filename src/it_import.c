@@ -109,6 +109,7 @@ static void rdbytes(rd_t *r, void *dst, size_t n)
 static void import_clear(void)
 {
     Music_FreeIT();                     /* frees + zeroes Song */
+    Music_ClearAllSamples();
     memset(IT_MessageData, 0, IT_MESSAGELENGTH);
     SetDefaultMIDIDataArea();
     Save_LoadTime = time(NULL);

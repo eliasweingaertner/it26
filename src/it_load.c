@@ -528,6 +528,7 @@ int Music_LoadIT(const char *path)
 
     FreeSongData();
     SetDefaultMIDIDataArea();
+    Music_ClearAllSamples();
 
     /* song header */
     if (!rd_read(r, &Song.Header, sizeof(songheader_t)) ||

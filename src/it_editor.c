@@ -1579,6 +1579,11 @@ static int SamplePos = 25;                      /* IT_I.ASM 290 */
 static int InstrumentPos = 0;                   /* 242 */
 static int InstrumentEdit = 0;                  /* 273 */
 
+static void reset_sample_slot(sample_t *s)
+{
+    Music_InitSample(s);
+}
+
 /* ===================================================================
  * Sample editor core (IT_I.ASM): the F3 waveform view, loop editing
  * and the Alt-key destructive operations. IT 2.17 has no freehand
@@ -1598,6 +1603,12 @@ static sample_t *cur_smp(void) { return &Song.Smp[ListSel]; }
 static int smp_has_data(const sample_t *s)
 {
     return (s->Flags & 1) && s->Data && s->Length;
+}
+
+/* REPORT-CARD >> features/f3-empty-sample-quality.feature */
+static int smp_slot_used(const sample_t *s)
+{
+    return (s->Flags & 1) && s->Length;
 }
 
 static int ed_mem_nonzero(const void *p, size_t n)
@@ -2263,7 +2274,7 @@ static void smp_op_delete(void)         /* Alt-D: I_DeleteSample */
     stop_song();
     smp_free_data(s);
     ed_lock();
-    memset(s, 0, sizeof(*s));           /* Music_ReleaseSample + name */
+    reset_sample_slot(s);               /* Music_ReleaseSample + name */
     ed_unlock();
 }
 
@@ -2428,13 +2439,13 @@ static void smp_op_insert_slot(void)    /* Alt-Ins: I_InsertSample */
 {
     int cur = ListSel, i;
 
-    if (ed_mem_nonzero(&Song.Smp[98], 80) || cur >= 98)
+    if (!Music_SampleIsBlank(&Song.Smp[98]) || cur >= 98)
         return;
     stop_song();
     ed_lock();
     for (i = 98; i > cur; i--)
         Song.Smp[i] = Song.Smp[i - 1];
-    memset(&Song.Smp[cur], 0, sizeof(sample_t));
+    reset_sample_slot(&Song.Smp[cur]);
     ed_unlock();
     if (Song.Header.Flags & ITF_INSTRUMENTS)
         nst_remap(0, cur + 1, 0);
@@ -2453,7 +2464,7 @@ static void smp_op_remove_slot(void)    /* Alt-Del: I_RemoveSample */
     ed_lock();
     for (i = cur; i < 98; i++)
         Song.Smp[i] = Song.Smp[i + 1];
-    memset(&Song.Smp[98], 0, sizeof(sample_t));
+    reset_sample_slot(&Song.Smp[98]);
     ed_unlock();
     if (Song.Header.Flags & ITF_INSTRUMENTS)
         nst_remap(1, cur + 1, 0);
@@ -2586,7 +2597,7 @@ static void smpfield_cdraw(int focused)
         uint8_t a = (focused && i == SmpFieldSel) ? 0x30 : 0x03;
         switch (f->kind) {
         case 0:
-            drawf(64, f->y, a, "%7u",
+            drawf(64, f->y, a, "%07u",
                   (unsigned)*((const uint32_t *)smp_field_ptr(f->which)));
             break;
         case 1:
@@ -2802,7 +2813,10 @@ static void draw_samples(void)
     wtext(64, 13, s->DOSFileName, 12);          /* InstFileName     */
     wcustom(64, 14, 77, 20, smpfield_cdraw, smpfield_ckey,
             smpfield_cclick);                   /* speed/loop fields */
-    drawf(64, 22, 0x03, "%d bits", (s->Flags & 2) ? 16 : 8);
+    if (smp_slot_used(s))
+        drawf(64, 22, 0x03, "%d bits", (s->Flags & 2) ? 16 : 8);
+    else
+        drawf(64, 22, 0x03, "No sample");
     drawf(64, 23, 0x03, "%u", s->Length);
 
     widgets_draw();
@@ -5856,7 +5870,7 @@ static void draw_screen(void)
         "Help (F1)", "Pattern Editor (F2)", "Sample List (F3)",
         "Instrument List (F4)", "Order List and Panning (F11)",
         "Song Variables & Directory Configuration (F12)",
-        "Information (F5)", "Message Editor (Shift-F9)",
+        "Info Page (F5)", "Message Editor (Shift-F9)",
     };
 
     Screen_Clear(0x20);
@@ -8886,7 +8900,7 @@ static void lib_release_check(void)
 {
     ed_lock();
     free(Song.Smp[CHECK_SLOT].Data);
-    memset(&Song.Smp[CHECK_SLOT], 0, sizeof(sample_t));
+    reset_sample_slot(&Song.Smp[CHECK_SLOT]);
     ed_unlock();
 }
 
@@ -9495,6 +9509,7 @@ static void song_defaults(void)
     /* blank slots hold the pristine InstrumentHeader template, as the
      * original's song data area always does */
     Music_ClearAllInstruments();
+    Music_ClearAllSamples();
 }
 
 static void new_song(void)
@@ -10369,9 +10384,77 @@ int main(int argc, char **argv)
                 s->Flags |= 0x10;
                 smp_check_loop();
                 redraw();
+
+                {
+                    char quality[8];
+                    screen_cell_t c;
+                    int j;
+                    snprintf(quality, sizeof(quality), "%d bits",
+                             (s->Flags & 2) ? 16 : 8);
+                    for (j = 0; quality[j]; j++) {
+                        c = Screen_GetCell(64 + j, 22);
+                        if (c.ch != (uint8_t)quality[j] ||
+                            c.attr != 0x03)
+                            f3_ok = 0;
+                    }
+                }
+            }
+
+            /* Empty slots keep the active value style but must not claim
+             * an 8-bit/16-bit quality when no sample is attached. */
+            ListSel = 98;
+            redraw();
+            s = cur_smp();
+            if (smp_slot_used(s)) {
+                f3_ok = 0;
+            } else if (s->Vol != 64 || s->GvL != 64 ||
+                       s->C5Speed != 8363) {
+                f3_ok = 0;
+            } else {
+                static const char nosample[] = "No sample";
+                static const char speed[] = "0008363";
+                screen_cell_t c;
+                int j;
+                for (j = 0; speed[j]; j++) {
+                    c = Screen_GetCell(64 + j, 14);
+                    if (c.ch != (uint8_t)speed[j] || c.attr != 0x03)
+                        f3_ok = 0;
+                }
+                for (j = 0; nosample[j]; j++) {
+                    c = Screen_GetCell(64 + j, 22);
+                    if (c.ch != (uint8_t)nosample[j] || c.attr != 0x03)
+                        f3_ok = 0;
+                }
+                c = Screen_GetCell(64, 23);
+                if (c.ch != '0' || c.attr != 0x03)
+                    f3_ok = 0;
             }
             fprintf(stderr, "ITED selftest: [%s]\n",
                     f3_ok ? "F3 OK" : "F3 FAIL");
+        }
+
+        /* Chrome title wording (F5): the page is named Info Page. */
+        {
+            static const char title[] = "Info Page (F5)";
+            int f5_title_ok = 0;
+            int x, j;
+
+            Screen = SCR_INFO;
+            InfoFullScreen = 0;
+            redraw();
+            for (x = 0; x <= SCREEN_W - (int)sizeof(title); x++) {
+                for (j = 0; title[j]; j++) {
+                    screen_cell_t c = Screen_GetCell(x + j, 11);
+                    if (c.ch != (uint8_t)title[j])
+                        break;
+                }
+                if (!title[j]) {
+                    f5_title_ok = 1;
+                    break;
+                }
+            }
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    f5_title_ok ? "F5 TITLE OK" : "F5 TITLE FAIL");
         }
 
         /* Save + message editor (feature 004): type into the message

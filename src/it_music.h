@@ -169,8 +169,13 @@ void    Music_NotifyPatternRepacked(uint16_t patnum);
 void    Music_ClearAllInstruments(void);
 /* stamp one instrument with the pristine InstrumentHeader template */
 void    Music_InitInstrument(instrument_t *in);
+/* stamp one sample with the pristine empty sample header */
+void    Music_InitSample(sample_t *s);
+/* reset all sample headers to the pristine empty sample template */
+void    Music_ClearAllSamples(void);
 /* blank = byte-equal to the template (or all-zero, a port extension) */
 int     Music_InstrumentIsBlank(const instrument_t *in);
+int     Music_SampleIsBlank(const sample_t *s);
 /* last non-blank instrument slot, 0..99 (IT_MUSIC.ASM 5460) */
 int     Music_GetNumberOfInstruments(void);
 /* host a sample in an instrument: same-numbered slot if blank, else the

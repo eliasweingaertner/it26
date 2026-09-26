@@ -1360,6 +1360,15 @@ void Music_InitInstrument(instrument_t *in)
     in->PtEnvelope.NodePoints[1].Tick = 100;
 }
 
+void Music_InitSample(sample_t *s)
+{
+    memset(s, 0, sizeof(*s));
+    s->ID = 0x53504D49u;                /* "IMPS" */
+    s->GvL = 64;
+    s->Vol = 64;
+    s->C5Speed = 8363;
+}
+
 /* Music_ClearAllInstruments (IT_MUSIC.ASM 3316 -> Music_ClearInstrument):
  * reset instruments 1..99 to the InstrumentHeader template. */
 void Music_ClearAllInstruments(void)
@@ -1368,6 +1377,14 @@ void Music_ClearAllInstruments(void)
 
     for (i = 0; i < MAX_INSTRUMENTS - 1; i++)       /* instruments 1..99 */
         Music_InitInstrument(&Song.Ins[i]);
+}
+
+void Music_ClearAllSamples(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_SAMPLES; i++)
+        Music_InitSample(&Song.Smp[i]);
 }
 
 /* Blank test = byte-equality with the InstrumentHeader template, as the
@@ -1385,6 +1402,20 @@ int Music_InstrumentIsBlank(const instrument_t *in)
     }
     return memcmp(in, &tmpl, sizeof(tmpl)) == 0 ||
            memcmp(in, &zero, sizeof(zero)) == 0;
+}
+
+int Music_SampleIsBlank(const sample_t *s)
+{
+    static sample_t tmpl;
+    static int tmpl_ready = 0;
+    static const sample_t zero;
+
+    if (!tmpl_ready) {
+        Music_InitSample(&tmpl);
+        tmpl_ready = 1;
+    }
+    return memcmp(s, &tmpl, sizeof(tmpl)) == 0 ||
+           memcmp(s, &zero, sizeof(zero)) == 0;
 }
 
 /* Music_GetNumberOfInstruments (IT_MUSIC.ASM 5460): index of the last
