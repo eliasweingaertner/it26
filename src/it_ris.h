@@ -23,9 +23,23 @@
 typedef struct slibent_t {
     sample_t hdr;
     uint32_t FileSize;                  /* record +50h */
-    uint8_t  Format;                    /* record +58h */
+    uint16_t Date, Time;                /* record +54h/+56h, DOS-packed
+                                           (feature 015) */
+    uint8_t  Format;                    /* record +58h: 0 unchecked, 1 dir,
+                                           4 unknown, >= 20h module */
+    uint8_t  SortPri;                   /* record +5Ah: 0 dir, 1 library,
+                                           2 recognised, 3 unknown */
     char     SrcFile[264];
 } slibent_t;
+
+/* D_LoadSampleFiles + D_GetSampleInfo + D_SlowSampleSort (feature 015):
+ * list `dir` as the Load Sample screen shows it -- directories first as
+ * dotted "Directory" rows (the lone "." becomes "\", the root), then
+ * every file, identified (single samples get their header, modules
+ * become dotted "Library" rows with type 20h+), then sorted with "\"
+ * and ".." pinned, by SortPri, then by filename bytes. Returns the
+ * number of entries (the original caps at 620), -1 if unreadable. */
+int RIS_ListDirectory(const char *dir, slibent_t *ents, int max);
 
 /* Scan a module / .KRZ / .PAT / .ITS / .WAV file into sample records.
  * Returns the number of entries, or -1 if the file is unreadable or

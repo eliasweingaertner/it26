@@ -151,6 +151,8 @@ enum {
      * Keyboard/DE.ASM's header points at for reading key codes.
      * Pixel backends only -- it is the backends that have real
      * scancodes to show. */
+    ITK_CTRL_F3 = 0x259,    /* feature 015: Sample Library (explicit:
+                             * the gap 0x259..0x25F is free) */
     ITK_CTRL_F1 = 0x258,    /* explicit: the implicit successor of
                              * ITK_CTRL_F2 (0x24F) would be 0x250,
                              * which is ITK_SHIFT_UP */

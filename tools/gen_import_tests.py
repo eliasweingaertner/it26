@@ -497,6 +497,36 @@ def gen_txw(path):
     open(path, 'wb').write(bytes(hdr) + bytes(data))
 
 
+def gen_its(path):
+    """standalone ITS (feature 015 fixture): 8-bit signed, 1000 samples,
+    C5Speed 11025, forward loop 100..900, GvL 48, Vol 40, vibrato 3/5/7.
+    Values the LSS selftest checks in the Load Sample preview."""
+    n = 1000
+    data = bytes(((i * 5) & 0x7F) for i in range(n))
+    hdr = b'IMPS' + b'FIXTURE.ITS'.ljust(12, b'\x00')
+    hdr += bytes([0, 48, 0x01 | 0x10, 40])      # Zero, GvL, Flags, Vol
+    hdr += b'ITS fixture'.ljust(26, b'\x00')
+    hdr += bytes([0x01, 0])                     # Cvt signed, DfP off
+    hdr += struct.pack('<IIIIIII', n, 100, 900, 11025, 0, 0, 80)
+    hdr += bytes([3, 5, 7, 0])                  # ViS ViD ViR ViT
+    assert len(hdr) == 80
+    open(path, 'wb').write(hdr + data)
+
+
+def gen_ls_fixture(root):
+    """feature 015: a sample directory as IT's Load Sample screen sees it --
+    two subdirectories, an 8-bit WAV, an ITS, a module, and a junk file"""
+    import os
+    os.makedirs(root + '/ACOUSTIC', exist_ok=True)
+    os.makedirs(root + '/BASS', exist_ok=True)
+    gen_wav8(root + '/ACOUSTIC/PIANO.WAV')
+    gen_wav8(root + '/BASS/SUB.WAV')
+    gen_wav8(root + '/TEST8.WAV')
+    gen_its(root + '/FIXTURE.ITS')
+    gen_s3m(root + '/SONG.S3M')
+    open(root + '/README.TXT', 'w').write('not a sample\n')
+
+
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else '.'
     gen_s3m(outdir + '/import_test.s3m')
@@ -516,6 +546,7 @@ def main():
     gen_wav24(outdir + '/lib_test24.wav')
     gen_iff(outdir + '/lib_test.iff')
     gen_txw(outdir + '/lib_test.txw')
+    gen_ls_fixture(outdir + '/ls_fixture')
     print('wrote import_test.{s3m,mod,mtm,669,xm} + '
           'lib_test.{xi,ptm,far,krz,pat,iff,txw} + '
           'lib_test{8,16,st,f,24}.wav to', outdir)

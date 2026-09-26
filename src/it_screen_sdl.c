@@ -285,6 +285,7 @@ static void PumpEvents(void)
                 case SDLK_DELETE:   PushKey(ITK_CTRL_DEL);       break;
                 case SDLK_BACKSPACE:PushKey(ITK_CTRL_BACKSPACE); break;
                 case SDLK_F1:       PushKey(ITK_CTRL_F1);        break;
+                case SDLK_F3:       PushKey(ITK_CTRL_F3);        break;
                 case SDLK_F7:       PushKey(ITK_CTRL_F7);        break;
                 case SDLK_F2:       PushKey(ITK_CTRL_F2);        break;
                 default:

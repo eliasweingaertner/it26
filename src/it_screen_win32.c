@@ -306,6 +306,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_DELETE: PushKey(ITK_CTRL_DEL);       return 0;
             case VK_BACK:   PushKey(ITK_CTRL_BACKSPACE); return 0;
             case VK_F1:     PushKey(ITK_CTRL_F1);        return 0;
+            case VK_F3:     PushKey(ITK_CTRL_F3);        return 0;
             case VK_F7:     PushKey(ITK_CTRL_F7);        return 0;
             case VK_F2:     PushKey(ITK_CTRL_F2);        return 0;
             case 'H':       PushKey(0x08);               return 0;

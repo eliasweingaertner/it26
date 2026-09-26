@@ -27,6 +27,14 @@
 #include "it_music.h"
 #include "it_ris.h"
 
+#ifdef _WIN32
+#include <windows.h>                    /* feature 015: directory listing */
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#include <time.h>
+#endif
+
 /* FineTuneTable (IT_DISK.ASM 547): MOD/MTM/XM finetune -> C5 speed */
 static const uint16_t FineTuneTable[16] = {
     8363, 8413, 8463, 8529, 8581, 8651, 8723, 8757,
@@ -896,12 +904,20 @@ int RIS_LoadSample(const slibent_t *e, sample_t *dst)
     return 1;
 }
 
+/* SampleFormatNames (IT_DISK.ASM 474), indexed by the record's type
+ * byte, transliterated including its quirk: type 28h (a MOD with an
+ * "xxCH" signature) points at XMModule, so IT labels those files
+ * "Fast Tracker 2 Module". The table's empty slots 18..1Fh give "". */
 const char *RIS_FormatName(uint8_t fmt)
 {
     switch (fmt) {
+    case 0:  return "Unchecked";
+    case 1:  return "Directory";
     case 2:  return "Impulse Tracker Sample";
     case 3:  return "Scream Tracker Sample";
+    case 4:  return "Unknown sample format";
     case 5:  return "8 Bit WAV Format";
+    case 6:  return "Fast Tracker 2 Sample";
     case 7:  return "16 Bit WAV Format";
     case 8:  return "Fast Tracker 2 Sample";
     case 9:  return "Poly Tracker Sample";
@@ -911,10 +927,239 @@ const char *RIS_FormatName(uint8_t fmt)
     case 13: return "TX Wave Sample";
     case 14: return "MOD Sample";
     case 15: return "KRZ Sample";
-    case 16: return "GUS Patch";
+    case 16: return "Gravis UltraSound Patch";
     case 17: return "AIFF Sample";
-    default: return "Unknown sample format";
+    case 0x20: return "Scream Tracker 3 Module";
+    case 0x21: return "Impulse Tracker Module";
+    case 0x22: return "Fast Tracker 2 Module";
+    case 0x23: return "Poly Tracker Module";
+    case 0x24: return "Multi Tracker Module";
+    case 0x25: return "Composer 669 Module";
+    case 0x26: return "Farandole Module";
+    case 0x27: return "MOD Format";
+    case 0x28: return "Fast Tracker 2 Module";     /* sic, see above */
+    case 0x29: return "Kurzweil Synth File";
+    case 0x2A: return "Gravis UltraSound Patch";
+    default: return "";
     }
+}
+
+/* ---- feature 015: the Load Sample directory listing ---------------- */
+
+/* DirectoryMsg / LibraryMsg (IT_DISK.ASM 413): char 154 is the dotted
+ * fill that makes these rows read as "........Directory........" */
+static void fill_marker(sample_t *s, int pad, const char *word)
+{
+    int i, n = 0;
+
+    memset(s->SampleName, 0, sizeof(s->SampleName));
+    for (i = 0; i < pad; i++) s->SampleName[n++] = (char)154;
+    for (i = 0; word[i]; i++) s->SampleName[n++] = word[i];
+    for (i = 0; i < pad; i++) s->SampleName[n++] = (char)154;
+}
+
+static void ls_name(slibent_t *e, const char *name)
+{
+    memset(e->hdr.DOSFileName, 0, sizeof(e->hdr.DOSFileName));
+    memcpy(e->hdr.DOSFileName, name,
+           strlen(name) < sizeof(e->hdr.DOSFileName)
+               ? strlen(name) : sizeof(e->hdr.DOSFileName));
+}
+
+/* D_GetSampleInfo (IT_D_INF.INC 353) module signatures -> type byte */
+static int ls_module_type(const uint8_t *d, size_t n, const char *path)
+{
+    if (n >= 4 && !memcmp(d, "IMPM", 4)) return 0x21;
+    if (n >= 48 && !memcmp(d + 44, "PTMF", 4)) return 0x23;
+    if (n >= 3 && !memcmp(d, "MTM", 3)) return 0x24;
+    if (n >= 2 && (!memcmp(d, "if", 2) || !memcmp(d, "JN", 2)))
+        return 0x25;
+    if (n >= 4 && !memcmp(d, "FAR\xFE", 4)) return 0x26;
+    if (n >= 1084) {
+        const uint8_t *m = d + 1080;
+        if (!memcmp(m, "M.K.", 4) || !memcmp(m, "M!K!", 4) ||
+            !memcmp(m, "FLT4", 4) || !memcmp(m, "4CHN", 4) ||
+            !memcmp(m, "6CHN", 4) || !memcmp(m, "8CHN", 4) ||
+            !memcmp(m, "FLT8", 4))
+            return 0x27;
+        if (m[2] == 'C' && m[3] == 'H' && m[0] >= '0' && m[0] <= '9' &&
+            m[1] >= '0' && m[1] <= '9')
+            return 0x28;
+    }
+    if (n >= 0x30 && !memcmp(d + 0x2C, "SCRM", 4)) return 0x20;
+    if (n >= 34 && !memcmp(d, "PRAM", 4) && d[32] == 0xFF && d[33] == 0xFF
+        && has_ext(path, ".KRZ"))
+        return 0x29;
+    if (n >= 22 && !memcmp(d, "GF1PATCH110\0ID#000002", 22)) return 0x2A;
+    if (n >= 17 && !memcmp(d, "Extended Module: ", 17)) return 0x22;
+    return 0;
+}
+
+/* identify one file into its record (D_LoadSampleHeader+GetSampleInfo) */
+static void ls_identify(slibent_t *e)
+{
+    uint8_t d[1084];
+    size_t n = 0;
+    FILE *fp = fopen(e->SrcFile, "rb");
+    int mt;
+
+    e->Format = 4;                      /* unknown until proven otherwise */
+    e->SortPri = 3;
+    if (!fp)
+        return;
+    n = fread(d, 1, sizeof(d), fp);
+    fclose(fp);
+
+    if ((mt = ls_module_type(d, n, e->SrcFile)) != 0) {
+        e->Format = (uint8_t)mt;
+        e->SortPri = 1;
+        fill_marker(&e->hdr, 9, "Library");
+        return;
+    }
+    if ((n >= 4 && (!memcmp(d, "IMPS", 4) || !memcmp(d, "RIFF", 4) ||
+                    !memcmp(d, "FORM", 4))) ||
+        (n >= 6 && !memcmp(d, "LM8953", 6))) {
+        slibent_t one;
+        if (RIS_ScanModule(e->SrcFile, &one, 1) == 1) {
+            char keep[12];
+            memcpy(keep, e->hdr.DOSFileName, sizeof(keep));
+            e->hdr = one.hdr;
+            memcpy(e->hdr.DOSFileName, keep, sizeof(keep));
+            e->Format = one.Format;
+            e->SortPri = 2;             /* D_GetSampleInfo default */
+        }
+    }
+}
+
+static uint16_t dos_date(int y, int mo, int d)
+{
+    if (y < 1980) y = 1980;
+    return (uint16_t)(((y - 1980) << 9) | (mo << 5) | d);
+}
+
+static uint16_t dos_time(int h, int mi, int s)
+{
+    return (uint16_t)((h << 11) | (mi << 5) | (s / 2));
+}
+
+static int ls_cmp(const void *a, const void *b)
+{
+    const slibent_t *x = (const slibent_t *)a, *y = (const slibent_t *)b;
+    int c;
+
+    if (x->SortPri != y->SortPri)
+        return x->SortPri < y->SortPri ? -1 : 1;
+    c = memcmp(x->hdr.DOSFileName, y->hdr.DOSFileName,
+               sizeof(x->hdr.DOSFileName));
+    return c ? c : strcmp(x->SrcFile, y->SrcFile);  /* long-name ties */
+}
+
+static int ls_add(slibent_t *ents, int n, int max, const char *dir,
+                  const char *name, int isdir, uint32_t size,
+                  uint16_t date, uint16_t time)
+{
+    slibent_t *e;
+
+    if (n >= max)
+        return n;
+    if (!strcmp(name, ".") && !isdir)
+        return n;
+    e = &ents[n];
+    memset(e, 0, sizeof(*e));
+    snprintf(e->SrcFile, sizeof(e->SrcFile), "%s/%s", dir, name);
+    e->FileSize = size;
+    e->Date = date;
+    e->Time = time;
+    if (isdir) {
+        ls_name(e, !strcmp(name, ".") ? "\\" : name);
+        fill_marker(&e->hdr, 8, "Directory");
+        e->Format = 1;
+        e->SortPri = 0;
+    } else {
+        ls_name(e, name);
+        ls_identify(e);
+    }
+    return n + 1;
+}
+
+int RIS_ListDirectory(const char *dir, slibent_t *ents, int max)
+{
+    int n = 0, pass, pinned;
+
+    /* D_LoadSampleFiles: all directories first, then all files */
+    for (pass = 0; pass < 2; pass++) {
+#ifdef _WIN32
+        WIN32_FIND_DATAA fd;
+        char pat[280];
+        HANDLE h;
+
+        snprintf(pat, sizeof(pat), "%s\\*", dir);
+        h = FindFirstFileA(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE)
+            return pass ? n : -1;
+        do {
+            int isdir = (fd.dwFileAttributes &
+                         FILE_ATTRIBUTE_DIRECTORY) != 0;
+            FILETIME lt;
+            WORD dd = 0, dt = 0;
+            if (isdir != (pass == 0))
+                continue;
+            if (FileTimeToLocalFileTime(&fd.ftLastWriteTime, &lt))
+                FileTimeToDosDateTime(&lt, &dd, &dt);
+            n = ls_add(ents, n, max, dir, fd.cFileName, isdir,
+                       (uint32_t)fd.nFileSizeLow, dd, dt);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+#else
+        DIR *dp = opendir(dir);
+        struct dirent *de;
+
+        if (!dp)
+            return pass ? n : -1;
+        while ((de = readdir(dp))) {
+            char full[600];
+            struct stat st;
+            struct tm tmv, *t;
+            int isdir;
+            snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
+            if (stat(full, &st))
+                continue;
+            isdir = S_ISDIR(st.st_mode);
+            if (isdir != (pass == 0))
+                continue;
+            t = localtime_r(&st.st_mtime, &tmv);
+            n = ls_add(ents, n, max, dir, de->d_name, isdir,
+                       (uint32_t)st.st_size,
+                       t ? dos_date(t->tm_year + 1900, t->tm_mon + 1,
+                                    t->tm_mday) : 0,
+                       t ? dos_time(t->tm_hour, t->tm_min, t->tm_sec) : 0);
+        }
+        closedir(dp);
+#endif
+    }
+
+    /* D_SlowSampleSort: "\" then ".." stay on top, the rest by
+     * priority then filename bytes */
+    pinned = 0;
+    {
+        int i;
+        for (i = 0; i < n && pinned < 2; i++) {
+            const char *nm = ents[i].hdr.DOSFileName;
+            if (!strcmp(nm, "\\") || !strcmp(nm, "..")) {
+                slibent_t t = ents[pinned];
+                ents[pinned] = ents[i];
+                ents[i] = t;
+                pinned++;
+            }
+        }
+        if (pinned == 2 && !strcmp(ents[0].hdr.DOSFileName, "..")) {
+            slibent_t t = ents[0];
+            ents[0] = ents[1];
+            ents[1] = t;
+        }
+    }
+    qsort(ents + pinned, (size_t)(n - pinned), sizeof(*ents), ls_cmp);
+    return n;
 }
 
 int RIS_KnownExt(const char *name)

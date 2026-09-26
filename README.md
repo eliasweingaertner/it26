@@ -282,6 +282,36 @@ verification pass, Ctrl-V default-volume display toggle).
 
 ## Fidelity notes (deviations from the DOS binary)
 
+Load Sample screen (feature 015):
+- F3 Enter and Ctrl-F3 open a transliteration of the original's Load
+  Sample / Sample Library screen (`O1_LoadSampleList`,
+  `IT_OBJ1.ASM:952`): one numbered list with directories as dotted
+  "Directory" rows and modules as dotted "Library" rows, the drive box,
+  the highlighted file's header, volumes and vibrato before loading, the
+  file's format/size/date/time, and a waveform once you audition the
+  sample with a note key. Enter on a module lists its samples on the same
+  screen. Delete removes a file (with confirmation); Space renames the
+  sample; the parameter fields can be edited before loading.
+- Deviation: the list is always sorted (directories, modules, samples,
+  unknown files, each by filename, with `\` and `..` on top). The
+  original identifies files in the background and only sorts once that
+  finishes and only if the cursor is still on the first row, so its
+  order depends on disk speed.
+- Deviation: no `CACHE.ITS`. The original writes a cache of the list into
+  every folder it browses; this port reads the folder each time. A cache
+  file left by real IT is listed as an unknown file, as IT itself shows it.
+- Deviation: saving an edited sample keeps its file format. The original
+  offers "Save sample?" when you move off an edited entry and always
+  writes ITS under the same filename, so an edited `.WAV` became ITS data
+  with a `.WAV` name. Here an ITS stays ITS, a WAV stays WAV when only the
+  sample rate or filename changed, and any other edit is saved as a new
+  `.ITS` file next to the untouched original.
+- Platform: on Linux/macOS the drive box offers `/`.
+- As in the original, a loop toggle on its own does not count as an edit
+  (the original's comparison skips the flags byte), and the file-format
+  name for "xxCH" MOD files reads "Fast Tracker 2 Module" (an entry in the
+  original's format-name table points at the wrong string).
+
 Keyboard (feature 014):
 - Like the original, a keypress carries **two** values: the physical key
   position and the character the active layout produced from it

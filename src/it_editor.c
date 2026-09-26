@@ -9423,20 +9423,831 @@ static void save_requester(void)        /* F10 (Glbl_F10 / mode 10) */
     ReqSave = 0;
 }
 
-/* F3 Enter: the sample library requester (Load Sample screen) */
+/* ===================================================================
+ * Load Sample / Sample Library screen (feature 015) -- O1_LoadSampleList
+ * and O1_ViewSampleLibrary (IT_OBJ1.ASM 952), custom draws from
+ * IT_DISK.ASM (D_DrawLoadSampleWindow 5260, D_PreLoadSampleWindow,
+ * D_LSDrawDriveWindow). Geometry, attributes and strings: see
+ * specs/015-load-sample-screen/research.md R1/R5/R6.
+ * =================================================================== */
+#define LS_MAX   620                    /* D_LoadSampleFiles cap */
+#define LS_ROWS  35                     /* rows 13..47 */
+#define LS_DROWS 10                     /* drive window rows */
+
+static slibent_t LsEnt[LS_MAX];
+static int  LsN, LsCur, LsTop;
+static int  LsFocus = 15;               /* object: 15 list, 16 drives */
+static int  LsView;                     /* 1 = Sample Library (Ctrl-F3) */
+static char LsDir[256];                 /* = sizeof(DirSample) */
+static char LsDrives[26];
+static int  LsNDrv, LsDrvCur, LsDrvTop;
+
+static const uint8_t LsInfoText[] =         /* LSInfoText (no divider) */
+    "Filename\015   Speed\015    Loop\015 LoopBeg\015 LoopEnd\015"
+    " SusLoop\015 SusLBeg\015 SusLEnd\015 Quality\015  Length";
+static const uint8_t LsParText[] =          /* LSParametersText */
+    "Default Volume\015 Global Volume\015\015\015 Vibrato Speed\015"
+    " Vibrato Depth\015  Vibrato Rate";
+static const uint8_t LsFileInfoText[] =     /* LSFileInfoText */
+    "Format\015  Size\015  Date\015  Time";
+
+/* canonical absolute form of a host path, in place */
+static void ls_normalize(char *p, size_t cap)
+{
+#ifdef _WIN32
+    char out[MAX_PATH];
+    DWORD r = GetFullPathNameA(p, (DWORD)sizeof(out), out, NULL);
+    if (r > 0 && r < cap)               /* never truncate a path */
+        memcpy(p, out, (size_t)r + 1);
+#else
+    char out[4096];
+    if (realpath(p, out) && strlen(out) < cap)  /* never truncate a path */
+        memcpy(p, out, strlen(out) + 1);
+#endif
+}
+
+/* drive list: logical drives on Windows; a single "/" elsewhere
+ * (research R10 -- platform adaptation) */
+static void ls_scan_drives(void)
+{
+    LsNDrv = 0;
+    LsDrvCur = 0;
+#ifdef _WIN32
+    {
+        DWORD drives = GetLogicalDrives();
+        int i;
+        char cur = (char)toupper((unsigned char)LsDir[0]);
+        for (i = 0; i < 26; i++)
+            if (drives & (1u << i)) {
+                if ((char)('A' + i) == cur)
+                    LsDrvCur = LsNDrv;
+                LsDrives[LsNDrv++] = (char)('A' + i);
+            }
+    }
+#else
+    LsDrives[LsNDrv++] = '/';
+#endif
+}
+
+static int  LsInModule;                 /* SamplesInModule */
+static int      LsCheckIdx = -1;        /* SampleCheck */
+static sample_t LsCheckHdr;             /* CheckDataArea (80 bytes) */
+
+/* D_InitLoadSamples: (re)read the current sample directory */
+static void ls_list(void)
+{
+    LsN = RIS_ListDirectory(LsDir, LsEnt, LS_MAX);
+    if (LsN < 0)
+        LsN = 0;
+    LsCur = LsTop = 0;
+    LsInModule = 0;
+    LibCheckIdx = -1;                   /* SampleInMemory = 0FFFFh */
+    LsCheckIdx = -1;                    /* SampleCheck = 0FFFFh */
+    ls_scan_drives();
+}
+
+/* LSWindow_EnterLoadInSampleData: list a module's samples on the same
+ * screen. Record 0 is ExitLibraryDirectory (IT_DISK.ASM): a type-1
+ * entry named "." with the dotted Directory name and the module's
+ * date, so Enter on it re-lists the directory. */
+static void ls_enter_module(const slibent_t *m)
+{
+    slibent_t mod = *m;
+    int n, i;
+
+    n = RIS_ScanModule(mod.SrcFile, LsEnt + 1, LS_MAX - 1);
+    if (n < 0) {
+        status("Unknown sample source: %.12s", mod.hdr.DOSFileName);
+        return;
+    }
+    memset(&LsEnt[0], 0, sizeof(LsEnt[0]));
+    memcpy(LsEnt[0].hdr.DOSFileName, ".           ", 12);
+    for (i = 0; i < 8; i++) {
+        LsEnt[0].hdr.SampleName[i] = (char)154;
+        LsEnt[0].hdr.SampleName[17 + i] = (char)154;
+    }
+    memcpy(LsEnt[0].hdr.SampleName + 8, "Directory", 9);
+    LsEnt[0].Format = 1;
+    LsEnt[0].Date = mod.Date;
+    LsEnt[0].Time = mod.Time;
+    memcpy(LsEnt[0].SrcFile, LsDir, sizeof(LsDir));  /* 256 <= 264 */
+    for (i = 1; i <= n; i++) {
+        LsEnt[i].Date = mod.Date;
+        LsEnt[i].Time = mod.Time;
+        LsEnt[i].SortPri = 2;
+    }
+    LsN = n + 1;
+    LsCur = LsTop = 0;
+    LsInModule = 1;
+    LibCheckIdx = -1;
+    LsCheckIdx = -1;
+}
+
+static void ls_set_dir(const char *path)
+{
+    if (strlen(path) >= sizeof(LsDir)) {
+        status("Path too long.");
+        return;
+    }
+    memcpy(LsDir, path, strlen(path) + 1);
+    ls_normalize(LsDir, sizeof(LsDir));
+    memcpy(DirSample, LsDir, sizeof(DirSample));    /* SampleDirectory */
+    ls_list();
+}
+
+/* LSWindow_Enter, type 1: change into a directory ("\" = the root) */
+static void ls_enter_dir(const slibent_t *e)
+{
+    char nd[264];                       /* = sizeof(SrcFile) */
+
+    if (LsInModule && e->hdr.DOSFileName[0] == '.') {
+        snprintf(nd, sizeof(nd), "%s", LsDir);  /* ExitLibraryDirectory */
+    } else if (!strcmp(e->hdr.DOSFileName, "\\")) {
+#ifdef _WIN32
+        snprintf(nd, sizeof(nd), "%c:\\", LsDir[0]);
+#else
+        snprintf(nd, sizeof(nd), "/");
+#endif
+    } else {
+        snprintf(nd, sizeof(nd), "%s", e->SrcFile);
+    }
+    ls_set_dir(nd);
+}
+
+/* LS_DriveWindow_Enter: switch to that drive's current directory */
+static void ls_enter_drive(void)
+{
+#ifdef _WIN32
+    char d[MAX_PATH];
+    if (_getdcwd(LsDrives[LsDrvCur] - 'A' + 1, d, sizeof(d)))
+        ls_set_dir(d);
+    else
+        status("Can't read drive %c:", LsDrives[LsDrvCur]);
+#else
+    ls_set_dir("/");
+#endif
+}
+
+/* D_DeleteSampleFile: not for unchecked entries or directories, and not
+ * inside a module; confirm (O1_ConfirmDelete2, default Cancel), delete,
+ * drop the row */
+static void ls_delete_file(void)
+{
+    int i;
+
+    if (LsN == 0 || LsInModule || LsEnt[LsCur].Format <= 1)
+        return;
+    if (!confirm_box("Delete file?"))
+        return;
+    if (remove(LsEnt[LsCur].SrcFile) != 0) {
+        status("Can't delete %s.", LsEnt[LsCur].hdr.DOSFileName);
+        return;
+    }
+    for (i = LsCur; i < LsN - 1; i++)
+        LsEnt[i] = LsEnt[i + 1];
+    LsN--;
+    if (LsCur >= LsN && LsCur > 0)
+        LsCur--;
+}
+
+/* D_DrawLoadSampleWindow, list part */
+static void ls_draw_list(void)
+{
+    int i, k;
+
+    if (LsN == 0) {
+        Screen_DrawString(6, 13, "No files.", 0x05);    /* NoFilesMsg */
+        return;
+    }
+    if (LsTop > LsCur)
+        LsTop = LsCur;
+    if (LsTop + (LS_ROWS - 1) < LsCur)
+        LsTop = LsCur - (LS_ROWS - 1);
+
+    for (i = 0; i < LS_ROWS; i++)                   /* divider, 2A8h */
+        Screen_PutChar(31, 13 + i, 0xA8, 0x02);
+
+    for (i = 0; i < LS_ROWS && LsTop + i < LsN; i++) {
+        const slibent_t *e = &LsEnt[LsTop + i];
+        int y = 13 + i;
+        uint8_t a;
+
+        drawf(2, y, 0x20, "%03d", LsTop + i + 1);     /* PE_ConvAX2Num */
+
+        /* colour by type: 0 unchecked 6, dir 5, unknown 2, else 3 */
+        a = e->Format == 0 ? 0x06 : e->Format == 1 ? 0x05
+          : e->Format == 4 ? 0x02 : 0x03;
+        for (k = 0; k < 25; k++) {
+            uint8_t c = (uint8_t)e->hdr.SampleName[k];
+            Screen_PutChar(6 + k, y, c >= 226 ? ' ' : c, a);
+        }
+        for (k = 0; k < 12; k++) {                  /* filename, col 32 */
+            uint8_t c = (uint8_t)e->hdr.DOSFileName[k];
+            Screen_PutChar(32 + k, y, c, a);
+            if (!c) {
+                for (k++; k < 12; k++)
+                    Screen_PutChar(32 + k, y, 0, a);
+                break;
+            }
+        }
+    }
+
+    if (LsFocus == 15) {                /* D_PreLoadSampleWindow */
+        int y = 13 + LsCur - LsTop;
+        for (k = 0; k < 38; k++)
+            Screen_SetAttr(6 + k, y, k == 25 ? 0x32 : 0x30);
+    }
+}
+
+/* D_LSDrawDriveWindow + D_LSPreDriveWindow */
+static void ls_draw_drives(void)
+{
+    int i;
+
+    if (LsDrvTop > LsDrvCur)
+        LsDrvTop = LsDrvCur;
+    if (LsDrvTop + (LS_DROWS - 1) < LsDrvCur)
+        LsDrvTop = LsDrvCur - (LS_DROWS - 1);
+    for (i = 0; i < LS_DROWS && LsDrvTop + i < LsNDrv; i++)
+        drawf(46, 13 + i, 0x05, "Drive %c:", LsDrives[LsDrvTop + i]);
+    if (LsFocus == 16 && LsNDrv) {
+        int y = 13 + LsDrvCur - LsDrvTop, k;
+        for (k = 0; k < 8; k++)
+            Screen_SetAttr(46 + k, y, 0x30);
+    }
+}
+
+/* LSInfoBox values + thumbbars + LSFileInfo for the highlighted entry
+ * (D_DrawLoadSampleWindow, the LS*Input objects). Drawn for every entry
+ * type, as the original does: a directory shows Speed 0000000, Loop Off,
+ * 8 Bit, 0. */
+static void ls_draw_values(void)
+{
+    static const char *const month[13] = {
+        "", "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    };
+    const slibent_t *e;
+    const sample_t *s;
+    char fn[13];
+    int y;
+
+    if (LsN == 0)
+        return;
+    e = &LsEnt[LsCur];
+    s = &e->hdr;
+
+    memcpy(fn, s->DOSFileName, 12);
+    fn[12] = 0;
+    drawf(64, 13, 0x02, "%-13.13s", fn);            /* LSFileNameInput */
+
+    /* F_Draw5Num: seven zero-padded digits, colour 2 */
+    drawf(64, 14, 0x02, "%07u", (unsigned)(s->C5Speed % 10000000u));
+    drawf(64, 16, 0x02, "%07u", (unsigned)(s->LoopBeg % 10000000u));
+    drawf(64, 17, 0x02, "%07u", (unsigned)(s->LoopEnd % 10000000u));
+    drawf(64, 19, 0x02, "%07u", (unsigned)(s->SusLoopBeg % 10000000u));
+    drawf(64, 20, 0x02, "%07u", (unsigned)(s->SusLoopEnd % 10000000u));
+    for (y = 15; y <= 18; y += 3) {     /* F_DrawToggle + GetSampleToggle */
+        uint8_t on = y == 15 ? 0x10 : 0x20, pp = y == 15 ? 0x40 : 0x80;
+        if (!(s->Flags & on)) {
+            Screen_DrawString(64, y, "Off", 0x02);
+        } else {
+            Screen_DrawString(64, y, "On", 0x02);
+            Screen_DrawString(67, y, (s->Flags & pp) ? "Ping Pong"
+                                                     : "Forwards", 0x02);
+        }
+    }
+    /* Quality uses IT_DISK.ASM's strings, stereo = Cvt bit 32 */
+    Screen_DrawString(64, 21, (s->Cvt & 32)
+                      ? ((s->Flags & 2) ? "16 Bit Stereo" : "8 Bit Stereo")
+                      : ((s->Flags & 2) ? "16 Bit" : "8 Bit"), 0x02);
+    drawf(64, 22, 0x02, "%u", s->Length);
+
+    draw_thumbbar(63, 33, 0, 64, s->Vol, 0x02);     /* LSDefaultVolume */
+    draw_thumbbar(63, 34, 0, 64, s->GvL, 0x02);     /* LSGlobalVolume */
+    draw_thumbbar(63, 37, 0, 64, s->ViS, 0x02);     /* LSVibratoSpeed */
+    draw_thumbbar_scaled(63, 38, 0, 32, s->ViD, 8, 0x02);
+    draw_thumbbar_scaled(63, 39, 0, 255, s->ViR, 8, 0x02);
+
+    /* file info, attr 5 */
+    Screen_DrawString(53, 44, RIS_FormatName(e->Format), 0x05);
+    if (e->FileSize < 655360000u)                   /* DX < 10000 */
+        drawf(53, 45, 0x05, "%09u", (unsigned)e->FileSize);
+    {
+        /* MonthNames entry + its NUL cell, day, ", ", year */
+        int mo = (e->Date >> 5) & 15, d = e->Date & 31;
+        const char *mn = mo <= 12 ? month[mo] : "";
+        int x = 53 + (int)strlen(mn);
+        Screen_DrawString(53, 46, mn, 0x05);
+        Screen_PutChar(x++, 46, 0, 0x05);
+        drawf(x, 46, 0x05, "%d, %d", d, ((e->Date >> 9) & 0x7F) + 1980);
+    }
+    {
+        /* 12-hour, no leading zero, am/pm */
+        int h = e->Time >> 11, mi = (e->Time >> 5) & 63, pm = 0;
+        if (h >= 12) { pm = 1; h -= 12; }
+        if (h == 0) h = 12;
+        drawf(53, 47, 0x05, "%d:%02d%cm", h, mi, pm ? 'p' : 'a');
+    }
+}
+
+/* D_DrawWaveForm (IT_DISK.ASM 8542): 248x32 pixels from the check slot,
+ * shown only when the highlighted entry is the one auditioned
+ * (CurrentSample == SampleInMemory). Unlike F3's I_DrawWaveForm there is
+ * no joining with the previous column; loop markers use the record's
+ * (possibly edited) loop points scaled by 247. */
+static uint8_t LsWavePix[248 * 32];
+
+static void ls_marker(uint32_t b, uint32_t en, uint32_t len, int sus)
+{
+    uint32_t cb = (uint32_t)(((uint64_t)247 * b + len / 2) / len);
+    uint32_t ce = (uint32_t)(((uint64_t)247 * en + len / 2) / len);
+    int r, ah = 1;
+    uint8_t al = 1;
+
+    if (cb > 247) cb = 247;
+    if (ce > 247) ce = 247;
+    for (r = 0; r < 32; r++) {
+        uint8_t v = sus ? al : (uint8_t)((ah & 2) ? 1 : 0);
+        LsWavePix[r * 248 + cb] = v;
+        LsWavePix[r * 248 + ce] = v;
+        ah++;
+        al ^= 1;
+    }
+}
+
+static void ls_draw_waveform(void)
+{
+    const sample_t *d = &Song.Smp[CHECK_SLOT];
+    const sample_t *h;
+    int x, y;
+
+    if (LsN == 0 || LibCheckIdx != LsCur || !smp_has_data(d))
+        return;
+    h = &LsEnt[LsCur].hdr;
+    memset(LsWavePix, 0, sizeof(LsWavePix));
+    {
+        int is16 = (d->Flags & 2) != 0, step = is16 ? 2 : 1;
+        const uint8_t *base = (const uint8_t *)d->Data + (is16 ? 1 : 0);
+        uint64_t total = (uint64_t)d->Length * (uint64_t)step;
+        uint64_t per = (total << 16) / 248, pos = 0;
+        int col;
+
+        for (col = 0; col < 248; col++) {
+            uint64_t start = pos >> 16, end = (pos + per) >> 16;
+            size_t i = (size_t)start;
+            int8_t mn, mx;
+            int cnt, row;
+
+            if (start >= total)
+                start = total ? total - (uint64_t)step : 0;
+            i = (size_t)start;
+            mn = mx = (int8_t)base[i];              /* CL = CH = [SI] */
+            for (; i < end && i < total; i += (size_t)step) {
+                int8_t v = (int8_t)base[i];
+                if (v < mn) mn = v;
+                else if (v > mx) mx = v;
+            }
+            {   /* SAR/Add AX,202h/SAR, AL->AH carry kept (authentic) */
+                uint8_t al = (uint8_t)((int8_t)mn >> 1);
+                uint8_t ah = (uint8_t)((int8_t)mx >> 1);
+                unsigned ax = (unsigned)((ah << 8) | al) + 0x202;
+                int rhi, rlo;
+                ah = (uint8_t)((int8_t)(ax >> 8) >> 2);
+                al = (uint8_t)((int8_t)(ax & 0xFF) >> 2);
+                rhi = (int8_t)ah;
+                rlo = (int8_t)al;
+                cnt = rhi - rlo + 1;
+                row = 16 - rhi;
+                if (row == 32)
+                    row = 31;
+            }
+            for (; cnt > 0; cnt--, row++)
+                if (row >= 0 && row < 32)
+                    LsWavePix[row * 248 + col] = 1;
+            pos += per;
+        }
+    }
+    if (h->Length) {
+        if (h->Flags & 0x10)
+            ls_marker(h->LoopBeg, h->LoopEnd, h->Length, 0);
+        if (h->Flags & 0x20)
+            ls_marker(h->SusLoopBeg, h->SusLoopEnd, h->Length, 1);
+    }
+    Screen_GenerateCharacters(0, 31, 4, LsWavePix);
+    for (y = 0; y < 4; y++)
+        for (x = 0; x < 31; x++)
+            Screen_PutChar(46 + x, 25 + y, (uint8_t)(y * 31 + x), 0x0D);
+}
+
+static void ls_draw(void)
+{
+    Screen_Clear(0x20);
+    draw_chrome(LsView ? "Sample Library (Ctrl-F3)" : "Load Sample");
+    Screen_DrawBox(5, 12, 44, 48, 27);          /* LoadSampleBox */
+    Screen_DrawBox(45, 12, 54, 23, 27);         /* DriveSampleBox */
+    Screen_DrawBox(63, 12, 77, 23, 27);         /* LSInfoBox */
+    Screen_DrawStringCtl(55, 13, LsInfoText, 0x20, NULL);
+    Screen_DrawBox(45, 24, 77, 29, 27);         /* LSWaveFormBox */
+    Screen_DrawBox(45, 30, 77, 42, 9);          /* LSParametersBox */
+    Screen_DrawStringCtl(48, 33, LsParText, 0x20, NULL);
+    Screen_DrawBox(62, 32, 72, 35, 25);         /* LSParametersVolBox */
+    Screen_DrawBox(62, 36, 72, 40, 25);         /* LSParametersVibBox */
+    Screen_DrawBox(52, 43, 77, 48, 27);         /* LSFileInfoBox */
+    Screen_DrawStringCtl(46, 44, LsFileInfoText, 0x20, NULL);
+    ls_draw_list();
+    ls_draw_drives();
+    ls_draw_values();
+    ls_draw_waveform();
+}
+
+/* ---- US3: editing on the Load Sample screen ------------------------
+ * The LS*Input objects write straight into the list record
+ * (SetLoadSample5Num -> D_GetLoadSampleVars, research R8); every cursor
+ * move first runs CheckSampleModified (R8b), which offers to save the
+ * sample file, else to discard the edit. */
+
+/* LSInfoBox field objects 17..24 by row; 25..29 are the thumbbars */
+static int ls_obj_row(int obj) { return obj >= 17 && obj <= 24 ? obj - 4 : 0; }
+
+static void ls_snapshot(void)
+{
+    if (LsN && LsCur != LsCheckIdx) {
+        LsCheckIdx = LsCur;
+        LsCheckHdr = LsEnt[LsCur].hdr;
+    }
+}
+
+/* D_LSCheckLoopValues / D_LSCheckSusLoopValues: caps at Length (not
+ * Length-1 as F3's I_CheckLoopValues), then clears the loop bit when
+ * end <= begin */
+static void ls_check_loops(sample_t *s, int sus)
+{
+    uint32_t *b = sus ? &s->SusLoopBeg : &s->LoopBeg;
+    uint32_t *en = sus ? &s->SusLoopEnd : &s->LoopEnd;
+
+    if (s->Length <= *b) *b = s->Length;
+    if (s->Length < *en) *en = s->Length;
+    if (*en <= *b)
+        s->Flags &= (uint8_t)~(sus ? 0x20 : 0x10);
+}
+
+/* the record differs from its snapshot? The original compares header
+ * bytes 00h..11h and 13h..4Fh -- byte 12h (Flags) is skipped, so a loop
+ * toggle alone does not count as a modification (authentic). */
+static int ls_modified(void)
+{
+    const uint8_t *a, *b;
+
+    if (LsN == 0 || LsInModule || LsCheckIdx != LsCur)
+        return 0;
+    if (LsEnt[LsCur].Format <= 1 || LsEnt[LsCur].Format >= 0x20)
+        return 0;
+    a = (const uint8_t *)&LsEnt[LsCur].hdr;
+    b = (const uint8_t *)&LsCheckHdr;
+    return memcmp(a, b, 0x12) != 0 || memcmp(a + 0x13, b + 0x13, 0x50 - 0x13) != 0;
+}
+
+/* replace (or add) the filename's extension */
+static void ls_with_ext(char *out, size_t cap, const char *dir,
+                        const char *name, const char *ext)
+{
+    char base[16];
+    char *dot;
+
+    snprintf(base, sizeof(base), "%.12s", name);
+    if ((dot = strrchr(base, '.')) != NULL)
+        *dot = 0;
+    snprintf(out, cap, "%s/%s%s", dir, base, ext);
+}
+
+/* D_SaveSampleInternal, with the user-chosen deviation "keep format":
+ * the original always writes ITS under the record's filename, turning an
+ * edited .WAV into ITS data with a .WAV name. Here an ITS stays ITS in
+ * place; a WAV stays WAV only when the change is one WAV can carry (the
+ * sample rate / filename); anything else is written as ITS under the
+ * same name with an .ITS extension, next to the untouched original.
+ * Returns 1 when a file was written. */
+static int ls_save_entry(int renamed)
+{
+    slibent_t *e = &LsEnt[LsCur];
+    sample_t tmp;
+    char name[16], target[300];
+    int ok, wav_ok = 0, fallback = 0;
+
+    memset(&tmp, 0, sizeof(tmp));
+    if (!RIS_LoadSample(e, &tmp)) {
+        status("Unable to load sample.");
+        return 0;
+    }
+    snprintf(name, sizeof(name), "%.12s", e->hdr.DOSFileName);
+    while (strlen(name) && name[strlen(name) - 1] == ' ')
+        name[strlen(name) - 1] = 0;
+
+    if (e->Format == 5 || e->Format == 7) {
+        sample_t a = e->hdr, b = LsCheckHdr;
+        a.C5Speed = b.C5Speed = 0;          /* WAV carries the rate */
+        memset(a.DOSFileName, 0, 12);       /* and the filename */
+        memset(b.DOSFileName, 0, 12);
+        a.Flags = b.Flags = 0;              /* not compared (see above) */
+        wav_ok = memcmp(&a, &b, 0x50) == 0;
+    }
+
+    if (e->Format == 2 || wav_ok) {
+        if (renamed)
+            snprintf(target, sizeof(target), "%s/%s", LsDir, name);
+        else
+            snprintf(target, sizeof(target), "%s", e->SrcFile);
+        ok = e->Format == 2 ? RIS_SaveITS(&tmp, target)
+                            : RIS_SaveWAV(&tmp, target);
+        if (ok && renamed && strcmp(target, e->SrcFile))
+            remove(e->SrcFile);             /* rename: drop the old file */
+    } else {
+        FILE *fp;
+        ls_with_ext(target, sizeof(target), LsDir, name, ".ITS");
+        fallback = 1;
+        if ((fp = fopen(target, "rb")) != NULL) {
+            fclose(fp);
+            if (!confirm_box("Replace existing .ITS?")) {
+                free(tmp.Data);
+                return 0;
+            }
+        }
+        ok = RIS_SaveITS(&tmp, target);
+    }
+    free(tmp.Data);
+    if (!ok)
+        status("Error: sample NOT saved!");
+    else if (fallback)
+        status("Saved as ITS -- the original file is unchanged.");
+    else
+        status("Sample saved.");
+    return ok;
+}
+
+/* CheckSampleModified: 1 = the move may go ahead, 0 = stay */
+static int ls_check_modified(void)
+{
+    int renamed, cur;
+
+    if (!ls_modified())
+        return 1;
+    renamed = memcmp(LsEnt[LsCur].hdr.DOSFileName, LsCheckHdr.DOSFileName,
+                     12) != 0;
+    if (confirm_box_def(renamed ? "Save/Rename sample?" : "Save sample?",
+                        1)) {
+        cur = LsCur;
+        ls_save_entry(renamed);
+        ls_list();                          /* D_InitLoadSamples */
+        LsCur = cur < LsN ? cur : (LsN ? LsN - 1 : 0);
+        LsCheckIdx = -1;
+        return 1;
+    }
+    if (confirm_box_def("Discard changes?", 1)) {
+        memcpy(&LsEnt[LsCur].hdr, &LsCheckHdr, 0x50);
+        return 1;
+    }
+    return 0;
+}
+
+/* LSWindow_Space: O1_EditSampleName -- box (23,25)-(56,31) style 3,
+ * "Edit Sample Name" at (32,26) attr 23h, 25-char input at (27,29) in a
+ * style-27 box; Enter keeps (trailing spaces trimmed), Esc cancels */
+static void ls_edit_name(void)
+{
+    char buf[26];
+    int len;
+
+    if (LsN == 0)
+        return;
+    memcpy(buf, LsEnt[LsCur].hdr.SampleName, 25);
+    buf[25] = 0;
+    len = (int)strlen(buf);
+    while (len && buf[len - 1] == ' ')
+        buf[--len] = 0;
+
+    while (Running) {
+        int key;
+
+        ls_draw();
+        Screen_DrawBox(23, 25, 56, 31, 3);
+        Screen_DrawString(32, 26, "Edit Sample Name", 0x23);
+        Screen_DrawBox(26, 28, 53, 30, 27);
+        drawf(27, 29, 0x02, "%-25.25s", buf);
+        Screen_SetAttr(27 + (len < 25 ? len : 24), 29, 0x30);
+        Screen_Update();
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return; }
+        if (key == ITK_ESC)
+            return;
+        if (key == ITK_ENTER) {
+            memset(LsEnt[LsCur].hdr.SampleName, 0, 26);
+            memcpy(LsEnt[LsCur].hdr.SampleName, buf, (size_t)len);
+            return;
+        }
+        if (key == ITK_BACKSPACE && len > 0)
+            buf[--len] = 0;
+        else if (key >= 32 && key < 256 && len < 25) {
+            buf[len++] = (char)key;
+            buf[len] = 0;
+        }
+    }
+}
+
+/* keys for the field objects 17..29 (the list is 15, drives 16) */
+static void ls_field_key(int key)
+{
+    sample_t *s = &LsEnt[LsCur].hdr;
+    int obj = LsFocus;
+
+    if (LsN == 0)
+        return;
+    switch (key) {                          /* object links, research R1 */
+    case ITK_UP:
+        if (obj > 17) LsFocus = obj - 1;
+        return;
+    case ITK_DOWN:
+        if (obj < 29) LsFocus = obj + 1;
+        return;
+    case ITK_TAB:
+        LsFocus = obj <= 24 ? 25 : 15;
+        return;
+    case ITK_SHIFT_TAB:
+        LsFocus = obj <= 24 ? 16 : 17;
+        return;
+    default:
+        break;
+    }
+
+    if (obj == 17) {                        /* LSFileNameInput */
+        int len = 0;
+        while (len < 12 && s->DOSFileName[len])
+            len++;
+        if (key == ITK_BACKSPACE && len > 0)
+            s->DOSFileName[len - 1] = 0;
+        else if (key > 32 && key < 127 && len < 12)
+            s->DOSFileName[len] = (char)key;
+        return;
+    }
+    if (obj == 19 || obj == 22) {           /* LSLoopToggle/SusLoopToggle */
+        if (key == ITK_ENTER || key == ' ')
+            s->Flags ^= (uint8_t)(obj == 19 ? 0x10 : 0x20);
+        return;
+    }
+    if (obj >= 18 && obj <= 24) {           /* 5num inputs */
+        static const char *const title[] = {
+            "Speed", "", "Loop Begin", "Loop End", "", "Sus. Loop Begin",
+            "Sus. Loop End"
+        };
+        uint32_t *v = obj == 18 ? &s->C5Speed : obj == 20 ? &s->LoopBeg
+                    : obj == 21 ? &s->LoopEnd : obj == 23 ? &s->SusLoopBeg
+                    : &s->SusLoopEnd;
+        if (key == ITK_ENTER || key == ' ') {
+            long n = prompt_number(title[obj - 18], *v, 9999999);
+            if (n >= 0) {
+                *v = (uint32_t)n;
+                if (obj == 20 || obj == 21) ls_check_loops(s, 0);
+                if (obj == 23 || obj == 24) ls_check_loops(s, 1);
+            }
+        }
+        return;
+    }
+    {                                       /* thumbbars 25..29 */
+        uint8_t *v = obj == 25 ? &s->Vol : obj == 26 ? &s->GvL
+                   : obj == 27 ? &s->ViS : obj == 28 ? &s->ViD : &s->ViR;
+        int mx = obj == 28 ? 32 : obj == 29 ? 255 : 64;
+        if (key == ITK_LEFT && *v > 0) (*v)--;
+        else if (key == ITK_RIGHT && *v < mx) (*v)++;
+        else if (key == ITK_HOME) *v = 0;
+        else if (key == ITK_END) *v = (uint8_t)mx;
+    }
+}
+
+/* the focused field's highlight (the objects' Pre functions) */
+static void ls_draw_focus(void)
+{
+    int y = ls_obj_row(LsFocus), k;
+    const sample_t *s;
+
+    if (LsN == 0 || LsFocus < 17)
+        return;
+    s = &LsEnt[LsCur].hdr;
+    if (LsFocus == 17) {
+        for (k = 0; k < 13; k++) Screen_SetAttr(64 + k, 13, 0x30);
+    } else if (LsFocus == 19 || LsFocus == 22) {
+        int on = s->Flags & (LsFocus == 19 ? 0x10 : 0x20);
+        for (k = 0; k < (on ? 2 : 3); k++) Screen_SetAttr(64 + k, y, 0x30);
+    } else if (LsFocus <= 24) {
+        for (k = 0; k < 7; k++) Screen_SetAttr(64 + k, y, 0x30);
+    } else {                                /* F_PreThumbBar: white thumb */
+        if (LsFocus == 25) draw_thumbbar(63, 33, 0, 64, s->Vol, 0x03);
+        if (LsFocus == 26) draw_thumbbar(63, 34, 0, 64, s->GvL, 0x03);
+        if (LsFocus == 27) draw_thumbbar(63, 37, 0, 64, s->ViS, 0x03);
+        if (LsFocus == 28) draw_thumbbar_scaled(63, 38, 0, 32, s->ViD, 8, 0x03);
+        if (LsFocus == 29) draw_thumbbar_scaled(63, 39, 0, 255, s->ViR, 8, 0x03);
+    }
+}
+
+/* the shared screen loop; view = 1 for the Sample Library (Ctrl-F3) */
+static void load_sample_screen_run(int view)
+{
+    LsView = view;
+    LsFocus = 15;
+    ls_set_dir(DirSample[0] ? DirSample : ".");
+
+    while (Running) {
+        int key;
+
+        ls_snapshot();
+        ls_draw();
+        ls_draw_focus();
+        Screen_Update();
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; break; }
+        if (key == ITK_ESC)
+            break;
+
+        if (LsFocus >= 17) {                    /* LS*Input objects */
+            ls_field_key(key);
+            continue;
+        }
+        if (LsFocus == 16) {                    /* LSDriveWindowKeys */
+            switch (key) {
+            case ITK_UP:   if (LsDrvCur > 0) LsDrvCur--; break;
+            case ITK_DOWN: if (LsDrvCur < LsNDrv - 1) LsDrvCur++; break;
+            case ITK_SHIFT_TAB: case ITK_LEFT:  /* DriveWindow_Tab -> 15 */
+                LsFocus = 15; break;
+            case ITK_TAB: case ITK_RIGHT:       /* LSDriveWindow_Right */
+                LsFocus = 17; break;
+            case ITK_ENTER: ls_enter_drive(); LsFocus = 15; break;
+            default: break;
+            }
+            continue;
+        }
+
+        switch (key) {                          /* LSWindowKeys */
+        case ITK_UP: case ITK_DOWN: case ITK_PGUP: case ITK_PGDN:
+        case ITK_HOME: case ITK_END:
+            if (!ls_check_modified())           /* CheckSampleModified */
+                break;
+            switch (key) {
+            case ITK_UP:   if (LsCur > 0) LsCur--; break;
+            case ITK_DOWN: if (LsCur < LsN - 1) LsCur++; break;
+            case ITK_PGUP: LsCur = LsCur >= 35 ? LsCur - 35 : 0; break;
+            case ITK_PGDN: LsCur = LsCur + 35 < LsN ? LsCur + 35
+                                                    : (LsN ? LsN - 1 : 0);
+                           break;
+            case ITK_HOME: LsCur = 0; break;
+            default:       LsCur = LsN ? LsN - 1 : 0; break;
+            }
+            break;
+        case ' ':                               /* LSWindow_Space */
+            ls_edit_name();
+            break;
+        case ITK_RIGHT: case ITK_TAB:           /* FileWindow_ShiftTab */
+            LsFocus = 16; break;
+        case ITK_DEL:                           /* D_DeleteSampleFile */
+            ls_delete_file();
+            break;
+        case ITK_ENTER: {
+            slibent_t *e;
+            if (LsN == 0)
+                break;
+            e = &LsEnt[LsCur];
+            if (e->Format == 1) {               /* directory */
+                ls_enter_dir(e);
+            } else if (e->Format >= 0x20) {     /* module: its samples */
+                ls_enter_module(e);
+            } else if (!LsView) {               /* LSWindow_EnterSample */
+                if (lib_load_sample_entry(e))
+                    goto leave;
+            }
+            break; }
+        default:
+            /* D_PostLoadSampleWindow: note keys audition the entry
+             * through the check slot, stereo menu suppressed
+             * (DisableStereoMenu); this is what makes the waveform
+             * appear */
+            if (LsN && LsEnt[LsCur].Format >= 2 &&
+                LsEnt[LsCur].Format < 0x20 && LsEnt[LsCur].Format != 4) {
+                int (*keep)(void) = Load_StereoChoice;
+                Load_StereoChoice = NULL;
+                lib_preview_key(&LsEnt[LsCur], LsCur, key);
+                Load_StereoChoice = keep;
+            }
+            break;
+        }
+    }
+leave:
+    lib_release_check();                /* drop the preview sample */
+}
+
+/* F3 Enter: the Load Sample screen */
 static void sample_library_requester(void)
 {
-    char keep[26];
-
-    memcpy(keep, ReqName, sizeof(keep));
-    ReqLibMode = 1;
-    ReqInfoIdx = -1;
-    snprintf(ReqName, sizeof(ReqName), "*.*");
-    file_requester_run(0);
-    ReqLibMode = 0;
-    ReqInfoIdx = -1;
-    memcpy(ReqName, keep, sizeof(keep));
-    lib_release_check();                /* drop the preview sample */
+    load_sample_screen_run(0);
 }
 
 /* F4 Enter: the instrument library requester (Load Instrument) */
@@ -9754,8 +10565,8 @@ static int act_pb_length(void)
 
 static int act_smp_list(void)
 { Screen = SCR_SAMPLES; ListSel = CurInstr - 1; return 1; }
-static int act_smp_lib(void)
-{ Screen = SCR_SAMPLES; sample_library_requester(); return 1; }
+static int act_smp_lib(void)           /* Sample Library (Ctrl-F3) */
+{ Screen = SCR_SAMPLES; load_sample_screen_run(1); return 1; }
 static int act_ins_list(void)
 { Screen = SCR_INSTRUMENTS; ListSel = CurInstr - 1; return 1; }
 static int act_ins_lib(void)
@@ -9892,6 +10703,9 @@ static void handle_global(int key)
         Screen = SCR_MESSAGE;
         return;
     case ITK_F1:  Screen = SCR_HELP; return;
+    case ITK_CTRL_F3:                   /* Sample Library (feature 015) */
+        act_smp_lib();
+        return;
     case ITK_CTRL_F1:                   /* keypress table (feature 014) */
         Screen = SCR_KEYS;
         return;
@@ -10138,6 +10952,20 @@ int main(int argc, char **argv)
             } else if (scr == 8) {          /* file requester */
                 req_scan();
                 draw_file_requester();
+            } else if (scr == 13 || scr == 14) { /* Load Sample / Sample
+                                                    Library (feature 015) */
+                const char *d = getenv("ITED_SHOT_DIR");
+                LsView = (scr == 14);
+                LsFocus = 15;
+                ls_set_dir(d ? d : "testdata");
+                if (getenv("ITED_SHOT_ROW"))
+                    LsCur = atoi(getenv("ITED_SHOT_ROW"));
+                if (LsCur >= LsN) LsCur = LsN ? LsN - 1 : 0;
+                if (getenv("ITED_SHOT_AUDITION") && LsN) {
+                    ed_sync_key('q');       /* audition -> waveform */
+                    lib_preview_key(&LsEnt[LsCur], LsCur, 'q');
+                }
+                ls_draw();
             } else if (scr == 10 || scr == 11) { /* library browser */
                 const char *src = getenv("ITED_SHOT_LIB");
                 if (!src)
@@ -11802,6 +12630,307 @@ int main(int argc, char **argv)
             memset(&CurKey, 0, sizeof(CurKey));
             fprintf(stderr, "ITED selftest: [%s]\n",
                     i_ok ? "INS OK" : "INS FAIL");
+        }
+
+        /* Feature 015: the Load Sample screen. Records first
+         * (D_LoadSampleFiles + D_GetSampleInfo + D_SlowSampleSort) over
+         * testdata/ls_fixture, generated by tools/gen_import_tests.py. */
+        {
+            static slibent_t le[620];
+            int l_ok = 1, n, i;
+            static const char *const want[] = {
+                "\\", "..", "ACOUSTIC", "BASS", "SONG.S3M",
+                "FIXTURE.ITS", "TEST8.WAV", "README.TXT"
+            };
+
+            n = RIS_ListDirectory("testdata/ls_fixture", le, 620);
+            if (n != 8)
+                l_ok = 0;
+            for (i = 0; i < 8 && i < n; i++)
+                if (strncmp(le[i].hdr.DOSFileName, want[i], 12))
+                    l_ok = 0;
+            if (n == 8) {
+                /* directories: dotted DirectoryMsg, type 1, priority 0 */
+                if (le[2].Format != 1 || le[2].SortPri != 0 ||
+                    (uint8_t)le[2].hdr.SampleName[0] != 154 ||
+                    memcmp(le[2].hdr.SampleName + 8, "Directory", 9))
+                    l_ok = 0;
+                /* module: dotted LibraryMsg, type 20h (S3M), priority 1 */
+                if (le[4].Format != 0x20 || le[4].SortPri != 1 ||
+                    memcmp(le[4].hdr.SampleName + 9, "Library", 7))
+                    l_ok = 0;
+                /* the ITS: its own header, as the generator wrote it */
+                if (le[5].Format != 2 || le[5].SortPri != 2 ||
+                    le[5].hdr.C5Speed != 11025 || le[5].hdr.Length != 1000 ||
+                    le[5].hdr.LoopBeg != 100 || le[5].hdr.LoopEnd != 900 ||
+                    !(le[5].hdr.Flags & 0x10) || le[5].hdr.GvL != 48 ||
+                    le[5].hdr.Vol != 40 || le[5].hdr.ViS != 3 ||
+                    le[5].hdr.ViD != 5 || le[5].hdr.ViR != 7)
+                    l_ok = 0;
+                /* 8-bit WAV at 22050 Hz */
+                if (le[6].Format != 5 || le[6].hdr.C5Speed != 22050)
+                    l_ok = 0;
+                /* unrecognised files are still listed, as unknown */
+                if (le[7].Format != 4 || le[7].SortPri != 3)
+                    l_ok = 0;
+                /* file dates are real (year >= 2020 packs to >= 40<<9) */
+                if (le[6].Date < (40u << 9))
+                    l_ok = 0;
+            }
+            if (strcmp(RIS_FormatName(0x28), "Fast Tracker 2 Module"))
+                l_ok = 0;                   /* the original's table quirk */
+
+            /* the screen itself (US1): drawn from the object list */
+            {
+                char keepdir[256];
+                screen_cell_t c;
+
+                memcpy(keepdir, DirSample, sizeof(keepdir));
+                LsView = 0;
+                LsFocus = 15;
+                ls_set_dir("testdata/ls_fixture");
+                ls_draw();
+                c = Screen_GetCell(2, 13);          /* row number 001 */
+                if (c.ch != '0' || c.attr != 0x20) l_ok = 0;
+                c = Screen_GetCell(4, 13);
+                if (c.ch != '1') l_ok = 0;
+                c = Screen_GetCell(31, 20);         /* divider A8h attr 2 */
+                if (c.ch != 0xA8 || c.attr != 0x02) l_ok = 0;
+                c = Screen_GetCell(6, 15);          /* dotted Directory row */
+                if (c.ch != 154 || c.attr != 0x05) l_ok = 0;
+                c = Screen_GetCell(14, 15);
+                if (c.ch != 'D') l_ok = 0;
+                c = Screen_GetCell(32, 15);         /* ACOUSTIC, col 32 */
+                if (c.ch != 'A') l_ok = 0;
+                c = Screen_GetCell(32, 20);         /* README.TXT, unknown */
+                if (c.ch != 'R' || c.attr != 0x02) l_ok = 0;
+                c = Screen_GetCell(6, 13);          /* cursor bar 30h */
+                if (c.attr != 0x30) l_ok = 0;
+                c = Screen_GetCell(31, 13);         /* divider cell 32h */
+                if (c.attr != 0x32) l_ok = 0;
+                c = Screen_GetCell(46, 13);         /* drive box */
+                if (c.ch != 'D' || c.attr != 0x05) l_ok = 0;
+                c = Screen_GetCell(55, 21);         /* Quality label row */
+                if (c.ch != ' ' && c.ch != 'Q') l_ok = 0;
+                c = Screen_GetCell(56, 21);
+                if (c.ch != 'Q') l_ok = 0;
+                /* Enter on a directory row re-lists inside it */
+                LsCur = 2;                          /* ACOUSTIC */
+                ls_enter_dir(&LsEnt[LsCur]);
+                {
+                    int found = 0;
+                    for (i = 0; i < LsN; i++)
+                        if (!strncmp(LsEnt[i].hdr.DOSFileName,
+                                     "PIANO.WAV", 12))
+                            found = 1;
+                    if (!found || LsCur != 0) l_ok = 0;
+                }
+                /* US2: preview == what F3 holds after the load */
+                {
+                    uint16_t keepflags = Song.Header.Flags;
+                    uint16_t keepnum = Song.Header.SmpNum;
+                    int keepsel = ListSel, j, itsrow = -1, wavrow = -1;
+
+                    ls_set_dir("testdata/ls_fixture");
+                    for (j = 0; j < LsN; j++) {
+                        if (!strncmp(LsEnt[j].hdr.DOSFileName,
+                                     "FIXTURE.ITS", 12)) itsrow = j;
+                        if (!strncmp(LsEnt[j].hdr.DOSFileName,
+                                     "TEST8.WAV", 12)) wavrow = j;
+                    }
+                    if (itsrow < 0 || wavrow < 0) l_ok = 0;
+                    Song.Header.Flags &= (uint16_t)~ITF_INSTRUMENTS;
+                    ListSel = 97;               /* scratch slot 98 */
+                    for (j = 0; j < 2 && itsrow >= 0 && wavrow >= 0; j++) {
+                        const slibent_t *pe = &LsEnt[j ? wavrow : itsrow];
+                        sample_t *d = &Song.Smp[97];
+                        if (!lib_load_sample_entry(pe)) { l_ok = 0; break; }
+                        if (d->C5Speed != pe->hdr.C5Speed ||
+                            d->Length != pe->hdr.Length ||
+                            d->LoopBeg != pe->hdr.LoopBeg ||
+                            d->LoopEnd != pe->hdr.LoopEnd ||
+                            ((d->Flags ^ pe->hdr.Flags) & 0x33) ||
+                            d->GvL != pe->hdr.GvL || d->Vol != pe->hdr.Vol ||
+                            d->ViS != pe->hdr.ViS || d->ViD != pe->hdr.ViD)
+                            l_ok = 0;
+                    }
+                    smp_free_data(&Song.Smp[97]);
+                    Music_InitSample(&Song.Smp[97]);
+                    Song.Header.SmpNum = keepnum;
+                    Song.Header.Flags = keepflags;
+                    ListSel = keepsel;
+
+                    /* file info: 9-digit size, month name, 12h time */
+                    if (itsrow >= 0) {
+                        char row[27];
+                        int x;
+                        LsCur = itsrow;
+                        ls_draw();
+                        for (x = 0; x < 9; x++)
+                            row[x] = (char)Screen_GetCell(53 + x, 45).ch;
+                        row[9] = 0;
+                        if (strcmp(row, "000001080")) l_ok = 0;
+                        for (x = 0; x < 26; x++) {  /* NUL cell = space */
+                            uint8_t ch = Screen_GetCell(53 + x, 46).ch;
+                            row[x] = ch ? (char)ch : ' ';
+                        }
+                        row[26] = 0;
+                        if (!strstr(row, ", 20")) l_ok = 0;
+                        c = Screen_GetCell(64, 21);     /* "8 Bit" */
+                        if (c.ch != '8' || c.attr != 0x02) l_ok = 0;
+                        c = Screen_GetCell(67, 15);     /* "On Forwards" */
+                        if (c.ch != 'F') l_ok = 0;
+                        /* audition -> waveform glyph block appears */
+                        ed_sync_key('q');           /* note = scancode */
+                        lib_preview_key(&LsEnt[itsrow], itsrow, 'q');
+                        ls_draw();
+                        c = Screen_GetCell(47, 25);
+                        if (c.ch != 1 || c.attr != 0x0D) l_ok = 0;
+                        stop_song();
+                        lib_release_check();
+                    }
+
+                    /* a module lists its samples behind an exit row */
+                    for (j = 0; j < LsN; j++)
+                        if (LsEnt[j].Format == 0x20) break;
+                    if (j < LsN) {
+                        ls_enter_module(&LsEnt[j]);
+                        if (!LsInModule || LsN < 2 || LsEnt[0].Format != 1 ||
+                            LsEnt[0].hdr.DOSFileName[0] != '.' ||
+                            LsEnt[1].Format != 3)
+                            l_ok = 0;
+                        ls_enter_dir(&LsEnt[0]);    /* back out */
+                        if (LsInModule || LsN != 8) l_ok = 0;
+                    } else {
+                        l_ok = 0;
+                    }
+                }
+                /* US3: edits + CheckSampleModified + keep-format saves,
+                 * in a scratch copy of the fixture */
+                {
+                    static const char *const cp[2] = { "FIXTURE.ITS",
+                                                       "TEST8.WAV" };
+                    const char *wd = "st_ls_work";
+                    int j, row;
+                    it_key_t fk;
+#ifdef _WIN32
+                    _mkdir(wd);
+#else
+                    mkdir(wd, 0777);
+#endif
+                    for (j = 0; j < 2; j++) {       /* copy the two files */
+                        char a[300], b[300];
+                        FILE *fi, *fo;
+                        int ch;
+                        snprintf(a, sizeof(a), "testdata/ls_fixture/%s", cp[j]);
+                        snprintf(b, sizeof(b), "%s/%s", wd, cp[j]);
+                        fi = fopen(a, "rb");
+                        fo = fopen(b, "wb");
+                        if (fi && fo)
+                            while ((ch = fgetc(fi)) != EOF) fputc(ch, fo);
+                        if (fi) fclose(fi);
+                        if (fo) fclose(fo);
+                    }
+#define LS_ROW(nm) do { row = -1; for (j = 0; j < LsN; j++) \
+    if (!strncmp(LsEnt[j].hdr.DOSFileName, nm, 12)) row = j; } while (0)
+#define LS_FEED(kc) do { memset(&fk, 0, sizeof(fk)); \
+    fk.flags = ITKF_PRESSED; fk.code = (kc); \
+    fk.ch = (uint16_t)((kc) < 256 ? (kc) : 0); \
+    Screen_KeyFeedTest(&fk, 1); } while (0)
+
+                    ls_set_dir(wd);
+                    /* 1: ITS edit -> "Save sample?" (Enter = OK) -> the
+                     * file itself carries the edit */
+                    LS_ROW("FIXTURE.ITS");
+                    if (row < 0) l_ok = 0;
+                    else {
+                        LsCur = row; ls_snapshot();
+                        LsEnt[row].hdr.C5Speed = 22050;
+                        LsEnt[row].hdr.LoopBeg = 200;
+                        if (!ls_modified()) l_ok = 0;
+                        LS_FEED(ITK_ENTER);
+                        if (!ls_check_modified()) l_ok = 0;
+                        LS_ROW("FIXTURE.ITS");
+                        if (row < 0 || LsEnt[row].Format != 2 ||
+                            LsEnt[row].hdr.C5Speed != 22050 ||
+                            LsEnt[row].hdr.LoopBeg != 200)
+                            l_ok = 0;
+                    }
+                    /* 2: a loop toggle alone is not a modification
+                     * (byte 12h is skipped, authentic) */
+                    LS_ROW("FIXTURE.ITS");
+                    if (row >= 0) {
+                        LsCur = row; LsCheckIdx = -1; ls_snapshot();
+                        LsEnt[row].hdr.Flags ^= 0x10;
+                        if (ls_modified()) l_ok = 0;
+                        LsEnt[row].hdr.Flags ^= 0x10;
+                    }
+                    /* 3: "No" then "Discard changes?" OK -> restored */
+                    if (row >= 0) {
+                        LsEnt[row].hdr.Vol = 5;
+                        LS_FEED('n'); LS_FEED(ITK_ENTER);
+                        if (!ls_check_modified() || LsEnt[row].hdr.Vol != 40)
+                            l_ok = 0;
+                    }
+                    /* 4: "No" twice -> the move is refused, edit kept */
+                    if (row >= 0) {
+                        LsEnt[row].hdr.Vol = 5;
+                        LS_FEED('n'); LS_FEED('n');
+                        if (ls_check_modified() || LsEnt[row].hdr.Vol != 5)
+                            l_ok = 0;
+                        memcpy(&LsEnt[row].hdr, &LsCheckHdr, 0x50);
+                    }
+                    /* 5: WAV speed-only edit stays a WAV, rewritten */
+                    LS_ROW("TEST8.WAV");
+                    if (row < 0) l_ok = 0;
+                    else {
+                        LsCur = row; LsCheckIdx = -1; ls_snapshot();
+                        LsEnt[row].hdr.C5Speed = 11025;
+                        LS_FEED(ITK_ENTER);
+                        ls_check_modified();
+                        LS_ROW("TEST8.WAV");
+                        if (row < 0 || LsEnt[row].Format != 5 ||
+                            LsEnt[row].hdr.C5Speed != 11025)
+                            l_ok = 0;
+                    }
+                    /* 6: a WAV edit WAV can't hold -> TEST8.ITS beside
+                     * the untouched WAV (the keep-format deviation) */
+                    if (row >= 0) {
+                        LsCur = row; LsCheckIdx = -1; ls_snapshot();
+                        LsEnt[row].hdr.Vol = 17;
+                        LS_FEED(ITK_ENTER);
+                        ls_check_modified();
+                        LS_ROW("TEST8.WAV");
+                        if (row < 0 || LsEnt[row].Format != 5 ||
+                            LsEnt[row].hdr.Vol == 17) l_ok = 0;
+                        LS_ROW("TEST8.ITS");
+                        if (row < 0 || LsEnt[row].Format != 2 ||
+                            LsEnt[row].hdr.Vol != 17) l_ok = 0;
+                    }
+                    /* 7: the loop clamp caps at Length */
+                    {
+                        sample_t t;
+                        memset(&t, 0, sizeof(t));
+                        t.Length = 100; t.LoopBeg = 150; t.LoopEnd = 300;
+                        t.Flags = 0x10;
+                        ls_check_loops(&t, 0);
+                        if (t.LoopBeg != 100 || t.LoopEnd != 100 ||
+                            (t.Flags & 0x10)) l_ok = 0;
+                    }
+#undef LS_ROW
+#undef LS_FEED
+                    for (j = 0; j < LsN; j++)
+                        if (LsEnt[j].Format > 1) remove(LsEnt[j].SrcFile);
+#ifdef _WIN32
+                    _rmdir(wd);
+#else
+                    rmdir(wd);
+#endif
+                }
+                memcpy(DirSample, keepdir, sizeof(keepdir));
+            }
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    l_ok ? "LSS OK" : "LSS FAIL");
         }
 
         commit_current_pattern();
