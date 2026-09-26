@@ -173,6 +173,10 @@ void    Music_InitInstrument(instrument_t *in);
 int     Music_InstrumentIsBlank(const instrument_t *in);
 /* last non-blank instrument slot, 0..99 (IT_MUSIC.ASM 5460) */
 int     Music_GetNumberOfInstruments(void);
+void    Music_InitSample(sample_t *s);          /* SampleHeader template */
+int     Music_SampleIsBlank(const sample_t *s);
+int     Music_GetNumberOfSamples(void);
+void    Music_StampBlankSamples(void);
 /* host a sample in an instrument: same-numbered slot if blank, else the
  * first blank one; returns the 1-based instrument or 0 (IT_MUSIC.ASM 6672) */
 int     Music_AssignSampleToInstrument(int smp0);

@@ -1515,5 +1515,7 @@ int Import_LoadModule(const char *path)
     }
 
     free(buf);
+    if (ok)
+        Music_StampBlankSamples();  /* empty slots = SampleHeader template */
     return ok;
 }

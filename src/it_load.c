@@ -596,7 +596,10 @@ int Music_LoadIT(const char *path)
         }
     }
 
-    /* sample headers + data */
+    /* sample headers + data; slots beyond SmpNum (and unstored ones)
+     * hold the pristine SampleHeader template, as for instruments */
+    for (i = 0; i < MAX_SAMPLES - 1; i++)
+        Music_InitSample(&Song.Smp[i]);
     for (i = 0; i < Song.Header.SmpNum; i++) {
         sample_t *s = &Song.Smp[i];
 

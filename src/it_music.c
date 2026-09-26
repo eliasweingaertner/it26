@@ -1387,6 +1387,64 @@ int Music_InstrumentIsBlank(const instrument_t *in)
            memcmp(in, &zero, sizeof(zero)) == 0;
 }
 
+/* SampleHeader (IT_MUSIC.ASM): the 80-byte template every empty sample
+ * slot holds in the original's song data area --
+ *   DB "IMPS", 13 Dup (0), 64, 0, 64, 40 Dup (0)
+ *   DW 8363
+ *   DB 18 Dup (0)
+ * i.e. GvL 64, Vol 64, C5Speed 8363, everything else zero. This is why
+ * an empty slot's F3 box reads "Speed 0008363" in IT. Music_ClearSample
+ * Name copies it over a slot to clear it. */
+void Music_InitSample(sample_t *s)
+{
+    memset(s, 0, sizeof(*s));
+    memcpy(&s->ID, "IMPS", 4);
+    s->GvL     = 64;
+    s->Vol     = 64;
+    s->C5Speed = 8363;
+}
+
+/* Blank test over the 80 on-disk header bytes, as the original's
+ * RepE CmpsB against SampleHeader. Port deviation, same as for
+ * instruments: an all-zero header (a slot an importer never stamped)
+ * also counts as blank. */
+int Music_SampleIsBlank(const sample_t *s)
+{
+    static sample_t tmpl;
+    static int tmpl_ready = 0;
+    static const uint8_t zero[80];
+
+    if (!tmpl_ready) {
+        Music_InitSample(&tmpl);
+        tmpl_ready = 1;
+    }
+    return memcmp(s, &tmpl, 80) == 0 || memcmp(s, zero, 80) == 0;
+}
+
+/* Music_GetNumberOfSamples (IT_MUSIC.ASM 5418): index of the last slot
+ * that differs from the pristine SampleHeader template. */
+int Music_GetNumberOfSamples(void)
+{
+    int n;
+
+    for (n = 99; n >= 1; n--)
+        if (!Music_SampleIsBlank(&Song.Smp[n - 1]))
+            break;
+    return n;
+}
+
+/* Stamp the template into every all-zero sample slot (after an import,
+ * whose loaders build only the samples the source file has). */
+void Music_StampBlankSamples(void)
+{
+    static const uint8_t zero[80];
+    int i;
+
+    for (i = 0; i < MAX_SAMPLES - 1; i++)
+        if (!Song.Smp[i].Data && memcmp(&Song.Smp[i], zero, 80) == 0)
+            Music_InitSample(&Song.Smp[i]);
+}
+
 /* Music_GetNumberOfInstruments (IT_MUSIC.ASM 5460): index of the last
  * slot that differs from the pristine InstrumentHeader template. */
 int Music_GetNumberOfInstruments(void)

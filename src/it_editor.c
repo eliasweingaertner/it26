@@ -2263,7 +2263,7 @@ static void smp_op_delete(void)         /* Alt-D: I_DeleteSample */
     stop_song();
     smp_free_data(s);
     ed_lock();
-    memset(s, 0, sizeof(*s));           /* Music_ReleaseSample + name */
+    Music_InitSample(s);                /* Music_ReleaseSample + name */
     ed_unlock();
 }
 
@@ -2434,7 +2434,7 @@ static void smp_op_insert_slot(void)    /* Alt-Ins: I_InsertSample */
     ed_lock();
     for (i = 98; i > cur; i--)
         Song.Smp[i] = Song.Smp[i - 1];
-    memset(&Song.Smp[cur], 0, sizeof(sample_t));
+    Music_InitSample(&Song.Smp[cur]);
     ed_unlock();
     if (Song.Header.Flags & ITF_INSTRUMENTS)
         nst_remap(0, cur + 1, 0);
@@ -2453,7 +2453,7 @@ static void smp_op_remove_slot(void)    /* Alt-Del: I_RemoveSample */
     ed_lock();
     for (i = cur; i < 98; i++)
         Song.Smp[i] = Song.Smp[i + 1];
-    memset(&Song.Smp[98], 0, sizeof(sample_t));
+    Music_InitSample(&Song.Smp[98]);
     ed_unlock();
     if (Song.Header.Flags & ITF_INSTRUMENTS)
         nst_remap(1, cur + 1, 0);
@@ -2583,22 +2583,32 @@ static void smpfield_cdraw(int focused)
 
     for (i = 0; i < (int)(sizeof(SmpFields) / sizeof(SmpFields[0])); i++) {
         const smpfield_t *f = &SmpFields[i];
-        uint8_t a = (focused && i == SmpFieldSel) ? 0x30 : 0x03;
+        uint8_t a = (focused && i == SmpFieldSel) ? 0x30 : 0x02;
         switch (f->kind) {
         case 0:
-            drawf(64, f->y, a, "%7u",
-                  (unsigned)*((const uint32_t *)smp_field_ptr(f->which)));
+            /* F_Draw5Num -> F_ConvEAX2Num (IT_F.ASM 4311): always seven
+             * digits, zero-padded, colour 2 -- "0008363" */
+            drawf(64, f->y, a, "%07u",
+                  (unsigned)(*((const uint32_t *)smp_field_ptr(f->which))
+                             % 10000000u));
             break;
         case 1:
-            drawf(64, f->y, a, "%-9.9s",
-                  !(s->Flags & 0x10) ? "Off"
-                  : (s->Flags & 0x40) ? "Ping Pong" : "On");
+        case 2: {
+            /* F_DrawToggle writes "On"/"Off"; GetSampleToggle (IT_F.ASM
+             * 3230) then adds "Forwards" or "Ping Pong" three cells to
+             * the right when the loop is on, colour 2 */
+            uint8_t on = f->kind == 1 ? 0x10 : 0x20;
+            uint8_t pp = f->kind == 1 ? 0x40 : 0x80;
+            drawf(64, f->y, 0x02, "%-12s", "");
+            if (!(s->Flags & on)) {
+                drawf(64, f->y, a, "Off");
+            } else {
+                drawf(64, f->y, a, "On");
+                drawf(67, f->y, 0x02, "%s",
+                      (s->Flags & pp) ? "Ping Pong" : "Forwards");
+            }
             break;
-        case 2:
-            drawf(64, f->y, a, "%-9.9s",
-                  !(s->Flags & 0x20) ? "Off"
-                  : (s->Flags & 0x80) ? "Ping Pong" : "On");
-            break;
+        }
         }
     }
 }
@@ -2802,8 +2812,11 @@ static void draw_samples(void)
     wtext(64, 13, s->DOSFileName, 12);          /* InstFileName     */
     wcustom(64, 14, 77, 20, smpfield_cdraw, smpfield_ckey,
             smpfield_cclick);                   /* speed/loop fields */
-    drawf(64, 22, 0x03, "%d bits", (s->Flags & 2) ? 16 : 8);
-    drawf(64, 23, 0x03, "%u", s->Length);
+    /* I_ShowSampleInfo (IT_I.ASM 1686): colour 2; no sample flag ->
+     * "No sample", else the bit depth */
+    Screen_DrawString(64, 22, !(s->Flags & 1) ? "No sample"
+                             : (s->Flags & 2) ? "16 bits" : "8 bits", 0x02);
+    drawf(64, 23, 0x02, "%u", s->Length);
 
     widgets_draw();
 }
@@ -2870,9 +2883,7 @@ static int env_axis_row(const env_t *e)
  * the sample byte (+41h) is released (Music_ReleaseSample) and its
  * header cleared (Music_ClearSampleName), then I_InstrumentClear stamps
  * the template. Samples shared with other instruments go too -- that
- * is the original's behaviour. Port convention: a cleared sample header
- * is all-zero, not the SampleHeader template (count_samples in
- * it_save.c treats zero as pristine; stamping would inflate SmpNum). */
+ * is the original's behaviour. */
 static void ins_op_delete(void)
 {
     instrument_t *in = cur_ins();
@@ -2889,7 +2900,7 @@ static void ins_op_delete(void)
         s = &Song.Smp[smp - 1];
         smp_free_data(s);
         ed_lock();
-        memset(s, 0, sizeof(*s));
+        Music_InitSample(s);            /* Music_ClearSampleName */
         ed_unlock();
     }
     ed_lock();
@@ -9530,9 +9541,11 @@ static void song_defaults(void)
         Song.Header.ChnlPan[i] = 32;
         Song.Header.ChnlVol[i] = 64;
     }
-    /* blank slots hold the pristine InstrumentHeader template, as the
-     * original's song data area always does */
+    /* blank slots hold the pristine Instrument/SampleHeader templates,
+     * as the original's song data area always does */
     Music_ClearAllInstruments();
+    for (i = 0; i < MAX_SAMPLES - 1; i++)
+        Music_InitSample(&Song.Smp[i]);
 }
 
 static void new_song(void)
