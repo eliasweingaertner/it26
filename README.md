@@ -450,10 +450,13 @@ Sample/instrument library (F3/F4 Enter):
   standalone samples load per `D_GetSampleInfo` including its quirks
   (the VHDR loop fields read from the original's offsets, the chunk
   walk uses low-word sizes with no pad skip, 16SV data loads
-  little-endian). Deviation from the original: an
-  occupied slot asks "Replace sample/instrument N?" before it is
-  overwritten (IT overwrites silently); reads are bounds-checked
-  rather than trusting DOS scratch buffers.
+  little-endian). Loading a sample over an occupied slot overwrites
+  it without asking, as IT does; in instrument mode the original's
+  single "Create host instrument?" prompt follows, defaulting to No
+  when a sample is being replaced. Deviation from the original: an
+  occupied *instrument* slot asks "Replace instrument N?" before it is
+  overwritten; reads are bounds-checked rather than trusting DOS
+  scratch buffers.
 - Standalone `.WAV` samples load per the original `D_GetSampleInfo8`
   identification (only integer PCM with 8/16 bits qualifies, the
   leading `RIFF` magic is not checked, the `data` chunk is found by

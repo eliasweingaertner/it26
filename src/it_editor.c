@@ -2865,13 +2865,44 @@ static int env_axis_row(const env_t *e)
 
 /* ---- instrument list Alt ops (InstrumentGlobalKeyList) ------------- */
 
-static void ins_op_delete(void)         /* Alt-D: I_DeleteInstrument */
+/* Alt-D: I_DeleteInstrument (IT_I.ASM 2335). Deletes the instrument
+ * AND every sample its note table plays: for each of the 120 entries
+ * the sample byte (+41h) is released (Music_ReleaseSample) and its
+ * header cleared (Music_ClearSampleName), then I_InstrumentClear stamps
+ * the template. Samples shared with other instruments go too -- that
+ * is the original's behaviour. Port convention: a cleared sample header
+ * is all-zero, not the SampleHeader template (count_samples in
+ * it_save.c treats zero as pristine; stamping would inflate SmpNum). */
+static void ins_op_delete(void)
 {
-    if (!confirm_box("Delete instrument?"))
+    instrument_t *in = cur_ins();
+    int n;
+
+    if (!confirm_box("Delete instrument?"))     /* default Cancel (CX=4) */
         return;
     stop_song();
+    for (n = 0; n < 120; n++) {
+        int smp = in->NoteSampleTable[n * 2 + 1];
+        sample_t *s;
+        if (smp < 1 || smp > 99)
+            continue;
+        s = &Song.Smp[smp - 1];
+        smp_free_data(s);
+        ed_lock();
+        memset(s, 0, sizeof(*s));
+        ed_unlock();
+    }
     ed_lock();
-    memset(cur_ins(), 0, sizeof(instrument_t));
+    Music_InitInstrument(in);
+    ed_unlock();
+}
+
+/* Alt-W: I_InstrumentClear (IT_I.ASM 5357) -- reset the instrument to
+ * the InstrumentHeader template, samples untouched. */
+static void ins_op_wipe(void)
+{
+    ed_lock();
+    Music_InitInstrument(cur_ins());
     ed_unlock();
 }
 
@@ -2953,23 +2984,30 @@ static void ins_op_clear_name(void)     /* Alt-C: I_InstrumentNameClear */
     ed_unlock();
 }
 
-static IT_MAYBE_UNUSED void ins_op_insert_slot(void)    /* Alt-Ins: I_InsertInstrument */
+/* Alt-Ins: I_InsertInstrument. No-op on instrument 99; otherwise the
+ * slots from here on move down one (instrument 99 falls off the end --
+ * the original does not guard it), patterns are remapped in instrument
+ * mode (PE_InsertInstrument), and the freed slot gets the template. */
+static void ins_op_insert_slot(void)
 {
     int cur = ListSel, i;
 
-    if (ed_mem_nonzero(&Song.Ins[98], 554) || cur >= 98)
+    if (cur >= 98)
         return;
     stop_song();
     ed_lock();
     for (i = 98; i > cur; i--)
         Song.Ins[i] = Song.Ins[i - 1];
-    memset(&Song.Ins[cur], 0, sizeof(instrument_t));
+    Music_InitInstrument(&Song.Ins[cur]);
     ed_unlock();
     if (Song.Header.Flags & ITF_INSTRUMENTS)
         pattern_remap_ins(0, cur + 1, 0);
 }
 
-static IT_MAYBE_UNUSED void ins_op_remove_slot(void)    /* Alt-Del: I_RemoveInstrument */
+/* Alt-Del: I_RemoveInstrument. The following slots move up one,
+ * patterns are remapped in instrument mode (PE_DeleteInstrument), and
+ * instrument 99 is reset with Music_ClearInstrument. */
+static void ins_op_remove_slot(void)
 {
     int cur = ListSel, i;
 
@@ -2977,7 +3015,7 @@ static IT_MAYBE_UNUSED void ins_op_remove_slot(void)    /* Alt-Del: I_RemoveInst
     ed_lock();
     for (i = cur; i < 98; i++)
         Song.Ins[i] = Song.Ins[i + 1];
-    memset(&Song.Ins[98], 0, sizeof(instrument_t));
+    Music_InitInstrument(&Song.Ins[98]);
     ed_unlock();
     if (Song.Header.Flags & ITF_INSTRUMENTS)
         pattern_remap_ins(1, cur + 1, 0);
@@ -2989,6 +3027,9 @@ static int handle_instrument_altkey(int key)
     switch (key) {
     case ITK_ALT_A + ('C'-'A'): ins_op_clear_name();    break;
     case ITK_ALT_A + ('D'-'A'): ins_op_delete();        break;
+    case ITK_ALT_A + ('W'-'A'): ins_op_wipe();          break;
+    case ITK_ALT_INS:           ins_op_insert_slot();   break;
+    case ITK_ALT_DEL:           ins_op_remove_slot();   break;
     case ITK_ALT_A + ('J'-'A'): ins_op_scale_volumes(); break;
     case ITK_ALT_A + ('P'-'A'): ins_op_copy();          break;
     case ITK_ALT_A + ('R'-'A'): ins_op_replace();       break;
@@ -8915,20 +8956,17 @@ static void lib_preview_key(const slibent_t *e, int idx, int key)
     ed_unlock();
 }
 
-/* load the selected sample record into the current F3 slot (FR-004:
- * warn when the slot holds data -- a deviation from the original) */
+/* load the selected sample record into the current F3 slot. No
+ * overwrite prompt: the original has none (LSWindow_EnterSample,
+ * IT_DISK.ASM 7297). The extra "Replace sample?" box that features
+ * 006-013 showed defaulted to Cancel, so Enter,Enter aborted the load
+ * and users learned to answer Y,Y -- the second Y then created a new
+ * host instrument on every replacement. */
 static int lib_load_sample_entry(const slibent_t *e)
 {
     sample_t *dst = &Song.Smp[ListSel];
     sample_t tmp;
     int mkins = 0;
-    char msg[64];
-
-    if ((dst->Flags & 1) && dst->Length) {
-        snprintf(msg, sizeof(msg), "Replace sample %d?", ListSel + 1);
-        if (!confirm_box(msg))
-            return 0;
-    }
     /* LSWindow_Enter (IT_DISK.ASM 7297): in instrument mode, offer to
      * host the sample in an instrument -- default Yes when the slot had
      * no sample, No when one is being replaced */
@@ -11671,6 +11709,86 @@ int main(int argc, char **argv)
             memset(&CurKey, 0, sizeof(CurKey));
             fprintf(stderr, "ITED selftest: [%s]\n",
                     k_ok ? "KBD OK" : "KBD FAIL");
+        }
+
+        /* F4 instrument slot ops, driven through the real key path
+         * (handle_global -> widgets_key -> handle_instrument_altkey):
+         * Alt-D deletes the instrument AND its samples (I_DeleteInstrument),
+         * Alt-W wipes to the template keeping samples (I_InstrumentClear),
+         * Alt-Ins / Alt-Del shift slots (I_Insert/RemoveInstrument).
+         * Uses slots 90..92 / sample 96, which itdemo leaves empty. */
+        {
+            int i_ok = 1, i, lw = -1;
+            int keep_scr = Screen, keep_sel = ListSel;
+            uint8_t keep_tab = InsTab;
+            it_key_t yes;
+
+            for (i = 89; i <= 92; i++)
+                Music_InitInstrument(&Song.Ins[i]);
+            /* instrument 90 plays sample 96 on every note */
+            for (i = 0; i < 120; i++)
+                Song.Ins[89].NoteSampleTable[i * 2 + 1] = 96;
+            memcpy(Song.Ins[90].InstrumentName, "KEEP", 5);
+            memset(&Song.Smp[95], 0, sizeof(sample_t));
+            Song.Smp[95].Data = calloc(64, 1);
+            Song.Smp[95].Length = 64;
+            Song.Smp[95].Flags = 1;
+            memcpy(Song.Smp[95].SampleName, "doomed", 7);
+
+            Screen = SCR_INSTRUMENTS;
+            InsTab = 0;
+            ListSel = 89;
+            redraw();
+            for (i = 0; i < NW; i++)
+                if (W[i].type == WT_LIST && W[i].lkey == instr_list_lkey)
+                    lw = i;
+            if (lw < 0)
+                i_ok = 0;
+            else
+                FocusIdx[SCR_INSTRUMENTS] = lw;
+
+            /* Alt-D, confirmed: instrument back to template, sample gone */
+            memset(&yes, 0, sizeof(yes));
+            yes.flags = ITKF_PRESSED; yes.ch = 'y'; yes.code = 'y';
+            Screen_KeyFeedTest(&yes, 1);
+            handle_global(ITK_ALT_A + ('D' - 'A'));
+            if (!Music_InstrumentIsBlank(&Song.Ins[89])) i_ok = 0;
+            if (Song.Smp[95].Data || Song.Smp[95].Flags ||
+                Song.Smp[95].SampleName[0])
+                i_ok = 0;
+            if (memcmp(Song.Ins[90].InstrumentName, "KEEP", 5)) i_ok = 0;
+
+            /* Alt-W: template again, but the sample it maps survives */
+            memcpy(Song.Ins[89].InstrumentName, "W", 2);
+            Song.Ins[89].NoteSampleTable[1] = 1;
+            {
+                void *d0 = Song.Smp[0].Data;
+                handle_global(ITK_ALT_A + ('W' - 'A'));
+                if (!Music_InstrumentIsBlank(&Song.Ins[89])) i_ok = 0;
+                if (Song.Smp[0].Data != d0) i_ok = 0;
+            }
+
+            /* Alt-Ins: 90 becomes a fresh template, old 90 moves to 91 */
+            memcpy(Song.Ins[89].InstrumentName, "A", 2);
+            handle_global(ITK_ALT_INS);
+            if (!Music_InstrumentIsBlank(&Song.Ins[89])) i_ok = 0;
+            if (memcmp(Song.Ins[90].InstrumentName, "A", 2)) i_ok = 0;
+            if (memcmp(Song.Ins[91].InstrumentName, "KEEP", 5)) i_ok = 0;
+
+            /* Alt-Del: back where we were; 99 is reset to the template */
+            handle_global(ITK_ALT_DEL);
+            if (memcmp(Song.Ins[89].InstrumentName, "A", 2)) i_ok = 0;
+            if (memcmp(Song.Ins[90].InstrumentName, "KEEP", 5)) i_ok = 0;
+            if (!Music_InstrumentIsBlank(&Song.Ins[98])) i_ok = 0;
+
+            for (i = 89; i <= 92; i++)
+                Music_InitInstrument(&Song.Ins[i]);
+            Screen = keep_scr;
+            ListSel = keep_sel;
+            InsTab = keep_tab;
+            memset(&CurKey, 0, sizeof(CurKey));
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    i_ok ? "INS OK" : "INS FAIL");
         }
 
         commit_current_pattern();

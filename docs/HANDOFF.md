@@ -504,8 +504,11 @@ does. Disk saves (the 005 leftovers): F3 **Alt-O/T/W** = .ITS /
 Scream Tracker / WAV (44-byte header, C5Speed rate, RIFF size left 0
 as the original does), F4 **Alt-O** = .ITI (compact sample renumber +
 chained data pointers, `D_SaveInstrument`). The F3/F4 lists now span
-all 99 slots as in IT. FR-004 deviation: occupied slots ask
-"Replace sample/instrument N?" (the original overwrites silently).
+all 99 slots as in IT. FR-004 deviation: occupied instrument slots ask
+"Replace instrument N?" (the original overwrites silently). The sample
+half of that prompt was removed 2026-09-26: it defaulted to Cancel ahead
+of the original's "Create host instrument?" box, so users answered Y,Y
+and got a new instrument on every replacement.
 Verification: selftest `LIB OK` = rip-vs-full-load byte equality
 against an IT215 re-save of itdemo, scans+rips of all nine generated
 source files (`testdata/import_test.*` + `testdata/lib_test.{ptm,far,
