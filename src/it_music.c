@@ -1289,6 +1289,54 @@ uint16_t Music_IncreaseSpeed(void)
     return CurrentSpeed;
 }
 
+/* Music_IncreaseVolume / Music_DecreaseVolume (IT_MUSIC.ASM 6789/6820):
+ * the global volume in steps of 1, 0..128 ([ and ] on every screen) */
+uint16_t Music_IncreaseVolume(void)
+{
+    if (GlobalVolume < 128) {
+        GlobalVolume++;
+        RecalculateAllVolumes();
+    }
+    return GlobalVolume;
+}
+
+uint16_t Music_DecreaseVolume(void)
+{
+    if (GlobalVolume > 0) {
+        GlobalVolume--;
+        RecalculateAllVolumes();
+    }
+    return GlobalVolume;
+}
+
+/* Music_ToggleSolo (IT_MUSIC.ASM 7419): solo the given sample (0-based,
+ * F3 `) or instrument (1-based, F4 `); the same one again unsolos.
+ * Every slave is flagged for a volume/pan recalculation and loses its
+ * solo mute unless its host channel is muted. Returns 1 when soloed. */
+int Music_ToggleSolo(int instrument, uint8_t num)
+{
+    uint8_t *dst = instrument ? &SoloInstrument : &SoloSample;
+    int on = (*dst != num);
+    uint16_t cx;
+    slavechn_t *sc = SChn;
+
+    SoloSample = 0xFF;
+    SoloInstrument = 0xFF;
+    if (on)
+        *dst = num;
+    for (cx = NumChannels; cx != 0; cx--, sc++) {
+        size_t at = 0x40 + (size_t)sc->HCN;  /* [ES:BX+40h]: ChnlPan, and
+                                               past it for disowned ones */
+        uint8_t b = at < sizeof(Song.Header)
+                  ? ((const uint8_t *)&Song.Header)[at] : 0;
+        sc->Flags |= SF_RECALC_VOL | SF_RECALC_PAN;
+        if (!(b & 0x80))
+            sc->Flags &= (uint16_t)~SF_CHN_MUTED;
+    }
+    RecalculateAllVolumes();
+    return on;
+}
+
 uint16_t Music_DecreaseSpeed(void)
 {
     if (CurrentSpeed < 0xFF) {
@@ -2423,6 +2471,22 @@ void Music_PlayPattern(uint16_t Pattern, uint16_t NumRows, uint16_t Row)
     NumberOfRows = NumRows;
     ProcessRow = (uint16_t)(Row - 1);
     PlayMode = 1;
+}
+
+/* Music_PlayPartSong (IT_MUSIC.ASM 5729): play the song from `Order`,
+ * starting at `Row` (PE_F7 with the order list holding the pattern) */
+void Music_PlayPartSong(uint16_t Order, uint16_t Row)
+{
+    Music_Stop();
+
+    NumberOfRows = 200;
+    ProcessOrder = Order;
+    CurrentOrder = Order;
+    CurrentRow = Row;
+    ProcessRow = (uint16_t)(Row - 1);
+    CurrentPattern = Song.Orders[Order];
+    StopSong = 0;
+    PlayMode = 2;
 }
 
 void Music_PlaySong(uint16_t Order)

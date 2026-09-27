@@ -66,6 +66,7 @@ void Load_OldInstrument(const uint8_t *src, instrument_t *in);
 
 extern hostchn_t  HChn[64];     /* HostChannelInformationTable  */
 extern slavechn_t SChn[MAXSLAVECHANNELS]; /* SlaveChannelInformationTable */
+extern uint8_t    OrderLockFlag;  /* Alt-F11 order lock (bit 0) */
 extern uint8_t    MuteChannelTable[64];
 
 #define SLAVE(hc)  (&SChn[(hc)->SCOffst])
@@ -131,6 +132,10 @@ extern uint16_t StopEndOfPlaySection;
 void Music_InitMusic(void);        /* engine + channel state initialisation */
 void Music_Stop(void);
 void Music_PlaySong(uint16_t Order);
+void Music_PlayPartSong(uint16_t Order, uint16_t Row);
+uint16_t Music_IncreaseVolume(void);
+uint16_t Music_DecreaseVolume(void);
+int  Music_ToggleSolo(int instrument, uint8_t num);
 void Music_PlayPattern(uint16_t Pattern, uint16_t NumRows, uint16_t Row);
 void Music_PlayNote(uint16_t Channel, const uint8_t Note[5], uint8_t DH);
 void Music_PlaySample(uint8_t Note, uint8_t SmpNum, uint16_t Channel);

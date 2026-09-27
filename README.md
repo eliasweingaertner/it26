@@ -278,7 +278,18 @@ envelopes), the F5 info page views, the message editor, saving (.IT
 writer with the IT215 compressor), module import (S3M/XM/MOD/MTM/669)
 and the sample/instrument library (rip from other modules) are all
 ported; remaining items are listed in `docs/HANDOFF.md` §6 (macOS
-verification pass, Ctrl-V default-volume display toggle).
+verification pass) and in the open GitHub issues. A hotkey audit
+against the original's key tables (2026-09) added the missing global,
+pattern-editor, info-page and sample/instrument-list keys, among them
+F7 from the play mark, Ctrl-F6, Alt-F1..F8, Shift-F6, Alt-F11, Alt-K,
+Alt-Enter/Alt-Backspace, Ctrl-J and the Ctrl-V default-volume display. A cross-check of the pattern editor
+against its F1 help text then corrected Alt-F/Alt-G (they read and
+write past the block, as in IT), made `{ }` / `[ ]` the global speed /
+global volume keys (the port had put octave and edit step there; in
+IT those are keypad `/ *` and Alt-0..9), made Ctrl-Left/Right move
+through the track-view channels, and added Caps Lock + note preview,
+the 2*Alt-N Multichannel Selection dialog and the F3/F4 `` ` `` solo and
+`< > , .` playback-channel keys.
 
 ## Fidelity notes (deviations from the DOS binary)
 
@@ -329,10 +340,14 @@ Keyboard (feature 014):
   supported for exact DOS parity or layouts the host lacks — set
   `keyboard_cfg=` in `ited.cfg`; `tools/asm_keyboard_cfg.py` assembles
   the shipped `Keyboard/*.ASM` tables without a DOS toolchain.
-- Deviation: `MuteNext` is bound to the main-row `/` **position** as in
-  the original (`IT_PE.ASM:801`, `DW 135h`), and *additionally* to the
-  keypad `/`, which the original does not do. The keypad binding has
-  shipped since feature 010 and is kept for compatibility.
+- `MuteNext` is bound to the main-row `/` **position** as in the
+  original (`IT_PE.ASM:801`, `DW 135h`); keypad `/` and `*` lower and
+  raise the octave on every screen (the global key list's 1B5h/137h).
+  Until 2026-09 the port also muted on keypad `/`; that deviation is
+  gone.
+- Alt-Enter toggles fullscreen (a host feature) everywhere except the
+  pattern editor, where it is IT's "store pattern". On Windows,
+  maximizing the window also switches to borderless fullscreen.
 - Limitation: the terminal backend cannot obtain physical key positions
   (ANSI reports characters only), so it infers them from the character
   using a US layout. Keys that differ only by position — main-row versus
@@ -565,9 +580,8 @@ The editor was built in staged, individually gated features on top of
 the ported engine. `docs/EDITOR-PORT-PLAN.md` is the original staged
 plan; `docs/HANDOFF.md` is the living project handbook — current
 status, build/verification commands with the expected determinism
-hashes, a file map, layout facts and the roadmap. The only open items
-are a macOS verification pass and the Ctrl-V default-volume display
-toggle. The spec-kit artifacts the port was driven with are in
+hashes, a file map, layout facts and the roadmap. The open items
+are a macOS verification pass and the open GitHub issues. The spec-kit artifacts the port was driven with are in
 `specs/` — one numbered directory per feature with its spec, plan and
 task list — plus the project constitution in
 `.specify/memory/constitution.md`.

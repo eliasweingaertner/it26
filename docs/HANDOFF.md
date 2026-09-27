@@ -79,8 +79,10 @@ stereo Left/Right prompt, the hi-ASCII message charset, IFF
 8SVX/16SV + TX16W standalone samples, and the Alt-F12 Fourier
 spectrum analyser (overlay-rendered). **Deferred / still open**
 (see §6):
-the macOS verification pass (spec 001 T022 — needs a Mac); the
-Ctrl-V default-volume display toggle. NB (2026-09-27): this list was not
+the macOS verification pass (spec 001 T022 — needs a Mac). The Ctrl-V
+default-volume display landed with the 2026-09 hotkey audit, which
+checked all 461 bindings in the original's key tables against the port
+and added the missing ones (selftest block HOT). NB (2026-09-27): this list was not
 exhaustive -- external testing against IT 2.14 (GitHub issues #4-#10)
 found further gaps, e.g. Pattern Editor Options (F2 in F2) was missing
 entirely until then; treat the open GitHub issues as the live gap list. Selftest now reports 11 blocks OK
@@ -578,7 +580,7 @@ swap-back, host-instrument transfer both branches, count stability).
 Default channel-pan setup was checked against a real 2.14 save —
 byte-identical (all 20h, ChnlVol 40h, Sep 128) — no change needed.
 
-**Not done yet** (see §6): the Ctrl-V default-volume display toggle.
+**Done since** (2026-09 hotkey audit): the Ctrl-V default-volume display toggle.
 Header FreeMem/FreeEMS show host
 free RAM / 0. NB: the selftest script must never send ITK_ENTER while
 the F3/F4 *list widget* has focus — that now opens the modal library

@@ -670,6 +670,8 @@ static void Term_AltByte(uint8_t c)
     else if (c == '\\')            Term_PushKey(ITK_ALT_BACKSLASH);
     else if (c == '+' || c == '=') Term_PushKey(ITK_ALT_PLUS);
     else if (c == '-')             Term_PushKey(ITK_ALT_MINUS);
+    else if (c == 0x0D)            Term_PushKey(ITK_ALT_ENTER);
+    else if (c == 0x7F || c == 0x08) Term_PushKey(ITK_ALT_BACKSPACE);
     /* unmapped Alt combos are consumed silently */
 }
 
@@ -761,22 +763,28 @@ static void Term_CsiFinal(uint8_t f)
         else if (mod == 3) {
             if (f == 'A') Term_PushKey(ITK_ALT_UP);
             if (f == 'B') Term_PushKey(ITK_ALT_DOWN);
+            if (f == 'C') Term_PushKey(ITK_ALT_RIGHT);
+            if (f == 'D') Term_PushKey(ITK_ALT_LEFT);
         } else if (mod <= 1)
             Term_PushKey(plain[i]);
         return;
     }
     case 'H':
-        Term_PushKey(mod == 2 ? ITK_SHIFT_HOME :
+        Term_PushKey(mod == 2 ? ITK_SHIFT_HOME : mod == 3 ? ITK_ALT_HOME :
                      mod == 5 ? ITK_CTRL_HOME : ITK_HOME);
         return;
     case 'F':
-        Term_PushKey(mod == 2 ? ITK_SHIFT_END :
+        Term_PushKey(mod == 2 ? ITK_SHIFT_END : mod == 3 ? ITK_ALT_END :
                      mod == 5 ? ITK_CTRL_END : ITK_END);
         return;
     case 'Z': Term_PushKey(ITK_SHIFT_TAB); return;
     case 'P': case 'Q': case 'R': case 'S':     /* (modified) F1..F4 */
         if (mod == 5 && f == 'Q')
             Term_PushKey(ITK_CTRL_F2);
+        else if (mod == 5 && f == 'S')
+            Term_PushKey(ITK_CTRL_F4);
+        else if (mod == 3)                      /* Alt-F1..F4 */
+            Term_PushKey(ITK_ALT_F1 + (f - 'P'));
         else if (mod <= 1)
             Term_PushKey(ITK_F1 + (f - 'P'));
         return;
@@ -813,7 +821,9 @@ static void Term_CsiFinal(uint8_t f)
             if (mod <= 1) Term_PushKey(ITK_F1 + (p0 - 11));
             return;
         case 15:
-            if (mod <= 1) Term_PushKey(ITK_F5);
+            if (mod == 3)      Term_PushKey(ITK_ALT_F1 + 4);
+            else if (mod == 5) Term_PushKey(ITK_CTRL_F5);
+            else if (mod <= 1) Term_PushKey(ITK_F5);
             return;
         case 17: case 18: case 19: case 20: case 21: {
             int fk = ITK_F6 + (p0 - 17);        /* F6..F10 */
@@ -821,11 +831,16 @@ static void Term_CsiFinal(uint8_t f)
             else if (mod == 3 && p0 == 20) Term_PushKey(ITK_ALT_F9);
             else if (mod == 3 && p0 == 21) Term_PushKey(ITK_ALT_F10);
             else if (mod == 5 && p0 == 18) Term_PushKey(ITK_CTRL_F7);
+            else if (mod == 2 && p0 == 17) Term_PushKey(ITK_SHIFT_F6);
+            else if (mod == 5 && p0 == 17) Term_PushKey(ITK_CTRL_F6);
+            else if (mod == 3 && p0 <= 19)      /* Alt-F6..F8 */
+                Term_PushKey(ITK_ALT_F1 + 5 + (p0 - 17));
             else if (mod <= 1)             Term_PushKey(fk);
             return;
         }
         case 23:
-            if (mod <= 1) Term_PushKey(ITK_F11);
+            if (mod == 3)      Term_PushKey(ITK_ALT_F11);
+            else if (mod <= 1) Term_PushKey(ITK_F11);
             return;
         case 24:
             if (mod == 3)      Term_PushKey(ITK_ALT_F12);
@@ -1374,6 +1389,8 @@ int Key_GetEvent(it_key_t *k)
     k->scan = Key_ReverseScan(k->ch);
     return 1;
 }
+
+int Screen_AltEnterIsKey = 0;
 
 int Key_Get(void)
 {

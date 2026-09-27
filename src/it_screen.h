@@ -157,10 +157,8 @@ enum {
                              * ITK_CTRL_F2 (0x24F) would be 0x250,
                              * which is ITK_SHIFT_UP */
     /* feature 010: Alt-'\' (UnmuteAll, 12Bh) and the keypad slash
-     * (keypad '/', E0 35 -> 1B5h. NB the original's MuteNext is bound
-     * to 135h = the MAIN-ROW '/' position, IT_PE.ASM:801; this keypad
-     * binding is a port convenience kept from feature 010 -- see
-     * pe_mute_next() in it_editor.c and specs/014 binding-audit.md);
+     * (keypad '/', E0 35 -> 1B5h = DecreaseOctave in the global key
+     * list; MuteNext is the MAIN-ROW '/' position 135h, IT_PE.ASM:801);
      * feature 013: Alt-F12 (spectrum analyser, scan 158h) */
     ITK_ALT_BACKSLASH = 0x238, ITK_KP_DIVIDE, ITK_ALT_F12,
     ITK_SHIFT_UP = 0x250, ITK_SHIFT_DOWN, ITK_SHIFT_LEFT,
@@ -172,10 +170,26 @@ enum {
      * handlers; drive F2 shift-marking). Pixel backends only -- a
      * terminal has no key-up events (feature 011 limitation). */
     ITK_SHIFT_PRESS = 0x270, ITK_SHIFT_RELEASE,
+    /* hotkey audit (2026-09): the rest of the original's key tables --
+     * Glbl_Alt_F1..F8 (channel toggles), Alt-F11 (order lock),
+     * Shift-F6, Ctrl-F4/F5/F6, the pattern editor's Alt-Left/Right/
+     * Home/End/Enter/Backspace, Shift-grey +/- (14Eh/14Ah), keypad '*'
+     * (137h, IncreaseOctave) and Right-Ctrl+Enter (111Ch). */
+    ITK_ALT_F1 = 0x280,     /* .. ITK_ALT_F1 + 7 = Alt-F8 */
+    ITK_ALT_F11 = 0x288, ITK_SHIFT_F6, ITK_CTRL_F4, ITK_CTRL_F5,
+    ITK_CTRL_F6, ITK_ALT_LEFT, ITK_ALT_RIGHT, ITK_ALT_HOME, ITK_ALT_END,
+    ITK_ALT_ENTER, ITK_ALT_BACKSPACE, ITK_KP_MULTIPLY, ITK_SHIFT_PLUS,
+    ITK_SHIFT_MINUS, ITK_RCTRL_ENTER,
     ITK_QUIT = 0x300,       /* window closed (pixel backend) */
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };
 int Key_Get(void);          /* non-blocking, K_GetKey-style             */
+
+/* Alt-Enter is a host key (fullscreen) everywhere except the pattern
+ * editor, where IT binds it to PEFunction_StoreCurrentPattern. The
+ * editor sets this while the pattern editor is on screen; the pixel
+ * backends then deliver ITK_ALT_ENTER instead of toggling fullscreen. */
+extern int Screen_AltEnterIsKey;
 
 /* ---- the two-layer key event (feature 014) ----
  * K_GetKey returns CX/DX = input/translated (IT_K.ASM:1108): the raw
@@ -200,6 +214,9 @@ enum {
     ITKF_RCTRL   = 16,
     ITKF_LALT    = 32,
     ITKF_RALT    = 64,      /* AltGr                                    */
+    ITKF_CAPSDOWN = 128,    /* Caps Lock key held (K_IsKeyDown 3Ah: the
+                               pattern editor's note preview); pixel
+                               backends only */
     ITKF_SHIFT   = ITKF_LSHIFT | ITKF_RSHIFT,
     ITKF_CTRL    = ITKF_LCTRL  | ITKF_RCTRL,
     ITKF_ALT     = ITKF_LALT   | ITKF_RALT

@@ -34,6 +34,8 @@ static uint8_t   CurScan, CurFlags;
 static int       WantQuit;
 static int       MousePX, MousePY;      /* logical pixels 0..639/0..399 */
 static int       MouseB;
+static int       SkipChar;              /* WM_CHAR that duplicates a key
+                                           already pushed from WM_KEYDOWN */
 static int       FullScr;               /* Alt-Enter borderless fullscreen */
 static WINDOWPLACEMENT SavedPlacement;
 static int       DstX, DstY;            /* letterboxed blit rect (for the */
@@ -54,6 +56,7 @@ static uint8_t ModFlags(void)
     if (GetKeyState(VK_RCONTROL) & 0x8000) f |= ITKF_RCTRL;
     if (GetKeyState(VK_LMENU)    & 0x8000) f |= ITKF_LALT;
     if (GetKeyState(VK_RMENU)    & 0x8000) f |= ITKF_RALT;
+    if (GetKeyState(VK_CAPITAL)  & 0x8000) f |= ITKF_CAPSDOWN;
     return f;
 }
 
@@ -182,6 +185,9 @@ static void ToggleFullscreen(void)
         mi.cbSize = sizeof(mi);
         SavedPlacement.length = sizeof(SavedPlacement);
         GetWindowPlacement(Wnd, &SavedPlacement);
+        /* entered by maximizing: leaving returns to the normal window */
+        if (SavedPlacement.showCmd == SW_SHOWMAXIMIZED)
+            SavedPlacement.showCmd = SW_SHOWNORMAL;
         GetMonitorInfoA(MonitorFromWindow(Wnd, MONITOR_DEFAULTTONEAREST),
                         &mi);
         SetWindowLongPtrA(Wnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
@@ -239,15 +245,26 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             PushKey(ITK_SHIFT_F9);      /* message editor */
             return 0;
         }
+        if (wp == VK_F6 && (GetKeyState(VK_SHIFT) & 0x8000)) {
+            PushKey(ITK_SHIFT_F6);      /* Glbl_Shift_F6 */
+            return 0;
+        }
         if (wp == VK_SCROLL) {
             PushKey(ITK_SCROLL_LOCK);
             return 0;
         }
         /* Alt combos (WM_SYSKEYDOWN with the menu key held) */
         if (GetKeyState(VK_MENU) & 0x8000) {
-            if (wp == VK_RETURN) {      /* host concern, not an IT key */
-                if (!(lp & (1u << 30))) /* suppress autorepeat */
+            if (wp == VK_RETURN) {      /* host concern, except in the
+                                           pattern editor (store pattern) */
+                if (Screen_AltEnterIsKey)
+                    PushKey(ITK_ALT_ENTER);
+                else if (!(lp & (1u << 30)))    /* suppress autorepeat */
                     ToggleFullscreen();
+                return 0;
+            }
+            if (wp >= VK_F1 && wp <= VK_F8) {   /* Glbl_Alt_F1..F8 */
+                PushKey(ITK_ALT_F1 + (int)(wp - VK_F1));
                 return 0;
             }
             if (wp >= 'A' && wp <= 'Z') {
@@ -263,6 +280,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_DELETE: PushKey(ITK_ALT_DEL);  return 0;
             case VK_UP:     PushKey(ITK_ALT_UP);   return 0;
             case VK_DOWN:   PushKey(ITK_ALT_DOWN); return 0;
+            case VK_LEFT:   PushKey(ITK_ALT_LEFT);  return 0;
+            case VK_RIGHT:  PushKey(ITK_ALT_RIGHT); return 0;
+            case VK_HOME:   PushKey(ITK_ALT_HOME);  return 0;
+            case VK_END:    PushKey(ITK_ALT_END);   return 0;
+            case VK_BACK:   PushKey(ITK_ALT_BACKSPACE); return 0;
+            case VK_F11:    PushKey(ITK_ALT_F11);  return 0;
             case VK_F9:     PushKey(ITK_ALT_F9);   return 0;
             case VK_F10:    PushKey(ITK_ALT_F10);  return 0;
             case VK_F12:    PushKey(ITK_ALT_F12);  return 0;
@@ -308,6 +331,16 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_F1:     PushKey(ITK_CTRL_F1);        return 0;
             case VK_F3:     PushKey(ITK_CTRL_F3);        return 0;
             case VK_F7:     PushKey(ITK_CTRL_F7);        return 0;
+            case VK_F4:     PushKey(ITK_CTRL_F4);        return 0;
+            case VK_F5:     PushKey(ITK_CTRL_F5);        return 0;
+            case VK_F6:     PushKey(ITK_CTRL_F6);        return 0;
+            case VK_RETURN:     /* Right-Ctrl+Enter = PE_ShowPatternLength;
+                                   either way WM_CHAR follows with 0Ah,
+                                   which would read as Ctrl-J */
+                PushKey((GetKeyState(VK_RCONTROL) & 0x8000)
+                        ? ITK_RCTRL_ENTER : ITK_ENTER);
+                SkipChar = 1;
+                return 0;
             case VK_F2:     PushKey(ITK_CTRL_F2);        return 0;
             case 'H':       PushKey(0x08);               return 0;
                             /* Ctrl-H (row hilight); WM_CHAR drops 08h */
@@ -325,11 +358,22 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_NEXT:   PushKey(ITK_SHIFT_PGDN);  return 0;
             case VK_HOME:   PushKey(ITK_SHIFT_HOME);  return 0;
             case VK_END:    PushKey(ITK_SHIFT_END);   return 0;
+            case VK_ADD:        /* grey + / - (14Eh/14Ah): Next/Last4
+                                   Patterns; WM_CHAR would add '+'/'-' */
+                PushKey(ITK_SHIFT_PLUS);  SkipChar = 1; return 0;
+            case VK_SUBTRACT:
+                PushKey(ITK_SHIFT_MINUS); SkipChar = 1; return 0;
             default: break;
             }
         }
-        if (wp == VK_DIVIDE) {          /* keypad '/', scan 135h */
+        if (wp == VK_DIVIDE) {          /* keypad '/', scan 1B5h */
             PushKey(ITK_KP_DIVIDE);
+            SkipChar = 1;               /* not also a '/' character */
+            return 0;
+        }
+        if (wp == VK_MULTIPLY) {        /* keypad '*', scan 137h */
+            PushKey(ITK_KP_MULTIPLY);
+            SkipChar = 1;
             return 0;
         }
         {
@@ -355,7 +399,25 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == ' ')
             break;
         return 0;
+    case WM_SIZE:
+        /* maximized some other way (Win+Up, snapping to the top edge):
+         * go fullscreen once the size change has finished */
+        if (wp == SIZE_MAXIMIZED && !FullScr)
+            PostMessageA(h, WM_APP + 1, 0, 0);
+        break;
+    case WM_APP + 1:
+        if (!FullScr)
+            ToggleFullscreen();
+        return 0;
     case WM_SYSCOMMAND:
+        /* Maximizing (button, title-bar double click) means borderless
+         * fullscreen, the same as Alt-Enter outside the pattern editor,
+         * where Alt-Enter belongs to IT (store pattern). */
+        if ((wp & 0xFFF0) == SC_MAXIMIZE) {
+            if (!FullScr)
+                ToggleFullscreen();
+            return 0;
+        }
         /* A lone Alt tap (or F10, IT's save key) sends SC_KEYMENU with
          * lParam 0, which puts the window into menu mode: the next key
          * is eaten and beeps. Refuse keyboard menu activation; mouse
@@ -364,6 +426,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         break;
     case WM_CHAR:
+        if (SkipChar) {                 /* duplicate of a pushed key */
+            SkipChar = 0;
+            return 0;
+        }
         /* wp is a UTF-16 code unit; CP437 has nothing outside the BMP,
          * so an unpaired surrogate simply converts to 0 = reject. */
         if (wp >= 32 && wp < 127)
@@ -399,6 +465,40 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         return 1;
     }
     return DefWindowProc(h, msg, wp, lp);
+}
+
+/* Global hotkeys of other programs (the NVIDIA overlay's Alt+F1/F2/F3,
+ * Alt+F9/F10, Alt+Z, Alt+R, ...) swallow keys IT needs before they
+ * reach this window. While ittrack is in front, a low-level keyboard
+ * hook takes left-Alt + F-key/letter/digit first -- the most recently
+ * installed hook runs first -- and hands it to our own window as the
+ * WM_SYSKEYDOWN it would have been. AltGr (right Alt, or Ctrl+Alt) is
+ * left alone so national characters still type; Alt+Tab/Esc/Space are
+ * not touched. */
+static HHOOK KbHook;
+
+static LRESULT CALLBACK KbHookProc(int code, WPARAM wp, LPARAM lp)
+{
+    if (code == HC_ACTION && Wnd && GetForegroundWindow() == Wnd) {
+        const KBDLLHOOKSTRUCT *k = (const KBDLLHOOKSTRUCT *)lp;
+        DWORD vk = k->vkCode;
+        int ours = (vk >= VK_F1 && vk <= VK_F12) ||
+                   (vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9');
+        if (ours && (k->flags & LLKHF_ALTDOWN) &&
+            (GetAsyncKeyState(VK_LMENU) & 0x8000) &&
+            !(GetAsyncKeyState(VK_RMENU) & 0x8000) &&
+            !(GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+            int up = (wp == WM_KEYUP || wp == WM_SYSKEYUP);
+            LPARAM l = 1 | ((LPARAM)(k->scanCode & 0xFF) << 16) |
+                       ((k->flags & LLKHF_EXTENDED) ? (1L << 24) : 0) |
+                       (1L << 29) |                     /* Alt held */
+                       (up ? (3L << 30) : 0);
+            PostMessageA(Wnd, up ? WM_SYSKEYUP : WM_SYSKEYDOWN,
+                         (WPARAM)vk, l);
+            return 1;                   /* nobody else sees it */
+        }
+    }
+    return CallNextHookEx(KbHook, code, wp, lp);
 }
 
 static void PumpMessages(void)
@@ -443,11 +543,17 @@ static int W32_Init(void)
         return 0;
 
     ShowWindow(Wnd, SW_SHOW);
+    KbHook = SetWindowsHookExA(WH_KEYBOARD_LL, KbHookProc,
+                               GetModuleHandle(NULL), 0);
     return 1;
 }
 
 static void W32_UnInit(void)
 {
+    if (KbHook) {
+        UnhookWindowsHookEx(KbHook);
+        KbHook = NULL;
+    }
     FreeBackBuffer();
     if (Wnd) {
         DestroyWindow(Wnd);

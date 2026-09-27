@@ -37,6 +37,7 @@ static it_key_t      KeyQueue[64];
 static uint8_t       CurScan, CurFlags;
 static int           KeyHead, KeyTail;
 static int           WantQuit;
+static int           SkipText;       /* TEXTINPUT duplicating a pushed key */
 static int           MousePX, MousePY;      /* logical pixels 0..639/0..399 */
 static int           MouseB;
 
@@ -106,6 +107,8 @@ static uint8_t ModFlags(void)
     if (m & KMOD_RCTRL)  f |= ITKF_RCTRL;
     if (m & KMOD_LALT)   f |= ITKF_LALT;
     if (m & KMOD_RALT)   f |= ITKF_RALT;
+    if (SDL_GetKeyboardState(NULL)[SDL_SCANCODE_CAPSLOCK])
+        f |= ITKF_CAPSDOWN;
     return f;
 }
 
@@ -221,6 +224,10 @@ static void PumpEvents(void)
                 PushKey(ITK_SHIFT_F9);
                 break;
             }
+            if (kc == SDLK_F6 && (mod & KMOD_SHIFT)) {
+                PushKey(ITK_SHIFT_F6);      /* Glbl_Shift_F6 */
+                break;
+            }
             if (kc == SDLK_SCROLLLOCK) {
                 PushKey(ITK_SCROLL_LOCK);
                 break;
@@ -228,9 +235,12 @@ static void PumpEvents(void)
             if (mod & KMOD_ALT) {           /* Alt combos (parity with
                                              * the Win32 backend) */
                 if (kc == SDLK_RETURN || kc == SDLK_KP_ENTER) {
-                    /* host concern, not an IT key: toggle fullscreen
-                     * (logical size keeps the letterbox + mouse map) */
-                    if (!e.key.repeat) {
+                    /* host concern -- toggle fullscreen (logical size
+                     * keeps the letterbox + mouse map) -- except in the
+                     * pattern editor, where it stores the pattern */
+                    if (Screen_AltEnterIsKey)
+                        PushKey(ITK_ALT_ENTER);
+                    else if (!e.key.repeat) {
                         Uint32 fs = SDL_GetWindowFlags(Wnd)
                                     & SDL_WINDOW_FULLSCREEN_DESKTOP;
                         SDL_SetWindowFullscreen(Wnd,
@@ -246,7 +256,17 @@ static void PumpEvents(void)
                     PushKey(ITK_ALT_0 + (int)(kc - SDLK_0));
                     break;
                 }
+                if (kc >= SDLK_F1 && kc <= SDLK_F8) {   /* Glbl_Alt_F1.. */
+                    PushKey(ITK_ALT_F1 + (int)(kc - SDLK_F1));
+                    break;
+                }
                 switch (kc) {
+                case SDLK_LEFT:   PushKey(ITK_ALT_LEFT);  break;
+                case SDLK_RIGHT:  PushKey(ITK_ALT_RIGHT); break;
+                case SDLK_HOME:   PushKey(ITK_ALT_HOME);  break;
+                case SDLK_END:    PushKey(ITK_ALT_END);   break;
+                case SDLK_BACKSPACE: PushKey(ITK_ALT_BACKSPACE); break;
+                case SDLK_F11:    PushKey(ITK_ALT_F11);   break;
                 case SDLK_INSERT: PushKey(ITK_ALT_INS);   break;
                 case SDLK_DELETE: PushKey(ITK_ALT_DEL);   break;
                 case SDLK_UP:     PushKey(ITK_ALT_UP);    break;
@@ -302,6 +322,13 @@ static void PumpEvents(void)
                 case SDLK_F1:       PushKey(ITK_CTRL_F1);        break;
                 case SDLK_F3:       PushKey(ITK_CTRL_F3);        break;
                 case SDLK_F7:       PushKey(ITK_CTRL_F7);        break;
+                case SDLK_F4:       PushKey(ITK_CTRL_F4);        break;
+                case SDLK_F5:       PushKey(ITK_CTRL_F5);        break;
+                case SDLK_F6:       PushKey(ITK_CTRL_F6);        break;
+                case SDLK_RETURN: case SDLK_KP_ENTER:   /* 111Ch */
+                    PushKey((mod & KMOD_RCTRL) ? ITK_RCTRL_ENTER
+                                               : ITK_ENTER);
+                    break;
                 case SDLK_F2:       PushKey(ITK_CTRL_F2);        break;
                 default:
                     if (kc >= SDLK_a && kc <= SDLK_z)
@@ -320,6 +347,10 @@ static void PumpEvents(void)
                 case SDLK_PAGEDOWN: PushKey(ITK_SHIFT_PGDN);  break;
                 case SDLK_HOME:     PushKey(ITK_SHIFT_HOME);  break;
                 case SDLK_END:      PushKey(ITK_SHIFT_END);   break;
+                case SDLK_KP_PLUS:  /* grey +/-: Next/Last4Patterns */
+                    PushKey(ITK_SHIFT_PLUS);  SkipText = 1; break;
+                case SDLK_KP_MINUS:
+                    PushKey(ITK_SHIFT_MINUS); SkipText = 1; break;
                 default: {
                     int k = MapSDLKey(kc);
                     if (k != ITK_NONE)
@@ -329,8 +360,14 @@ static void PumpEvents(void)
                 }
                 break;
             }
-            if (kc == SDLK_KP_DIVIDE) { /* keypad '/', scan 135h */
+            if (kc == SDLK_KP_DIVIDE) { /* keypad '/', scan 1B5h */
                 PushKey(ITK_KP_DIVIDE);
+                SkipText = 1;           /* not also a '/' character */
+                break;
+            }
+            if (kc == SDLK_KP_MULTIPLY) {   /* keypad '*', scan 137h */
+                PushKey(ITK_KP_MULTIPLY);
+                SkipText = 1;
                 break;
             }
             {
@@ -351,6 +388,10 @@ static void PumpEvents(void)
              * old ASCII-only filter so this phase changes no behaviour;
              * `ch` carries the national characters (feature 014). */
             const unsigned char *p = (const unsigned char *)e.text.text;
+            if (SkipText) {             /* duplicate of a pushed key */
+                SkipText = 0;
+                break;
+            }
             while (*p) {
                 uint32_t u;
                 int extra;

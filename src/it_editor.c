@@ -1198,6 +1198,38 @@ static uint8_t pe_select_colour(int row, int chan, int viewproc)
 
 /* one 13-wide cell: ViewFull (IT_PE.ASM 9074) == the default-channel
  * body in PE_DrawPatternEdit */
+static int PEDefaultVolume = 0;     /* the pattern editor's Flags bit 0,
+                                       Ctrl-V (PE_ToggleDefaultVolume) */
+
+/* PE_DrawPattern (IT_PE.ASM 2669): with default volumes on, an empty
+ * volume field under a note + instrument shows the sample's default
+ * volume between chars 191/192 (".." when the instrument maps the note
+ * to no sample). Returns 1 when it drew x+6..x+9. */
+static int draw_default_volume(int x, int y, const editcell_t *cell,
+                               uint8_t a)
+{
+    int smp;
+
+    if (!PEDefaultVolume || (cell->mask & CM_VOL))
+        return 0;
+    if (!(cell->mask & CM_NOTE) || cell->note < 1 || cell->note > 120)
+        return 0;
+    if (!(cell->mask & CM_INS) || cell->ins == 0)
+        return 0;
+    if (Song.Header.Flags & ITF_INSTRUMENTS)
+        smp = Song.Ins[(cell->ins - 1) % 99]
+                  .NoteSampleTable[(cell->note - 1) * 2 + 1];
+    else
+        smp = cell->ins;
+    Screen_PutChar(x + 6, y, 191, a);
+    if (smp >= 1 && smp <= 99)
+        drawf(x + 7, y, a, "%02d", Song.Smp[smp - 1].Vol % 100);
+    else
+        fill(x + 7, y, 2, 173, a);
+    Screen_PutChar(x + 9, y, 192, a);
+    return 1;
+}
+
 static void draw_cell_full(int x, int y, const editcell_t *cell, uint8_t a)
 {
     draw_note(x, y, cell, a);
@@ -1206,9 +1238,11 @@ static void draw_cell_full(int x, int y, const editcell_t *cell, uint8_t a)
         drawf(x + 4, y, a, "%02d", cell->ins % 100);
     else
         fill(x + 4, y, 2, 173, a);
-    Screen_PutChar(x + 6, y, ' ', a);
-    draw_volume(x + 7, y, cell, a);
-    Screen_PutChar(x + 9, y, ' ', a);
+    if (!draw_default_volume(x, y, cell, a)) {
+        Screen_PutChar(x + 6, y, ' ', a);
+        draw_volume(x + 7, y, cell, a);
+        Screen_PutChar(x + 9, y, ' ', a);
+    }
     if (cell->mask & CM_CMD)
         Screen_PutChar(x + 10, y, (uint8_t)('A' + cell->cmd - 1), a);
     else
@@ -1743,8 +1777,8 @@ static int confirm_box_bg(const char *text, int default_yes,
         case ITK_QUIT: Running = 0; return 0;
         case ITK_LEFT: case ITK_RIGHT: case ITK_TAB: case ITK_SHIFT_TAB:
             sel ^= 1; break;
-        case 'y': case 'Y': return 1;
-        case 'n': case 'N': case ITK_ESC: return 0;
+        case 'y': case 'Y': case 'o': case 'O': return 1;   /* OKCancelList */
+        case 'n': case 'N': case 'c': case 'C': case ITK_ESC: return 0;
         case ITK_ENTER: return sel == 0;
         case ITK_MOUSE: {
             it_mouse_t m;
@@ -2824,6 +2858,8 @@ static void ins_save_disk(void)
 }
 
 /* Alt-key dispatch for the F3 sample list; returns 1 when consumed */
+static void list_toggle_multichannel(void);   /* Alt-N (F3/F4) */
+
 static int handle_sample_altkey(int key)
 {
     switch (key) {
@@ -2845,6 +2881,7 @@ static int handle_sample_altkey(int key)
     case ITK_ALT_A + ('X'-'A'): smp_op_exchange();     break;
     case ITK_ALT_A + ('Y'-'A'): /* I_CalculateC5Speed: 2.17 stub */
         break;
+    case ITK_ALT_A + ('N'-'A'): list_toggle_multichannel(); break;
     case ITK_ALT_A + ('O'-'A'): smp_save_disk(0);      break;
     case ITK_ALT_A + ('T'-'A'): smp_save_disk(1);      break;
     case ITK_ALT_A + ('W'-'A'): smp_save_disk(2);      break;
@@ -2961,6 +2998,7 @@ static void draw_samples(void)
  * I_DrawPitchPanCenter. FILTERENVELOPES=1 layout (the 2.17 build).
  * =================================================================== */
 static int key_to_note(const it_key_t *k);
+static int key_to_note_plain(void);
 static void jam_note(int gnote, int chan);
 
 static uint8_t InsTab = 0;         /* InstrumentScreen: 0=General 1=Vol
@@ -3182,6 +3220,7 @@ static int handle_instrument_altkey(int key)
         pattern_update_instruments();
         break;
     case ITK_ALT_A + ('O'-'A'): ins_save_disk();        break;
+    case ITK_ALT_A + ('N'-'A'): list_toggle_multichannel(); break;
     default:
         return 0;
     }
@@ -3690,10 +3729,12 @@ static void notewin_cdraw(int focused)
     }
 }
 
+static int list_play_channel(void);         /* Alt-N multichannel */
+
 static void notewin_play_current(void)
 {
     CurInstr = ListSel + 1;
-    jam_note(NoteWinSel + 1, 40);
+    jam_note(NoteWinSel + 1, list_play_channel());
 }
 
 static int notewin_ckey(int key)           /* NoteListKeys+PostNoteWindow */
@@ -3815,7 +3856,7 @@ static int notewin_ckey(int key)           /* NoteListKeys+PostNoteWindow */
     }
 
     if (NotePos == 0) {                    /* piano keys set note+sample */
-        int gn = key_to_note(&CurKey);
+        int gn = key_to_note_plain();
         if (gn > 0 && gn <= 120) {
             ed_lock();
             entry[0] = (uint8_t)(gn - 1);
@@ -4282,43 +4323,111 @@ static void draw_keys(void)
                              "to the pattern editor.", 0x0A);
 }
 
+/* ===================================================================
+ * F1 help -- IT_H.ASM ported 1:1. The text tables come from the
+ * original's data via tools/gen_help.py (src/it_help.inc); H_DrawHelp
+ * expands each line's dictionary words and draws 32 lines from TopLine
+ * in attr 06h inside HelpBox (1,12)-(78,45) style 27. Each context
+ * remembers its scroll position (Positions); Done/Esc return to the
+ * screen help was called from (Glbl_RestoreMode).
+ * Contexts: 0 order list & panning, 1 pattern editor, 2 sample list,
+ * 3 load module, 4 order list & volume, 5 configuration, 6 load sample,
+ * 7 instrument list, 8 keyboard, 9 info page, 10 palette, 11 load
+ * instrument, 12 message editor, 13/14 MIDI (only 0/1/2/4/7/9/12 carry
+ * their own page; the rest show the global keys).
+ * =================================================================== */
+#include "it_help.inc"
+
+static int HelpContext = 1, HelpTop = 0, HelpPositions[15];
+static int HelpReturnScreen = SCR_PATTERN;
+
+/* H_DrawHelp's decoder: bytes 80h..FDh insert a dictionary word (which
+ * may itself contain words), 0FEh passes with the attribute byte after
+ * it, 0FFh passes with its count and character */
+static void help_expand(const uint8_t *src, uint8_t *out, int *n, int cap)
+{
+    uint8_t b;
+
+    while ((b = *src++) != 0) {
+        if (b < 0x80) {
+            if (*n < cap) out[(*n)++] = b;
+        } else if (b < 0xFE) {
+            help_expand(HelpDecodeWords[b - 0x80], out, n, cap);
+        } else {
+            if (*n < cap) out[(*n)++] = b;
+            if (b == 0xFF) {
+                if (*n < cap) out[(*n)++] = *src++;
+                if (*n < cap) out[(*n)++] = *src++;
+            }
+        }
+    }
+}
+
 static void draw_help(void)
 {
-    static const char *lines[] = {
-      "",
-      "  Summary of keys.",
-      "",
-      "  Screens:  F1 help, F2 pattern, F3 samples, F4 instruments,",
-      "            F11 order list, F12 song variables, ESC main menu.",
-      "",
-      "  Playback: F5 play song + info page, F6 play pattern, F8 stop.",
-      "",
-      "  Pattern editor:",
-      "    Arrows/PgUp/PgDn/Home/End      move cursor",
-      "    Tab / Shift-Tab                next / previous channel",
-      "    [ ]  { }                       octave / edit step down,up",
-      "    - =                            previous / next pattern",
-      "    Piano keys                     enter note",
-      "    1  `                           note cut (^^^), note off (==)",
-      "    Del / Ins                      clear cell, pull / push rows",
-      "    . in any column                clear field",
-      "",
-      "  Piano:  Z X C V B N M , . /  =  C D E F G A B C D E (low)",
-      "          Q W E R T Y U I O P  =  C D E F G A B C D E (high)",
-      "          (with sharps on the row above each)",
-      "",
-      "  Samples/Instruments: arrows select, piano key auditions.",
-      "",
-      "  Ctrl-Q quits.",
-    };
+    const uint8_t *const *ln = HelpContextPtrs[HelpContext] + HelpTop;
     int i;
 
-    Screen_DrawBox(1, 12, 78, 48, 27);
-    for (i = 0; i < (int)(sizeof(lines)/sizeof(lines[0])); i++)
-        Screen_DrawString(3, 13 + i, lines[i], 0x06);
+    Screen_DrawBox(1, 12, 78, 45, 27);                  /* HelpBox */
+    for (i = 0; i < 32 && ln[i]; i++) {                 /* H_DrawHelp */
+        uint8_t buf[160];
+        int n = 0;
+        help_expand(ln[i] + 1, buf, &n, (int)sizeof(buf) - 1);
+        buf[n] = 0;
+        Screen_DrawStringCtl(ln[i][0], 13 + i, buf, 0x06, NULL);
+    }
     NW = 0;
-    wbutton(36, 46, 44, 48, "  Done", act_help_done);
+    wbutton(34, 46, 45, 48, "   Done", act_help_done);  /* HelpDoneButton */
     widgets_draw();
+}
+
+/* H_Help: remember where help was called from and show that screen's
+ * context at its saved position */
+static void help_open(int context)
+{
+    if (Screen != SCR_HELP)
+        HelpReturnScreen = Screen;
+    HelpContext = context;
+    HelpTop = HelpPositions[context];
+    Screen = SCR_HELP;
+}
+
+static int help_context_of(int scr)
+{
+    switch (scr) {
+    case SCR_ORDER:       return 0;
+    case SCR_PATTERN:     return 1;
+    case SCR_SAMPLES:     return 2;
+    case SCR_VARS:        return 5;
+    case SCR_INSTRUMENTS: return 7;
+    case SCR_KEYS:        return 8;
+    case SCR_INFO:        return 9;
+    case SCR_MESSAGE:     return 12;
+    default:              return 1;
+    }
+}
+
+/* HelpKeyList: Up/Down/PgUp/PgDn scroll (H_HelpDown stops once the
+ * last line is on screen), Esc leaves; everything else falls through to
+ * the global keys */
+static int help_key(int key)
+{
+    const uint8_t *const *ln = HelpContextPtrs[HelpContext];
+    int i, rows = 0;
+
+    while (ln[rows])
+        rows++;
+    switch (key) {
+    case ITK_UP:   if (HelpTop > 0) HelpTop--; return 1;
+    case ITK_DOWN: if (HelpTop + 32 < rows) HelpTop++; return 1;
+    case ITK_PGUP: HelpTop = HelpTop > 32 ? HelpTop - 32 : 0; return 1;
+    case ITK_PGDN:
+        for (i = 0; i < 32; i++)
+            if (HelpTop + 32 < rows) HelpTop++;
+        return 1;
+    default: break;
+    }
+    return 0;
 }
 
 /* ===================================================================
@@ -5542,6 +5651,9 @@ static void handle_info_key(int key)
 {
     dispwin_t *w = &InfoWin[InfoCurWindow];
 
+    /* Q/S/G/V/I are type-5 entries in DisplayListKeys: either case */
+    if (key == 'q' || key == 's' || key == 'g' || key == 'v' || key == 'i')
+        key -= 'a' - 'A';
     switch (key) {
     case ITK_UP: case ITK_LEFT:         /* DisplayUp */
         if (InfoCurChannel > 0) InfoCurChannel--;
@@ -5614,7 +5726,7 @@ static void handle_info_key(int key)
         }
         return;
     }
-    case 0x15: {                        /* Ctrl-U = DisplayAltUp */
+    case ITK_ALT_UP: {                  /* DisplayAltUp */
         int idx    = (InfoCurWindow == 0) ? 1 : InfoCurWindow + 1;
         int minlen = (InfoCurWindow == 0) ? 4 : 3;
         if (idx < InfoNumWindows && InfoWin[idx - 1].length > minlen) {
@@ -5624,7 +5736,7 @@ static void handle_info_key(int key)
         }
         return;
     }
-    case 0x04: {                        /* Ctrl-D = DisplayAltDown */
+    case ITK_ALT_DOWN: {                /* DisplayAltDown */
         int idx = InfoCurWindow + 1;
         if (idx < InfoNumWindows && InfoWin[idx].length > 3) {
             InfoWin[idx - 1].length++;
@@ -5633,12 +5745,14 @@ static void handle_info_key(int key)
         }
         return;
     }
-    case 'Q':                           /* DisplayToggleChannel */
+    case ITK_ALT_F9:                    /* DisplayToggleChannel */
+    case 'Q':
         ed_lock();
         Music_ToggleChannel((uint16_t)InfoCurChannel);
         ed_unlock();
         return;
-    case 'S':                           /* DisplaySoloChannel */
+    case ITK_ALT_F10:                   /* DisplaySoloChannel */
+    case 'S':
         ed_lock();
         Music_SoloChannel((uint16_t)InfoCurChannel);
         ed_unlock();
@@ -5649,13 +5763,13 @@ static void handle_info_key(int key)
         ed_unlock();
         if (InfoCurChannel < 63) InfoCurChannel++;
         return;
-    case 'r':                           /* DisplayToggleReverse (Alt-R) */
+    case ITK_ALT_A + ('R' - 'A'):       /* DisplayToggleReverse */
         ed_lock(); Music_ToggleReverse(); ed_unlock();
         /* the original engine SetInfoLines this itself (same text in
          * both directions); the port keeps the engine UI-free */
         status("Left/right outputs reversed");
         return;
-    case 's':                           /* DisplayToggleStereo (Alt-S) */
+    case ITK_ALT_A + ('S' - 'A'):       /* DisplayToggleStereo */
         ed_lock();
         Song.Header.Flags ^= ITF_STEREO;
         Music_InitStereo();
@@ -6037,7 +6151,7 @@ static void handle_message_key(int key)
 static void draw_screen(void)
 {
     static const char *titles[] = {
-        "Help (F1)", "Pattern Editor (F2)", "Sample List (F3)",
+        "Help", "Pattern Editor (F2)", "Sample List (F3)",
         "Instrument List (F4)", "Order List and Panning (F11)",
         "Song Variables & Directory Configuration (F12)",
         "Info Page (F5)", "Message Editor (Shift-F9)",   /* DisplayHeader,
@@ -6111,6 +6225,18 @@ static int key_to_note(const it_key_t *k)
     return -1;
 }
 
+/* note keys outside the pattern editor (sample/instrument lists, note
+ * table, Load Sample preview) count only without Shift/Ctrl/Alt: the
+ * original tests `CH, Not 1` first (I_PostSampleList, D_PostLoad-
+ * SampleWindow1). Positional matching made Alt-M the piano key M and
+ * swallowed the Alt ops on F3/F4. */
+static int key_to_note_plain(void)
+{
+    if (CurKey.flags & (ITKF_SHIFT | ITKF_CTRL | ITKF_ALT))
+        return -1;
+    return key_to_note(&CurKey);
+}
+
 /* ===================================================================
  * Engine control helpers (locked)
  * =================================================================== */
@@ -6119,12 +6245,28 @@ static void commit_current_pattern(void)
     Pattern_Pack(CurPattern, Grid, CurRows);
 }
 
+/* PEFunction_StorePattern's "stored" copy: the pattern as it was when it
+ * was entered or last stored (Alt-Enter). Alt-Backspace (RestoreData)
+ * reverts the working grid to it. The port packs the grid into the song
+ * eagerly after most edits, so the stored copy is kept separately. */
+static editcell_t StoreGrid[MAX_PATROWS * 64];
+static int        StorePattern = -1;
+static uint16_t   StoreRows;
+
+static void pe_store_point(void)
+{
+    memcpy(StoreGrid, Grid, sizeof(editcell_t) * (size_t)CurRows * 64);
+    StorePattern = CurPattern;
+    StoreRows = CurRows;
+}
+
 static void load_pattern(uint16_t pat)
 {
     CurPattern = pat;
     CurRows = Pattern_EnsureExists(pat, 64);
     CurRows = Pattern_Unpack(pat, Grid);
     if (CurRow >= (int)CurRows) CurRow = CurRows - 1;
+    pe_store_point();
 }
 
 static void play_song(void)     { ed_lock(); Music_PlaySong(0); ed_unlock(); }
@@ -6356,6 +6498,23 @@ static void pe_chan_right(void)             /* PEFunction_AltRight */
     if (CurChan < 63)
         CurChan++;
 }
+/* PEFunction_ViewLeft / ViewRight (IT_PE.ASM 10330..): move to the
+ * previous / next channel in the track-view list (Ctrl-1..5 schemes).
+ * The current channel must be in the list; with no track views set up
+ * (or at either end) nothing happens. */
+static void pe_view_step(int dir)
+{
+    int i;
+
+    for (i = 0; i < 100 && ViewChannels[i] != 0xFFFF; i++)
+        if ((ViewChannels[i] & 0xFF) == CurChan) {
+            if (dir < 0 && i > 0)
+                CurChan = ViewChannels[i - 1] & 0xFF;
+            else if (dir > 0 && i + 1 < 100 && ViewChannels[i + 1] != 0xFFFF)
+                CurChan = ViewChannels[i + 1] & 0xFF;
+            return;
+        }
+}
 static void pe_alt_up(void)                 /* AltUp view scroll (10438) */
 {
     if (TopRow > 0) {
@@ -6405,10 +6564,61 @@ static void pe_last_order(void)             /* LastOrderPattern (8326) */
 }
 static void pe_set_play_mark(void)          /* Ctrl-F7 (11095) */
 {
+    /* pressing it again on the marked row clears the mark */
+    if (PlayMarkOn && PlayMarkPattern == (int)CurPattern &&
+        PlayMarkRow == CurRow) {
+        PlayMarkOn = 0;
+        return;
+    }
     PlayMarkPattern = CurPattern;
     PlayMarkRow = CurRow;
     PlayMarkOn = 1;
-    status("Play mark set.");
+}
+
+/* PE_F7 (11128): play from the play mark, or from the cursor when no
+ * mark is set. If the order list holds that pattern -- at the current
+ * order first, else its first occurrence -- the song plays on from
+ * there (Music_PlayPartSong); otherwise the pattern loops alone. */
+static void pe_f7(void)
+{
+    int pat = CurPattern, row = CurRow, ord = -1, i;
+
+    commit_current_pattern();
+    pe_store_point();
+    if (PlayMarkOn) {
+        pat = PlayMarkPattern;
+        row = PlayMarkRow;
+    }
+    if (Song.Orders[PEOrder] == pat)
+        ord = PEOrder;
+    else
+        for (i = 0; i < 256; i++)
+            if (Song.Orders[i] == pat) { ord = i; break; }
+    ed_lock();
+    if (ord >= 0) {
+        Music_PlayPartSong((uint16_t)ord, (uint16_t)row);
+    } else {
+        uint16_t rows = Pattern_EnsureExists((uint16_t)pat, 64);
+        if (row >= rows) row = rows - 1;
+        Music_PlayPattern((uint16_t)pat, rows, (uint16_t)row);
+    }
+    ed_unlock();
+}
+
+/* PE_PlayCurrentPosition (11075), Ctrl-F6: the pattern from the cursor */
+static void pe_play_from_row(void)
+{
+    commit_current_pattern();
+    pe_store_point();
+    ed_lock();
+    Music_PlayPattern(CurPattern, CurRows, (uint16_t)CurRow);
+    ed_unlock();
+}
+
+/* Next4Patterns / Last4Patterns (8273/8300), Shift-grey +/- */
+static void pe_step4(int dir)
+{
+    pe_goto_pattern((int)CurPattern + 4 * dir);
 }
 static void pe_shift_pgup_mv(void)          /* ShiftPgUp (3634) */
 {
@@ -6607,6 +6817,20 @@ static int pe_col_key(int key)
     switch (CurCol) {
     case 0: {                               /* note */
         int gn = key_to_note(&CurKey);
+        if (gn > 0 && (CurKey.flags & ITKF_CAPSDOWN)) {
+            /* PE_PatternCursorPreview (3946): Caps Lock held plays the
+             * note on this channel with the current instrument and
+             * enters nothing */
+            uint8_t n[5] = { 0, 0, 0xFF, 0, 0 };
+            if (gn - 1 <= 119) {
+                n[0] = (uint8_t)(gn - 1);
+                n[1] = (uint8_t)CurInstr;
+                ed_lock();
+                Music_PlayNote((uint16_t)CurChan, n, 32);
+                ed_unlock();
+            }
+            return 1;
+        }
         if (gn > 0) {
             int noteval = gn - 1;
             if (noteval <= 119)
@@ -7086,22 +7310,24 @@ static void pe_block_swap(void)             /* Alt-Y (6430), type 17 */
     commit_current_pattern();
 }
 
-static void pe_block_halve(void)            /* Alt-G (6240), type 5 */
+/* PEFunction_BlockHalve (6240), Alt-G: the block's rows take every
+ * second row starting at its top -- reading on below the block, down
+ * to the pattern's end (rows past it give empty cells) */
+static void pe_block_halve(void)
 {
-    int w, h, r, c;
+    int w, h, i, c;
 
     if (!block_marked())
         return;
     snapshot_undo(5);
     w = BlockRight - BlockLeft + 1;
     h = BlockBottom - BlockTop + 1;
-    for (r = 0; r < h; r++) {
-        int drow = BlockTop + r;
+    for (i = 0; i < h; i++) {
+        int src = BlockTop + 2 * i, dst = BlockTop + i;
         for (c = 0; c < w; c++) {
-            editcell_t *d = &Grid[drow * 64 + BlockLeft + c];
-            int srow = BlockTop + r * 2;
-            if (srow <= BlockBottom)
-                *d = Grid[srow * 64 + BlockLeft + c];
+            editcell_t *d = &Grid[dst * 64 + BlockLeft + c];
+            if (src <= (int)CurRows - 1)
+                *d = Grid[src * 64 + BlockLeft + c];
             else
                 cell_clear(d);
         }
@@ -7109,25 +7335,26 @@ static void pe_block_halve(void)            /* Alt-G (6240), type 5 */
     commit_current_pattern();
 }
 
-static void pe_block_double(void)           /* Alt-F (6326), type 4 */
+/* PEFunction_BlockDouble (6326), Alt-F: the block spreads over twice its
+ * length from its top -- row k to row 2k, an empty row after each --
+ * overwriting what follows the block, clipped at the pattern's end */
+static void pe_block_double(void)
 {
-    int w, h, r, c;
+    int w, h, k, c, last = (int)CurRows - 1;
 
     if (!block_marked())
         return;
     snapshot_undo(4);
     w = BlockRight - BlockLeft + 1;
     h = BlockBottom - BlockTop + 1;
-    /* walk output rows top..bottom of the block from the bottom up so
-     * the in-place spread doesn't clobber unread source rows */
-    for (r = h - 1; r >= 0; r--) {
+    for (k = h - 1; k >= 0; k--) {          /* bottom-up: dst >= src */
+        int dst = BlockTop + 2 * k;
         for (c = 0; c < w; c++) {
-            int orow = BlockTop + r;
-            editcell_t *d = &Grid[orow * 64 + BlockLeft + c];
-            if (r & 1)
-                cell_clear(d);              /* odd output rows blank */
-            else
-                *d = Grid[(BlockTop + r / 2) * 64 + BlockLeft + c];
+            if (dst + 1 <= last)
+                cell_clear(&Grid[(dst + 1) * 64 + BlockLeft + c]);
+            if (dst <= last)
+                Grid[dst * 64 + BlockLeft + c] =
+                    Grid[(BlockTop + k) * 64 + BlockLeft + c];
         }
     }
     commit_current_pattern();
@@ -7280,9 +7507,68 @@ static int cell_default_volume(const editcell_t *c)
         return -1;
     return Song.Smp[smp - 1].Vol;
 }
+/* PEFunction_AltK (5805), Alt-K: slide the volume column of each marked
+ * channel from the top row's value to the bottom row's (missing values
+ * pull the note's default volume; volumes and pannings are never mixed).
+ * Pressed twice it wipes the block's volume column; a third press does
+ * nothing. */
+static void pe_alt_k(void)
+{
+    const int altk = ITK_ALT_A + ('K' - 'A');
+    int r, c, h;
+
+    if (!block_marked())
+        return;
+    if (LastKeys[1] == altk) {
+        if (LastKeys[2] == altk)
+            return;
+        snapshot_undo(8);
+        for (r = BlockTop; r <= BlockBottom; r++)
+            for (c = BlockLeft; c <= BlockRight; c++)
+                cv_set(&Grid[r * 64 + c], 0xFF);
+        commit_current_pattern();
+        return;
+    }
+    snapshot_undo(7);
+    h = BlockBottom - BlockTop;             /* CL = number of rows */
+    if (h == 0)
+        return;
+    for (c = BlockLeft; c <= BlockRight; c++) {
+        editcell_t *top = &Grid[BlockTop * 64 + c];
+        editcell_t *bot = &Grid[BlockBottom * 64 + c];
+        int a = cv_get(bot), b = cv_get(top), chg, step, acc;
+        if (a == 0xFF && (a = cell_default_volume(bot)) < 0)
+            continue;
+        if (b == 0xFF && (b = cell_default_volume(top)) < 0)
+            continue;
+        if ((a & 0x7F) > 64 || (b & 0x7F) > 64)
+            continue;                       /* volume-column effects */
+        if ((a & 0x80) != (b & 0x80))
+            continue;                       /* one volume, one pan */
+        cv_set(bot, (uint8_t)a);
+        cv_set(top, (uint8_t)b);
+        chg = a - b;                        /* 8.8 step, as the ASM's
+                                               two-stage DIV */
+        if (chg >= 0) {
+            step = ((chg / h) << 8) | (((chg % h) << 8) / h);
+            acc = b << 8;
+        } else {
+            step = -((((-chg) / h) << 8) | ((((-chg) % h) << 8) / h));
+            acc = (b << 8) | 0xFF;
+        }
+        for (r = 0; r < h; r++) {
+            cv_set(&Grid[(BlockTop + r) * 64 + c], (uint8_t)(acc >> 8));
+            acc = (acc + step) & 0xFFFF;
+        }
+    }
+    commit_current_pattern();
+}
+
+static void pe_volume_amp_by(int amp);
+
 static void pe_volume_amp(void)             /* Alt-J (7418), type 6 */
 {
-    int r, c, amp;
+    int amp;
 
     if (!block_marked())
         return;
@@ -7299,6 +7585,13 @@ static void pe_volume_amp(void)             /* Alt-J (7418), type 6 */
         amp = (int)v;
         Amplification = amp;
     }
+    pe_volume_amp_by(amp);
+}
+
+static void pe_volume_amp_by(int amp)
+{
+    int r, c;
+
     snapshot_undo(6);
     for (r = BlockTop; r <= BlockBottom; r++)
         for (c = BlockLeft; c <= BlockRight; c++) {
@@ -7312,6 +7605,126 @@ static void pe_volume_amp(void)             /* Alt-J (7418), type 6 */
             if (v > 64) v = 64;
             cv_set(d, (uint8_t)v);
         }
+    commit_current_pattern();
+}
+
+/* O1_GetFastAmpList (IT_OBJ1.ASM 869): box (22,25)-(57,35) style 3,
+ * "   Volume Amplification %" at (27,27), a 10..90 thumbbar at (33,30)
+ * in a style-25 box (32,29)-(44,31), OK (30,32)-(39,34) and Cancel
+ * (40,32)-(49,34). Enter and Alt-J confirm (AmpExtraKeyList), Esc
+ * cancels. Returns 1 on OK. */
+static int FastAmpFocus;
+static void fast_amp_draw(void)
+{
+    draw_screen();
+    Screen_DrawBox(22, 25, 57, 35, 3);
+    Screen_DrawString(27, 27, "   Volume Amplification %", 0x20);
+    Screen_DrawBox(32, 29, 44, 31, 25);
+    draw_thumbbar(33, 30, 10, 90, FastVolumeAmp,
+                  FastAmpFocus == 0 ? 0x03 : 0x02);
+    draw_button_style(30, 32, 39, 34, 8, "   OK", 0, FastAmpFocus == 1);
+    draw_button_style(40, 32, 49, 34, 8, " Cancel", 0, FastAmpFocus == 2);
+}
+
+static int fast_amp_dialog(void)
+{
+    int keep = FastVolumeAmp, drag = 0;
+
+    FastAmpFocus = 0;
+    while (Running) {
+        int key, v;
+        if (drag) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (!m.b) drag = 0;
+            else {
+                v = 10 + (m.px - (33 * 8 + 4));
+                FastVolumeAmp = v < 10 ? 10 : v > 90 ? 90 : v;
+            }
+        }
+        fast_amp_draw();
+        Screen_Update();
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; break; }
+        if (key == ITK_ESC) break;
+        if (key == ITK_ALT_A + ('J' - 'A'))
+            return 1;
+        if (key == ITK_ENTER || (key == ' ' && FastAmpFocus)) {
+            if (FastAmpFocus == 2) break;
+            return 1;
+        }
+        if (key == ITK_MOUSE) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 30, 32, 39, 34)) return 1;
+            if (mouse_in(&m, 40, 32, 49, 34)) break;
+            if (thumb_hit(&m, 33, 30, 10, 90, &v)) {
+                FastAmpFocus = 0;
+                FastVolumeAmp = v;
+                drag = 1;
+            }
+            continue;
+        }
+        if (key == ITK_TAB || key == ITK_DOWN) {
+            FastAmpFocus = (FastAmpFocus + 1) % 3; continue;
+        }
+        if (key == ITK_SHIFT_TAB || key == ITK_UP) {
+            FastAmpFocus = (FastAmpFocus + 2) % 3; continue;
+        }
+        if (FastAmpFocus) {                 /* buttons */
+            if (key == ITK_LEFT || key == ITK_RIGHT)
+                FastAmpFocus = FastAmpFocus == 1 ? 2 : 1;
+            continue;
+        }
+        v = FastVolumeAmp;                  /* the thumbbar */
+        if (key == ITK_LEFT)             v--;
+        else if (key == ITK_RIGHT)       v++;
+        else if (key == ITK_SHIFT_LEFT)  v -= 4;
+        else if (key == ITK_SHIFT_RIGHT) v += 4;
+        else if (key == ITK_CTRL_LEFT)   v -= 2;
+        else if (key == ITK_CTRL_RIGHT)  v += 2;
+        else if (key == ITK_HOME)        v = 10;
+        else if (key == ITK_END)         v = 90;
+        else if (key >= '0' && key <= '9') {
+            int nv;
+            if (!thumb_value_dialog(key, 10, 90, &nv, fast_amp_draw))
+                continue;
+            v = nv;
+        } else
+            continue;
+        FastVolumeAmp = v < 10 ? 10 : v > 90 ? 90 : v;
+    }
+    FastVolumeAmp = keep;                   /* cancelled */
+    return 0;
+}
+
+/* ToggleFastVolume (11622), Ctrl-J: Alt-J / Alt-I become one-key
+ * attenuate / amplify by FastVolumeAmplification (asked for on enable) */
+static void pe_toggle_fast_volume(void)
+{
+    PEConfig ^= 4;
+    if (!(PEConfig & 4)) {
+        status("Alt-I / Alt-J fast volume changes disabled");
+        return;
+    }
+    if (fast_amp_dialog()) {
+        status("Alt-I / Alt-J fast volume changes enabled");
+    } else {
+        PEConfig &= (uint8_t)~4;
+        status("Alt-I / Alt-J fast volume changes not enabled");
+    }
+}
+
+/* PEFunction_RestoreData (8610), Alt-Backspace: back to the stored copy
+ * (one undo snapshot for a run of presses, as LastKeyBoard2 checks) */
+static void pe_restore_data(void)
+{
+    if (StorePattern != (int)CurPattern)
+        return;
+    if (LastKeys[1] != ITK_ALT_BACKSPACE)
+        snapshot_undo(1);
+    memcpy(Grid, StoreGrid, sizeof(editcell_t) * (size_t)StoreRows * 64);
     commit_current_pattern();
 }
 
@@ -8021,11 +8434,77 @@ static void pe_options_dialog(void)
  * physical key, split by shift. So this is a position binding and its
  * partner is a character binding, in the original's own encoding.
  *
- * Deviation, deliberately kept: the port also fires MuteNext from the
- * keypad '/' (ITK_KP_DIVIDE). That is not in the original's table, but
- * it is behaviour this port has shipped since feature 010 and the
- * selftest exercises it. The authentic main-row binding is added
- * alongside it rather than replacing it. */
+ * The keypad '/' (1B5h) is not in this table: the global key list binds
+ * it to DecreaseOctave (and keypad '*' to IncreaseOctave). Until the
+ * 2026-09 hotkey audit the port also muted on keypad '/'. */
+/* O1_SelectMultiChannel (IT_OBJ1.ASM 4008), 2*Alt-N: box (7,18)-(72,42)
+ * style 3, "Multichannel Selection" at (29,19) attr 23h, four style-27
+ * boxes at x = 19/35/51/67 holding 16 On/Off toggles each (channel c
+ * at (20 + 16*(c/16), 22 + c%16), label "Channel nn" 10 cells to the
+ * left, F_DrawSMCChannels), OK (35,39)-(44,41). The toggles link up/
+ * down within a column (row 0 up and row 15 down = OK), left/right
+ * across columns with wrap; focus starts on the current channel. */
+static int SmcFocus;                        /* 0..63 toggles, 64 = OK */
+static void smc_draw(void)
+{
+    int c;
+
+    draw_screen();
+    Screen_DrawBox(7, 18, 72, 42, 3);
+    Screen_DrawString(29, 19, "Multichannel Selection", 0x23);
+    for (c = 0; c < 4; c++)
+        Screen_DrawBox(19 + 16 * c, 21, 23 + 16 * c, 38, 27);
+    for (c = 0; c < 64; c++) {
+        int x = 20 + 16 * (c / 16), y = 22 + c % 16;
+        drawf(x - 11, y, 0x20, "Channel %02d", c + 1);
+        Screen_DrawString(x, y, MultiChannelInfo[c] ? "On " : "Off", 0x02);
+        if (SmcFocus == c)
+            Screen_DrawString(x, y, MultiChannelInfo[c] ? "On" : "Off", 0x30);
+    }
+    draw_button_style(35, 39, 44, 41, 8, "   OK   ", 0, SmcFocus == 64);
+}
+
+static void pe_multichannel_menu(void)
+{
+    SmcFocus = CurChan;
+    while (Running) {
+        int key, f = SmcFocus;
+        smc_draw();
+        Screen_Update();
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return; }
+        if (key == ITK_ESC) return;
+        if (key == ITK_MOUSE) {
+            it_mouse_t m;
+            int c;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 35, 39, 44, 41)) return;
+            for (c = 0; c < 64; c++)
+                if (mouse_in(&m, 20 + 16 * (c / 16), 22 + c % 16,
+                             22 + 16 * (c / 16), 22 + c % 16)) {
+                    SmcFocus = c;
+                    MultiChannelInfo[c] ^= 1;
+                }
+            continue;
+        }
+        if (f == 64) {                      /* the OK button */
+            if (key == ITK_ENTER || key == ' ') return;
+            if (key == ITK_UP) SmcFocus = 15;
+            else if (key == ITK_DOWN || key == ITK_TAB) SmcFocus = 0;
+            continue;
+        }
+        switch (key) {
+        case ITK_UP:    SmcFocus = f % 16 ? f - 1 : 64; break;
+        case ITK_DOWN:  SmcFocus = f % 16 == 15 ? 64 : f + 1; break;
+        case ITK_RIGHT: case ITK_TAB:   SmcFocus = (f + 16) % 64; break;
+        case ITK_LEFT:  case ITK_SHIFT_TAB: SmcFocus = (f + 48) % 64; break;
+        case ITK_ENTER: case ' ':       MultiChannelInfo[f] ^= 1; break;
+        default: break;
+        }
+    }
+}
+
 static void pe_mute_next(void)
 {
     ed_lock(); Music_ToggleChannel((uint16_t)CurChan); ed_unlock();
@@ -8076,14 +8555,44 @@ static void handle_pattern_key(int key)
     /* -- channel / view movement (Alt/Ctrl arrows) -- */
     case ITK_ALT_UP:    pe_alt_up();    return;
     case ITK_ALT_DOWN:  pe_alt_down();  return;
-    case ITK_CTRL_LEFT: pe_chan_left(); return;   /* ViewLeft ~ chan */
-    case ITK_CTRL_RIGHT:pe_chan_right();return;
+    case ITK_CTRL_LEFT: pe_view_step(-1); return;  /* ViewLeft */
+    case ITK_CTRL_RIGHT:pe_view_step(+1); return;  /* ViewRight */
     case ITK_CTRL_HOME: pe_ctrl_home(); return;
     case ITK_CTRL_END:  pe_ctrl_end();  return;
     /* -- pattern / order navigation -- */
     case ITK_CTRL_PLUS:  pe_next_order(); return;
     case ITK_CTRL_MINUS: pe_last_order(); return;
     case ITK_CTRL_F7:    pe_set_play_mark(); return;
+    case ITK_CTRL_F6:    pe_play_from_row(); return;    /* 11075 */
+    case ITK_SHIFT_PLUS:  pe_step4(+1); return;         /* Next4Patterns */
+    case ITK_SHIFT_MINUS: pe_step4(-1); return;         /* Last4Patterns */
+    /* -- hotkey audit (2026-09): the rest of PEFunctions -- */
+    case ITK_ALT_LEFT:  pe_chan_left();  return;        /* AltLeft */
+    case ITK_ALT_RIGHT: pe_chan_right(); return;        /* AltRight */
+    case ITK_CTRL_PGUP: CurRow = 0; return;             /* Ctrl_PgUp */
+    case ITK_CTRL_PGDN: CurRow = (int)CurRows - 1; return;
+    case ITK_ALT_HOME:          /* PgUp/PgDn by the minor hilight (3531) */
+        pe_page(-1, RowHiLight1 ? RowHiLight1 : 16); return;
+    case ITK_ALT_END:
+        pe_page(+1, RowHiLight1 ? RowHiLight1 : 16); return;
+    case ITK_CTRL_UP:                   /* DecreaseInstrument (4999) */
+        if (CurInstr > 0) CurInstr--;
+        return;
+    case ITK_CTRL_DOWN:                 /* IncreaseInstrument */
+        if (CurInstr < 99) CurInstr++;
+        return;
+    case ITK_ALT_ENTER:                 /* StoreCurrentPattern (8138) */
+        commit_current_pattern();
+        pe_store_point();
+        return;
+    case ITK_ALT_BACKSPACE: pe_restore_data(); return;
+    case ITK_ALT_A + ('K' - 'A'): pe_alt_k(); return;
+    case 0x0A: pe_toggle_fast_volume(); return;         /* Ctrl-J */
+    case 0x16:                          /* Ctrl-V: PE_ToggleDefaultVolume */
+        PEDefaultVolume ^= 1;
+        status(PEDefaultVolume ? "Default volumes enabled"
+                               : "Default volumes disabled");
+        return;
     /* -- view/entry toggles -- */
     case 0x03:                          /* Ctrl-C: centralise cursor */
         PEConfig ^= 1;
@@ -8097,11 +8606,6 @@ static void handle_pattern_key(int key)
     case '\\':                          /* PEFunction_Alt_F9 */
     case ITK_ALT_F9:
         ed_lock(); Music_ToggleChannel((uint16_t)CurChan); ed_unlock();
-        return;
-    case ITK_KP_DIVIDE:                 /* MuteNext on the keypad: a
-                                           documented convenience, see
-                                           pe_mute_next() */
-        pe_mute_next();
         return;
     case '?':                           /* MutePrevious (clamp at 0) */
         if (CurChan > 0)
@@ -8176,11 +8680,20 @@ static void handle_pattern_key(int key)
     /* -- entry pipeline toggles -- */
     case ITK_ALT_A + ('N' - 'A'):           /* multichannel toggle */
         MultiChannelInfo[CurChan] ^= 1;
+        if (LastKeys[1] == ITK_ALT_A + ('N' - 'A')) {
+            pe_multichannel_menu();         /* 2*Alt-N */
+            return;
+        }
         status(MultiChannelInfo[CurChan]
                ? "Multichannel enabled for this channel"
                : "Multichannel disabled for this channel");
         return;
     case ITK_ALT_A + ('I' - 'A'):           /* ToggleTemplate (8660) */
+        if (PEConfig & 4) {                 /* fast volume amplify */
+            if (block_marked())
+                pe_volume_amp_by(10050 / FastVolumeAmp);
+            return;
+        }
         if (++Template > 4) Template = 0;
         status(Template == 0 ? "Template mode off"
              : Template == 1 ? "Template, Overwrite"
@@ -8206,10 +8719,9 @@ static void handle_pattern_key(int key)
         status("Cursor step set to 0");
         return;
     /* -- octave / step / pattern / instrument keys (existing) -- */
-    case '[':       if (BaseOctave > 0) BaseOctave--; return;
-    case ']':       if (BaseOctave < 8) BaseOctave++; return;
-    case '{':       if (EditStep > 0) EditStep--; return;
-    case '}':       if (EditStep < 16) EditStep++; return;
+    /* { } [ ] are PE_LeftBrace.. = the global speed/volume keys,
+     * handled in handle_global (octave is keypad / *, the skip value
+     * Alt-0..9, as in the original) */
     case '<': case ';':             /* PEFunction_DecreaseInstrument */
         if (CurInstr > 0) CurInstr--;
         return;
@@ -8265,9 +8777,34 @@ static void handle_pattern_key(int key)
 /* ===================================================================
  * List widgets: key/click handlers and widget action callbacks
  * =================================================================== */
+/* I_ToggleMultiChannel / UpdateMultiChannel (IT_I.ASM 8733): F3/F4 notes
+ * play on PlayChannel (channel 1 by default; < > , . change it); with
+ * multichannel playback on, every note moves on to the next channel, so
+ * notes ring on together. */
+static int ListMultiChannel = 0, ListPlayChannel = 0;
+
+static int list_play_channel(void)
+{
+    if (!ListMultiChannel)
+        return ListPlayChannel;
+    if (++ListPlayChannel >= 64)
+        ListPlayChannel = 0;
+    status("Using channel %d for playback", ListPlayChannel + 1);
+    return ListPlayChannel;
+}
+
+static void list_toggle_multichannel(void)
+{
+    ListMultiChannel ^= 1;
+    status(ListMultiChannel ? "Multichannel playback enabled"
+                            : "Multichannel playback disabled");
+}
+
 static int generic_list_lkey(int key, int n)
 {
     switch (key) {
+    case ITK_CTRL_PGUP: ListSel = 0; return 1;      /* I_SampleCtrlPgUp */
+    case ITK_CTRL_PGDN: ListSel = n - 1; return 1;  /* ... 99 */
     case ITK_UP:   if (ListSel > 0) ListSel--; return 1;
     case ITK_DOWN: if (ListSel < n - 1) ListSel++; return 1;
     case ITK_PGUP: ListSel -= 16; if (ListSel < 0) ListSel = 0; return 1;
@@ -8277,10 +8814,10 @@ static int generic_list_lkey(int key, int n)
     default: break;
     }
     {
-        int gn = key_to_note(&CurKey);
+        int gn = key_to_note_plain();
         if (gn > 0) {
             CurInstr = ListSel + 1;
-            jam_note(gn, 40);
+            jam_note(gn, list_play_channel());
             return 1;
         }
     }
@@ -8556,6 +9093,7 @@ static int order_list_lkey(int key)
         return 1;
     case 'g': case 'G':                         /* PE_PostOrderList24 */
     case ITK_ENTER:
+        PEOrder = o;
         if (Song.Orders[o] < 200) {
             commit_current_pattern();
             load_pattern(Song.Orders[o]);
@@ -8647,6 +9185,10 @@ static int pan_col_lkey(int key, int base)
     case ITK_END:  PanSel = base + 31; return 1;
     case ITK_LEFT:  pan_adjust(PanSel, -1); return 1;
     case ITK_RIGHT: pan_adjust(PanSel,  1); return 1;
+    case ITK_SHIFT_LEFT:  pan_adjust(PanSel, -4); return 1;   /* issue #7 */
+    case ITK_SHIFT_RIGHT: pan_adjust(PanSel,  4); return 1;
+    case ITK_CTRL_LEFT:   pan_adjust(PanSel, -2); return 1;
+    case ITK_CTRL_RIGHT:  pan_adjust(PanSel,  2); return 1;
     case 'l': case 'L': pan_set(PanSel, 0);   return 1;
     case 'm': case 'M': pan_set(PanSel, 32);  return 1;
     case 'r': case 'R': pan_set(PanSel, 64);  return 1;
@@ -8786,9 +9328,10 @@ static void act_mv_changed(void)
     ed_unlock();
 }
 
-static void act_help_done(void)
+static void act_help_done(void)             /* H_HelpESC */
 {
-    Screen = SCR_PATTERN;
+    HelpPositions[HelpContext] = HelpTop;
+    Screen = HelpReturnScreen;
 }
 
 static void act_save_prefs(void)
@@ -9291,7 +9834,7 @@ static void lib_release_check(void)
  * (D_PostLoadSampleWindow -> LoadSample(99) + Music_PlaySample) */
 static void lib_preview_key(const slibent_t *e, int idx, int key)
 {
-    int gn = key_to_note(&CurKey);
+    int gn = key_to_note_plain();
     sample_t tmp;
 
     if (gn <= 0)
@@ -9468,6 +10011,39 @@ static void draw_lib_browser(int inslib, const char *srcname)
 
 /* browse an opened library; returns 1 when something was loaded
  * (leave the requester), 0 = back to the file list */
+/* GlobalKeyChain inside the file screens (issue #13): Load Sample, Load/
+ * Save Module and the libraries are ordinary object lists in the
+ * original, so the global keys work there. Playback keys act in place;
+ * screen keys close the modal screen and are handled once the main loop
+ * has it back. Returns 0 (not a global key), 1 (handled, carry on) or 2
+ * (leave the modal screen). */
+static int PendingGlobalKey = 0, PendingHelpContext = 1;
+static void handle_global(int key);
+static void help_open(int context);
+
+static int modal_global_key(int key, int help_context)
+{
+    if ((key >= ITK_ALT_F1 && key <= ITK_ALT_F1 + 7) || key == ITK_ALT_F11)
+        goto in_place;
+    switch (key) {
+    case ITK_F6: case ITK_F7: case ITK_F8:
+    case ITK_CTRL_F5: case ITK_SHIFT_F6:
+    in_place:
+        handle_global(key);
+        return 1;
+    case ITK_F1:
+        PendingHelpContext = help_context;
+        /* fall through */
+    case ITK_F2: case ITK_F3: case ITK_F4: case ITK_F5:
+    case ITK_F9: case ITK_F10: case ITK_F11: case ITK_F12:
+    case ITK_CTRL_F1: case ITK_CTRL_F3: case ITK_CTRL_F4: case ITK_SHIFT_F9:
+        PendingGlobalKey = key;
+        return 2;
+    default:
+        return 0;
+    }
+}
+
 static int lib_browse_run(int inslib, const char *srcname)
 {
     LibSel = 0;                 /* cursor on the Directory row, as IT */
@@ -9481,6 +10057,11 @@ static int lib_browse_run(int inslib, const char *srcname)
 
         key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (modal_global_key(key, inslib ? 11 : 6)) {
+        case 1: continue;
+        case 2: return 1;               /* closes the requester too */
+        default: break;
+        }
 
         switch (key) {
         case ITK_QUIT:
@@ -9618,6 +10199,11 @@ static void file_requester_run(int save)
 
         key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (modal_global_key(key, ReqLibMode == 2 ? 11 : 3)) {
+        case 1: continue;
+        case 2: done = 1; continue;
+        default: break;
+        }
 
         switch (key) {
         case ITK_QUIT: Running = 0; done = 1; continue;
@@ -10553,6 +11139,11 @@ static void load_sample_screen_run(int view)
         if (key == ITK_QUIT) { Running = 0; break; }
         if (key == ITK_ESC)
             break;
+        {
+            int g = modal_global_key(key, 6);
+            if (g == 1) continue;
+            if (g == 2) break;
+        }
 
         if (key == ITK_MOUSE) {                 /* M_Object1List mouse */
             it_mouse_t m;
@@ -10940,7 +11531,7 @@ static void menu_under_main(void);
 static int act_view_patterns(void) { Screen = SCR_PATTERN; return 1; }
 static int act_view_orders(void)   { Screen = SCR_ORDER;   return 1; }
 static int act_view_vars(void)     { Screen = SCR_VARS;    return 1; }
-static int act_help(void)          { Screen = SCR_HELP;    return 1; }
+static int act_help(void)          { help_open(help_context_of(Screen)); return 1; }
 static int act_message_editor(void)
 { Screen_DefineHiASCII(); Screen = SCR_MESSAGE; return 1; }
 
@@ -11119,6 +11710,58 @@ static void pattern_click(void)
     }
 }
 
+/* Glbl_LeftBrace/RightBrace (speed) and Glbl_Left/RightSquareBracket
+ * (global volume), IT_G.ASM 805..; returns 1 when the key was one */
+static int global_brace_key(int key)
+{
+    int v;
+
+    ed_lock();
+    if (key == '{')      v = Music_IncreaseSpeed();     /* fewer frames */
+    else if (key == '}') v = Music_DecreaseSpeed();
+    else if (key == '[') v = Music_DecreaseVolume();
+    else if (key == ']') v = Music_IncreaseVolume();
+    else { ed_unlock(); return 0; }
+    ed_unlock();
+    if (key == '{' || key == '}')
+        status("Speed set to %d frames per row", v);
+    else
+        status("Global Volume set to %d", v);
+    return 1;
+}
+
+/* SampleGlobalKeyList / InstrumentGlobalKeyList character entries:
+ * ` solos the current sample/instrument (Music_ToggleSolo), < > , .
+ * pick the playback channel (I_Decrease/IncreasePlayChannel); then the
+ * global keys */
+static void list_global_key(int key, int instrument)
+{
+    switch (key) {
+    case '`': {
+        int on, n = instrument ? CurInstr : CurInstr - 1;
+        ed_lock();
+        on = Music_ToggleSolo(instrument, (uint8_t)n);
+        ed_unlock();
+        if (!on)
+            status("Solo disabled");
+        else
+            status(instrument ? "Solo instrument %d" : "Solo sample %d",
+                   CurInstr);
+        return;
+    }
+    case '<': case ',':
+        if (ListPlayChannel > 0) ListPlayChannel--;
+        status("Using channel %d for playback", ListPlayChannel + 1);
+        return;
+    case '>': case '.':
+        if (ListPlayChannel < 63) ListPlayChannel++;
+        status("Using channel %d for playback", ListPlayChannel + 1);
+        return;
+    default:
+        global_brace_key(key);
+    }
+}
+
 static void handle_global(int key)
 {
     ed_sync_key(key);
@@ -11133,6 +11776,10 @@ static void handle_global(int key)
             InstrumentEdit = 0;             /* leave name editing */
             return;
         }
+        if (Screen == SCR_HELP) {           /* H_HelpESC */
+            act_help_done();
+            return;
+        }
         main_menu();
         return;
     case ITK_SHIFT_F9:                  /* Glbl_Shift_F9: hi-ASCII
@@ -11140,7 +11787,10 @@ static void handle_global(int key)
         Screen_DefineHiASCII();
         Screen = SCR_MESSAGE;
         return;
-    case ITK_F1:  Screen = SCR_HELP; return;
+    case ITK_F1:                        /* H_Help, context-sensitive */
+        if (Screen != SCR_HELP)
+            help_open(help_context_of(Screen));
+        return;
     case ITK_CTRL_F3:                   /* Sample Library (feature 015) */
         act_smp_lib();
         return;
@@ -11158,7 +11808,11 @@ static void handle_global(int key)
         return;
     case ITK_F3:  Screen = SCR_SAMPLES; ListSel = CurInstr-1; return;
     case ITK_F4:  Screen = SCR_INSTRUMENTS; ListSel = CurInstr-1; return;
-    case ITK_F11: Screen = SCR_ORDER; ListSel = 0; return;
+    case ITK_F11:                       /* Glbl_F11: the order cursor is
+                                           the pattern editor's Order,
+                                           so it is where G left it
+                                           (issue #14) */
+        Screen = SCR_ORDER; ListSel = PEOrder; return;
     case ITK_F12: Screen = SCR_VARS; return;
     case ITK_F5: {                      /* Glbl_F5: info page; start the
                                            song only when nothing plays */
@@ -11178,12 +11832,31 @@ static void handle_global(int key)
         }
         return;
     }
-    case ITK_F6:  commit_current_pattern(); play_pattern(); return;
-    case ITK_F7:  commit_current_pattern(); play_pattern(); return;
+    case ITK_F6:
+        commit_current_pattern(); pe_store_point(); play_pattern(); return;
+    case ITK_F7:  pe_f7(); return;          /* PE_F7: mark or cursor */
     case ITK_F8:  stop_song(); return;
     case ITK_F9:  file_requester(); return;
     case ITK_F10: save_requester(); return;
     case 0x13:    quick_save(); return;     /* Ctrl-S */
+    /* -- hotkey audit (2026-09): the rest of the global key list -- */
+    case 0x0C: case 0x12:                   /* Ctrl-L / Ctrl-R = Glbl_F9 */
+        file_requester(); return;
+    case 0x17:    save_requester(); return; /* Ctrl-W = Glbl_F10 */
+    case 0x0E:    act_file_new(); return;   /* Ctrl-N: F_NewSong */
+    case 0x10:    act_pb_length(); return;  /* Ctrl-P: Music_TimeSong */
+    case ITK_CTRL_F4: act_ins_lib(); return;    /* Glbl_Ctrl_F4 */
+    case ITK_CTRL_F5:                       /* Glbl_Ctrl_F5: from order 0 */
+        commit_current_pattern(); pe_store_point(); play_song(); return;
+    case ITK_SHIFT_F6:                      /* Glbl_Shift_F6: from the
+                                               pattern editor's order */
+        commit_current_pattern(); pe_store_point();
+        ed_lock(); Music_PlaySong((uint16_t)PEOrder); ed_unlock();
+        return;
+    case ITK_ALT_F11:                       /* Music_ToggleOrderUpdate */
+        ed_lock(); OrderLockFlag ^= 1; ed_unlock();
+        status(OrderLockFlag ? "Order list locked" : "Order list unlocked");
+        return;
     case ITK_MOUSE:
         if (Screen == SCR_PATTERN)
             pattern_click();
@@ -11192,7 +11865,47 @@ static void handle_global(int key)
         return;
     default: break;
     }
+    if (key >= ITK_ALT_F1 && key <= ITK_ALT_F1 + 7) {  /* Glbl_Alt_F1..F8 */
+        ed_lock(); Music_ToggleChannel((uint16_t)(key - ITK_ALT_F1));
+        ed_unlock();
+        return;
+    }
+    /* keypad / and * (1B5h/137h): Decrease/IncreaseOctave on every
+     * screen; a focused text field takes them as characters instead */
+    if (key == ITK_KP_DIVIDE || key == ITK_KP_MULTIPLY) {
+        if (Screen != SCR_PATTERN && Screen != SCR_INFO && NW > 0 &&
+            FocusIdx[Screen] < NW && W[FocusIdx[Screen]].type == WT_TEXT) {
+            widgets_key(key == ITK_KP_DIVIDE ? '/' : '*');
+            return;
+        }
+        if (key == ITK_KP_DIVIDE) { if (BaseOctave > 0) BaseOctave--; }
+        else if (BaseOctave < 9) BaseOctave++;
+        return;
+    }
+    /* Ctrl-Left/Right = DisplayMinus/Plus (previous/next order) unless
+     * the screen uses them: the pattern editor's views, a focused
+     * thumbbar (F_PostThumbBar16), the envelope editor */
+    if ((key == ITK_CTRL_LEFT || key == ITK_CTRL_RIGHT) &&
+        Screen != SCR_PATTERN) {
+        if (Screen == SCR_INFO || Screen == SCR_MESSAGE || !widgets_key(key)) {
+            ed_lock();
+            if (key == ITK_CTRL_LEFT) Music_LastOrder();
+            else                      Music_NextOrder();
+            ed_unlock();
+        }
+        return;
+    }
 
+    /* { } [ ]: Glbl_LeftBrace.. (speed / global volume) -- the pattern
+     * editor, info page and message viewer have no other use for them;
+     * on the widget screens they come after the objects, so a text
+     * field still types them */
+    if ((key == '{' || key == '}' || key == '[' || key == ']') &&
+        (Screen == SCR_PATTERN || Screen == SCR_INFO ||
+         (Screen == SCR_MESSAGE && !MsgEdit))) {
+        global_brace_key(key);
+        return;
+    }
     if (Screen == SCR_PATTERN)
         handle_pattern_key(key);
     else if (Screen == SCR_INFO)
@@ -11200,13 +11913,18 @@ static void handle_global(int key)
     else if (Screen == SCR_MESSAGE)
         handle_message_key(key);
     else if (Screen == SCR_SAMPLES) {
-        if (!widgets_key(key))          /* Alt ops after the widgets */
-            handle_sample_altkey(key);
+        if (!widgets_key(key) &&        /* Alt ops after the widgets */
+            !handle_sample_altkey(key))
+            list_global_key(key, 0);
     } else if (Screen == SCR_INSTRUMENTS) {
-        if (!widgets_key(key))          /* note window gets Alt first */
-            handle_instrument_altkey(key);
-    } else
-        widgets_key(key);
+        if (!widgets_key(key) &&        /* note window gets Alt first */
+            !handle_instrument_altkey(key))
+            list_global_key(key, 1);
+    } else if (Screen == SCR_HELP) {
+        if (!help_key(key) && !widgets_key(key))
+            global_brace_key(key);
+    } else if (!widgets_key(key))
+        global_brace_key(key);
 }
 
 /* ===================================================================
@@ -11324,6 +12042,8 @@ int main(int argc, char **argv)
                 Screen = SCR_MESSAGE;
             else if (scr == 12)             /* keypress table (Ctrl-F1) */
                 Screen = SCR_KEYS;
+            if (getenv("ITED_SHOT_HELP"))  /* F1 help context 0..14 */
+                HelpContext = atoi(getenv("ITED_SHOT_HELP")) % 15;
             if (getenv("ITED_SHOT_TAB"))   /* F4 tab 0..3 for captures */
                 InsTab = (uint8_t)(atoi(getenv("ITED_SHOT_TAB")) & 3);
             if (getenv("ITED_SHOT_SAMPLE"))    /* F3 list selection */
@@ -12346,13 +13066,25 @@ int main(int argc, char **argv)
             if (CurChan != 3 || (Song.Header.ChnlPan[2] & 0x80))
                 pe2_ok = 0;
             handle_global(ITK_ALT_BACKSLASH);
-            handle_global(ITK_KP_DIVIDE);   /* mute ch3 + advance */
+            pe_mute_next();                 /* main-row '/' (135h):
+                                             * mute ch3 + advance */
             if (CurChan != 4 || !(Song.Header.ChnlPan[3] & 0x80))
                 pe2_ok = 0;
             handle_global('?');             /* back to ch3 + toggle */
             if (CurChan != 3 || (Song.Header.ChnlPan[3] & 0x80))
                 pe2_ok = 0;
             handle_global(ITK_ALT_BACKSLASH);
+            {                               /* keypad / and * = octave
+                                             * (1B5h/137h, global list) */
+                int keepoct = BaseOctave;
+                BaseOctave = 4;
+                handle_global(ITK_KP_DIVIDE);
+                if (BaseOctave != 3 || CurChan != 3) pe2_ok = 0;
+                handle_global(ITK_KP_MULTIPLY);
+                handle_global(ITK_KP_MULTIPLY);
+                if (BaseOctave != 5) pe2_ok = 0;
+                BaseOctave = keepoct;
+            }
 
             /* -- US3: view-scheme table mutators -- */
             CurChan = 1;
@@ -12416,6 +13148,237 @@ int main(int argc, char **argv)
             redraw();
             fprintf(stderr, "ITED selftest: [%s]\n",
                     pe2_ok ? "PE2 OK" : "PE2 FAIL");
+        }
+
+        /* hotkey audit (2026-09): the key-table entries added in one go.
+         * Works on scratch pattern 198 and puts everything back. */
+        {
+            int hk_ok = 1, keep = CurPattern, keepscr = Screen, i;
+            int keepins = CurInstr, keepord = PEOrder;
+            uint8_t keeplock = OrderLockFlag;
+
+            Screen = SCR_PATTERN;
+            load_pattern(198);
+            CurChan = 0; CurCol = 0; CurRow = 10;
+            /* Ctrl-PgUp/PgDn: top/bottom; Alt-Home/End: minor-hilight page */
+            handle_global(ITK_CTRL_PGDN);
+            if (CurRow != (int)CurRows - 1) hk_ok = 0;
+            handle_global(ITK_CTRL_PGUP);
+            if (CurRow != 0) hk_ok = 0;
+            handle_global(ITK_ALT_END);
+            if (CurRow != (RowHiLight1 ? RowHiLight1 : 16)) hk_ok = 0;
+            handle_global(ITK_ALT_HOME);
+            if (CurRow != 0) hk_ok = 0;
+            /* Ctrl-Up/Down: instrument; Alt-Left/Right: channel */
+            CurInstr = 5;
+            handle_global(ITK_CTRL_DOWN);
+            handle_global(ITK_CTRL_DOWN);
+            handle_global(ITK_CTRL_UP);
+            if (CurInstr != 6) hk_ok = 0;
+            handle_global(ITK_ALT_RIGHT);
+            handle_global(ITK_ALT_RIGHT);
+            handle_global(ITK_ALT_LEFT);
+            if (CurChan != 1) hk_ok = 0;
+            CurChan = 0;
+            /* Alt-K slides the volume column 0 -> 64 over rows 0..4 */
+            for (i = 0; i < 5; i++) {
+                cn_set(&Grid[i * 64], 48);
+                ci_set(&Grid[i * 64], 1);
+            }
+            cv_set(&Grid[0], 0);
+            cv_set(&Grid[4 * 64], 64);
+            BlockMark = 1;
+            BlockLeft = BlockRight = 0; BlockTop = 0; BlockBottom = 4;
+            handle_global(ITK_ALT_A + ('K' - 'A'));
+            if (cv_get(&Grid[2 * 64]) != 32 || cv_get(&Grid[1 * 64]) != 16)
+                hk_ok = 0;
+            handle_global(ITK_ALT_A + ('K' - 'A'));   /* twice: wipe */
+            if (cv_get(&Grid[0]) != 0xFF || cv_get(&Grid[4 * 64]) != 0xFF)
+                hk_ok = 0;
+            BlockMark = 0;
+            /* Alt-F doubles the block over rows 0..7 (row k -> 2k, blank
+             * between), Alt-G halves it back; notes 10..13 in rows 0..3 */
+            for (i = 0; i < 8; i++)
+                cell_clear(&Grid[i * 64]);
+            for (i = 0; i < 4; i++)
+                cn_set(&Grid[i * 64], (uint8_t)(10 + i));
+            BlockMark = 1;
+            BlockLeft = BlockRight = 0; BlockTop = 0; BlockBottom = 3;
+            handle_global(ITK_ALT_A + ('F' - 'A'));
+            for (i = 0; i < 8; i++)
+                if (cn_get(&Grid[i * 64]) !=
+                    ((i & 1) ? 253 : (uint8_t)(10 + i / 2)))
+                    hk_ok = 0;
+            handle_global(ITK_ALT_A + ('G' - 'A'));
+            for (i = 0; i < 4; i++)
+                if (cn_get(&Grid[i * 64]) != (uint8_t)(10 + i))
+                    hk_ok = 0;
+            BlockMark = 0;
+            /* { } speed, [ ] global volume (Glbl_LeftBrace..) */
+            {
+                uint16_t sp0, gv0;
+                ed_lock(); sp0 = CurrentSpeed; gv0 = GlobalVolume; ed_unlock();
+                handle_global('}');
+                handle_global(']');
+                ed_lock();
+                if (CurrentSpeed != (sp0 < 255 ? sp0 + 1 : sp0) ||
+                    GlobalVolume != (gv0 < 128 ? gv0 + 1 : gv0))
+                    hk_ok = 0;
+                ed_unlock();
+                handle_global('{');
+                handle_global('[');
+                ed_lock();
+                if (CurrentSpeed != sp0 || GlobalVolume != gv0) hk_ok = 0;
+                ed_unlock();
+                Song.Header.IS = (uint8_t)sp0;
+            }
+            /* 2*Alt-N: Multichannel Selection; Down, Space toggles ch 2 */
+            {
+                static const int seq[] = { ITK_DOWN, ' ', ITK_ESC };
+                it_key_t fk;
+                int k2;
+                uint8_t m1 = MultiChannelInfo[1];
+                for (k2 = 0; k2 < 3; k2++) {
+                    memset(&fk, 0, sizeof(fk));
+                    fk.flags = ITKF_PRESSED; fk.code = seq[k2];
+                    fk.ch = (uint16_t)(seq[k2] < 256 ? seq[k2] : 0);
+                    Screen_KeyFeedTest(&fk, 1);
+                }
+                CurChan = 0;
+                pe_multichannel_menu();
+                if (MultiChannelInfo[1] == m1) hk_ok = 0;
+                MultiChannelInfo[1] = m1;
+            }
+            /* Alt-Enter stores, Alt-Backspace reverts to the stored copy */
+            cv_set(&Grid[0], 20);
+            handle_global(ITK_ALT_ENTER);
+            cv_set(&Grid[0], 40);
+            handle_global(ITK_ALT_BACKSPACE);
+            if (cv_get(&Grid[0]) != 20) hk_ok = 0;
+            /* Ctrl-V: default volumes shown as 191 vv 192 */
+            handle_global(0x16);
+            if (!PEDefaultVolume) hk_ok = 0;
+            handle_global(0x16);
+            if (PEDefaultVolume) hk_ok = 0;
+            /* Ctrl-F7 toggles the mark; F7 plays from it, Ctrl-F6 from
+             * the cursor (pattern 198 is in no order: pattern loop) */
+            CurRow = 12;
+            handle_global(ITK_CTRL_F7);
+            if (!PlayMarkOn || PlayMarkRow != 12) hk_ok = 0;
+            CurRow = 3;
+            handle_global(ITK_F7);
+            ed_lock();
+            if (PlayMode != 1 || CurrentPattern != 198 || CurrentRow != 12)
+                hk_ok = 0;
+            ed_unlock();
+            handle_global(ITK_CTRL_F6);
+            ed_lock();
+            if (PlayMode != 1 || CurrentRow != 3) hk_ok = 0;
+            ed_unlock();
+            CurRow = 12;
+            handle_global(ITK_CTRL_F7);         /* same row: cleared */
+            if (PlayMarkOn) hk_ok = 0;
+            stop_song();
+            /* F7 on a pattern in the order list plays the song on */
+            PEOrder = 0;
+            load_pattern(Song.Orders[0]);
+            CurRow = 2;
+            handle_global(ITK_F7);
+            ed_lock();
+            if (PlayMode != 2 || CurrentOrder != 0 || CurrentRow != 2)
+                hk_ok = 0;
+            ed_unlock();
+            stop_song();
+            /* Shift-grey +/-: four patterns */
+            load_pattern(10);
+            handle_global(ITK_SHIFT_PLUS);
+            if (CurPattern != 14) hk_ok = 0;
+            handle_global(ITK_SHIFT_MINUS);
+            handle_global(ITK_SHIFT_MINUS);
+            handle_global(ITK_SHIFT_MINUS);
+            if (CurPattern != 2) hk_ok = 0;
+            /* global: Alt-F1 toggles channel 1, Alt-F11 the order lock */
+            {
+                uint8_t m0 = MuteChannelTable[0];
+                handle_global(ITK_ALT_F1);
+                if (MuteChannelTable[0] == m0) hk_ok = 0;
+                handle_global(ITK_ALT_F1);
+                if (MuteChannelTable[0] != m0) hk_ok = 0;
+            }
+            handle_global(ITK_ALT_F11);
+            if (OrderLockFlag == keeplock) hk_ok = 0;
+            OrderLockFlag = keeplock;
+            /* issues #21/#22: F1 opens the calling screen's help page
+             * (IT_H.ASM data) and Done/Esc return to that screen */
+            Screen = SCR_SAMPLES;
+            handle_global(ITK_F1);
+            if (Screen != SCR_HELP || HelpContext != 2) hk_ok = 0;
+            handle_global(ITK_DOWN);
+            if (HelpTop != 1) hk_ok = 0;
+            handle_global(ITK_ESC);
+            if (Screen != SCR_SAMPLES) hk_ok = 0;
+            handle_global(ITK_F1);                  /* position kept */
+            if (HelpTop != 1) hk_ok = 0;
+            act_help_done();
+            HelpPositions[2] = 0;
+            /* issue #13: F2 inside the Load Sample screen leaves it and
+             * lands on the pattern editor */
+            {
+                it_key_t fk;
+                memset(&fk, 0, sizeof(fk));
+                fk.flags = ITKF_PRESSED; fk.code = ITK_F2;
+                Screen_KeyFeedTest(&fk, 1);
+                Screen = SCR_SAMPLES;
+                sample_library_requester();
+                if (PendingGlobalKey != ITK_F2) hk_ok = 0;
+                PendingGlobalKey = 0;
+                handle_global(ITK_F2);
+                if (Screen != SCR_PATTERN) hk_ok = 0;
+            }
+            /* Alt+M on F3/F4 is the Alt op, not the piano key M */
+            memset(&CurKey, 0, sizeof(CurKey));
+            CurKey.flags = ITKF_PRESSED | ITKF_LALT;
+            CurKey.scan = 0x32;
+            if (key_to_note_plain() != -1) hk_ok = 0;
+            CurKey.flags = ITKF_PRESSED;
+            if (key_to_note_plain() <= 0) hk_ok = 0;
+            memset(&CurKey, 0, sizeof(CurKey));
+            /* issue #7 on the F11 pan bars: Shift 4, Ctrl 2 */
+            {
+                uint8_t keeppan = Song.Header.ChnlPan[0];
+                PanSel = 0;
+                pan_set(0, 32);
+                pan_col_lkey(ITK_SHIFT_RIGHT, 0);
+                pan_col_lkey(ITK_CTRL_LEFT, 0);
+                if ((Song.Header.ChnlPan[0] & 0x7F) != 34) hk_ok = 0;
+                Song.Header.ChnlPan[0] = keeppan;
+            }
+            /* issue #14: G from order row 2, then F11 lands on row 2 */
+            Screen = SCR_ORDER;
+            ListSel = 1;
+            FocusIdx[SCR_ORDER] = 0;
+            redraw();
+            handle_global('G');
+            if (Screen != SCR_PATTERN || CurPattern != Song.Orders[1])
+                hk_ok = 0;
+            handle_global(ITK_F11);
+            if (Screen != SCR_ORDER || ListSel != 1) hk_ok = 0;
+            Screen = SCR_PATTERN;
+
+            free(Song.Patterns[198].PackedData);
+            Song.Patterns[198].PackedData = NULL;
+            Song.Patterns[198].Rows = 0;
+            Song.Patterns[198].DataLength = 0;
+            for (i = 0; i < 10; i++)
+                free(UndoRing[i].cells);
+            memset(UndoRing, 0, sizeof(UndoRing));
+            load_pattern((uint16_t)keep);
+            CurRow = CurChan = CurCol = 0;
+            CurInstr = keepins;
+            PEOrder = keepord;
+            Screen = keepscr;
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    hk_ok ? "HOT OK" : "HOT FAIL");
         }
 
         /* Terminal input parser (feature 011): drive the shared byte
@@ -13616,7 +14579,11 @@ int main(int argc, char **argv)
     Load_StereoChoice = stereo_choice_prompt;
 
     while (Running && !g_sig) {
-        int key = ed_get_key();
+        int key;
+        /* Alt-Enter: store pattern in the pattern editor, else the
+         * backend's fullscreen toggle */
+        Screen_AltEnterIsKey = (Screen == SCR_PATTERN);
+        key = ed_get_key();
         if (key != ITK_NONE) {
             if (key == 0x11) {              /* Ctrl-Q -> Quit */
                 if (confirm_quit())
@@ -13624,6 +14591,17 @@ int main(int argc, char **argv)
             } else {
                 handle_global(key);
             }
+            while (PendingGlobalKey) {      /* from a file screen */
+                int pk = PendingGlobalKey;
+                PendingGlobalKey = 0;
+                if (pk == ITK_F1)
+                    help_open(PendingHelpContext);
+                else
+                    handle_global(pk);
+            }
+            if (Screen == SCR_ORDER)        /* one variable in the
+                                               original: Order */
+                PEOrder = ListSel;
         }
         /* thumbbar mouse drag: follow the pointer while the button is
          * held (the table is rebuilt every frame, so check the slot) */
