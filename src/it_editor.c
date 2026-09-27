@@ -2129,6 +2129,8 @@ static void smp_op_centre(void)         /* Alt-H: I_CenterSample */
     ed_unlock();
 }
 
+static int sample_amp_dialog(int *val);   /* O1_SampleAmplificationList */
+
 static void smp_op_amplify(void)        /* Alt-M: I_AmplifySample */
 {
     sample_t *s = cur_smp();
@@ -2159,9 +2161,12 @@ static void smp_op_amplify(void)        /* Alt-M: I_AmplifySample */
     sug = (dev > 0x32) ? (unsigned)(0x320000u / dev) : 400;
     if (sug >= 400)
         sug = 400;
-    amp = prompt_number("Amplification % (100 = no change)", sug, 400);
-    if (amp <= 0)
-        return;
+    {                                   /* O1_SampleAmplificationList */
+        int v = (int)sug;
+        if (!sample_amp_dialog(&v))
+            return;
+        amp = v;
+    }
     stop_song();
     mult = (uint32_t)(((uint64_t)(unsigned long)amp << 16) / 100);
     ed_lock();
@@ -7608,29 +7613,48 @@ static void pe_volume_amp_by(int amp)
     commit_current_pattern();
 }
 
-/* O1_GetFastAmpList (IT_OBJ1.ASM 869): box (22,25)-(57,35) style 3,
- * "   Volume Amplification %" at (27,27), a 10..90 thumbbar at (33,30)
- * in a style-25 box (32,29)-(44,31), OK (30,32)-(39,34) and Cancel
- * (40,32)-(49,34). Enter and Alt-J confirm (AmpExtraKeyList), Esc
- * cancels. Returns 1 on OK. */
-static int FastAmpFocus;
-static void fast_amp_draw(void)
+/* The amplification boxes: a style-3 box, a text line, one type-9
+ * thumbbar in a style-25 box, OK (30,32)-(39,34) and Cancel (40,32)-
+ * (49,34) (ConfirmOK/CancelButton). Enter confirms, Esc cancels; `alt`
+ * is an extra confirming key (AmpExtraKeyList's Alt-J) or 0.
+ *  - O1_GetFastAmpList (IT_OBJ1.ASM 869), Ctrl-J: box (22,25)-(57,35),
+ *    "   Volume Amplification %" at (27,27), 10..90 at (33,30) in
+ *    (32,29)-(44,31).
+ *  - O1_SampleAmplificationList (881), F3 Alt-M: box (9,25)-(69,35),
+ *    "   Sample Amplification %" at (27,27), 0..400 at (13,30) in
+ *    (12,29)-(64,31) (issue #23).
+ * Returns 1 on OK with *val set; on Cancel *val is left as it was. */
+typedef struct ampbox_t {
+    int bx0, by0, bx1, by1;         /* the dialog box */
+    const char *text;               /* at (27,27) */
+    int tx0, tx1;                   /* thumbbar box columns (rows 29..31) */
+    int min, max;                   /* thumbbar at (tx0+1, 30) */
+} ampbox_t;
+
+static const ampbox_t *AmpBox;
+static int AmpFocus, AmpVal;
+
+static void amp_draw(void)
 {
+    const ampbox_t *b = AmpBox;
+
     draw_screen();
-    Screen_DrawBox(22, 25, 57, 35, 3);
-    Screen_DrawString(27, 27, "   Volume Amplification %", 0x20);
-    Screen_DrawBox(32, 29, 44, 31, 25);
-    draw_thumbbar(33, 30, 10, 90, FastVolumeAmp,
-                  FastAmpFocus == 0 ? 0x03 : 0x02);
-    draw_button_style(30, 32, 39, 34, 8, "   OK", 0, FastAmpFocus == 1);
-    draw_button_style(40, 32, 49, 34, 8, " Cancel", 0, FastAmpFocus == 2);
+    Screen_DrawBox(b->bx0, b->by0, b->bx1, b->by1, 3);
+    Screen_DrawString(27, 27, b->text, 0x20);
+    Screen_DrawBox(b->tx0, 29, b->tx1, 31, 25);
+    draw_thumbbar(b->tx0 + 1, 30, b->min, b->max, AmpVal,
+                  AmpFocus == 0 ? 0x03 : 0x02);
+    draw_button_style(30, 32, 39, 34, 8, "   OK", 0, AmpFocus == 1);
+    draw_button_style(40, 32, 49, 34, 8, " Cancel", 0, AmpFocus == 2);
 }
 
-static int fast_amp_dialog(void)
+static int amp_dialog(const ampbox_t *b, int *val, int alt)
 {
-    int keep = FastVolumeAmp, drag = 0;
+    int drag = 0, lo = b->min, hi = b->max, bar = b->tx0 + 1;
 
-    FastAmpFocus = 0;
+    AmpBox = b;
+    AmpVal = *val < lo ? lo : *val > hi ? hi : *val;
+    AmpFocus = 0;
     while (Running) {
         int key, v;
         if (drag) {
@@ -7638,65 +7662,82 @@ static int fast_amp_dialog(void)
             Screen_GetMouse(&m);
             if (!m.b) drag = 0;
             else {
-                v = 10 + (m.px - (33 * 8 + 4));
-                FastVolumeAmp = v < 10 ? 10 : v > 90 ? 90 : v;
+                v = lo + (m.px - (bar * 8 + 4));
+                AmpVal = v < lo ? lo : v > hi ? hi : v;
             }
         }
-        fast_amp_draw();
+        amp_draw();
         Screen_Update();
         key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
-        if (key == ITK_QUIT) { Running = 0; break; }
-        if (key == ITK_ESC) break;
-        if (key == ITK_ALT_A + ('J' - 'A'))
-            return 1;
-        if (key == ITK_ENTER || (key == ' ' && FastAmpFocus)) {
-            if (FastAmpFocus == 2) break;
+        if (key == ITK_QUIT) { Running = 0; return 0; }
+        if (key == ITK_ESC) return 0;
+        if ((alt && key == alt) ||
+            key == ITK_ENTER || (key == ' ' && AmpFocus)) {
+            if (AmpFocus == 2) return 0;
+            *val = AmpVal;
             return 1;
         }
         if (key == ITK_MOUSE) {
             it_mouse_t m;
             Screen_GetMouse(&m);
-            if (mouse_in(&m, 30, 32, 39, 34)) return 1;
-            if (mouse_in(&m, 40, 32, 49, 34)) break;
-            if (thumb_hit(&m, 33, 30, 10, 90, &v)) {
-                FastAmpFocus = 0;
-                FastVolumeAmp = v;
+            if (mouse_in(&m, 30, 32, 39, 34)) { *val = AmpVal; return 1; }
+            if (mouse_in(&m, 40, 32, 49, 34)) return 0;
+            if (thumb_hit(&m, bar, 30, lo, hi, &v)) {
+                AmpFocus = 0;
+                AmpVal = v;
                 drag = 1;
             }
             continue;
         }
         if (key == ITK_TAB || key == ITK_DOWN) {
-            FastAmpFocus = (FastAmpFocus + 1) % 3; continue;
+            AmpFocus = (AmpFocus + 1) % 3; continue;
         }
         if (key == ITK_SHIFT_TAB || key == ITK_UP) {
-            FastAmpFocus = (FastAmpFocus + 2) % 3; continue;
+            AmpFocus = (AmpFocus + 2) % 3; continue;
         }
-        if (FastAmpFocus) {                 /* buttons */
+        if (AmpFocus) {                     /* buttons */
             if (key == ITK_LEFT || key == ITK_RIGHT)
-                FastAmpFocus = FastAmpFocus == 1 ? 2 : 1;
+                AmpFocus = AmpFocus == 1 ? 2 : 1;
             continue;
         }
-        v = FastVolumeAmp;                  /* the thumbbar */
+        v = AmpVal;                         /* the thumbbar */
         if (key == ITK_LEFT)             v--;
         else if (key == ITK_RIGHT)       v++;
         else if (key == ITK_SHIFT_LEFT)  v -= 4;
         else if (key == ITK_SHIFT_RIGHT) v += 4;
         else if (key == ITK_CTRL_LEFT)   v -= 2;
         else if (key == ITK_CTRL_RIGHT)  v += 2;
-        else if (key == ITK_HOME)        v = 10;
-        else if (key == ITK_END)         v = 90;
+        else if (key == ITK_HOME)        v = lo;
+        else if (key == ITK_END)         v = hi;
         else if (key >= '0' && key <= '9') {
             int nv;
-            if (!thumb_value_dialog(key, 10, 90, &nv, fast_amp_draw))
+            if (!thumb_value_dialog(key, lo, hi, &nv, amp_draw))
                 continue;
             v = nv;
         } else
             continue;
-        FastVolumeAmp = v < 10 ? 10 : v > 90 ? 90 : v;
+        AmpVal = v < lo ? lo : v > hi ? hi : v;
     }
-    FastVolumeAmp = keep;                   /* cancelled */
     return 0;
+}
+
+static const ampbox_t FastAmpBox = {
+    22, 25, 57, 35, "   Volume Amplification %", 32, 44, 10, 90
+};
+static const ampbox_t SampleAmpBox = {
+    9, 25, 69, 35, "   Sample Amplification %", 12, 64, 0, 400
+};
+
+static int sample_amp_dialog(int *val)
+{
+    return amp_dialog(&SampleAmpBox, val, 0);
+}
+
+static int fast_amp_dialog(void)
+{
+    return amp_dialog(&FastAmpBox, &FastVolumeAmp,
+                      ITK_ALT_A + ('J' - 'A'));
 }
 
 /* ToggleFastVolume (11622), Ctrl-J: Alt-J / Alt-I become one-key
