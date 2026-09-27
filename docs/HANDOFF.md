@@ -79,9 +79,11 @@ stereo Left/Right prompt, the hi-ASCII message charset, IFF
 8SVX/16SV + TX16W standalone samples, and the Alt-F12 Fourier
 spectrum analyser (overlay-rendered). **Deferred / still open**
 (see §6):
-the macOS verification pass (spec 001 T022 — needs a Mac); the only
-remaining fidelity leftover is the Ctrl-V default-volume display
-toggle. Selftest now reports 11 blocks OK
+the macOS verification pass (spec 001 T022 — needs a Mac); the
+Ctrl-V default-volume display toggle. NB (2026-09-27): this list was not
+exhaustive -- external testing against IT 2.14 (GitHub issues #4-#10)
+found further gaps, e.g. Pattern Editor Options (F2 in F2) was missing
+entirely until then; treat the open GitHub issues as the live gap list. Selftest now reports 11 blocks OK
 (F4/F5/F3/SAVE/IMPORT/LIB/PE/PE2/TERM/S3M/UPD/FFT) on Windows and
 Linux. 2026-07-16: the pixel output carries a "2026 AI PORT"
 corner-art badge (art/corner.bmp embedded as it_cornerart.c,

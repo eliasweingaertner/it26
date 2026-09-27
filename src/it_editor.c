@@ -1042,17 +1042,26 @@ static void draw_chrome(const char *title)
 /* ===================================================================
  * Pattern editor (F2) -- layout/colours from PE_DrawPatternEdit
  * =================================================================== */
-static uint8_t row_hilight_1(void)      /* beat */
+/* RowHiLight1/RowHiLight2 (IT_PE.ASM 882): the pattern editor's own row
+ * hilight setting, 4/16 by default, edited in Pattern Editor Options.
+ * 0 switches that hilight off (PE_DrawPatternEdit skips a zero divisor).
+ * Port: seeded from a loaded module's header PHiligt when it carries one,
+ * and written back to it on save (the original's save takes the PE
+ * config too -- see it_save.c). */
+static uint8_t RowHiLight1 = 4, RowHiLight2 = 16;
+
+static void row_hilight_from_song(void)
 {
-    uint8_t h = (uint8_t)(Song.Header.PHiligt & 0xFF);
-    return h ? h : 4;
+    RowHiLight1 = 4;
+    RowHiLight2 = 16;
+    if (Song.Header.PHiligt) {
+        RowHiLight1 = (uint8_t)(Song.Header.PHiligt & 0xFF);
+        RowHiLight2 = (uint8_t)(Song.Header.PHiligt >> 8);
+    }
 }
 
-static uint8_t row_hilight_2(void)      /* measure */
-{
-    uint8_t h = (uint8_t)(Song.Header.PHiligt >> 8);
-    return h ? h : 16;
-}
+/* paging / block sizes want a non-zero step even when hilights are off */
+static uint8_t row_hilight_2(void) { return RowHiLight2 ? RowHiLight2 : 16; }
 
 /* Draw_3Note */
 static void draw_note(int x, int y, const editcell_t *c, uint8_t attr)
@@ -1154,8 +1163,8 @@ static uint8_t pe_select_colour(int row, int chan, int viewproc)
 {
     uint8_t a = 0x06;
 
-    if (row % row_hilight_2() == 0)      a = 0xE6;
-    else if (row % row_hilight_1() == 0) a = 0xF6;
+    if (RowHiLight2 && row % RowHiLight2 == 0)      a = 0xE6;
+    else if (RowHiLight1 && row % RowHiLight1 == 0) a = 0xF6;
 
     if (BlockMark &&
         chan >= BlockLeft && chan <= BlockRight &&
@@ -1660,14 +1669,40 @@ static int smp_has_data(const sample_t *s)
 }
 
 /* generic Yes/No confirm (O1_Confirm*List), default No */
-static int confirm_box_def(const char *text, int default_yes)
+/* Mouse for the port's modal dialogs. They run their own key loops, so
+ * without this they ignored the mouse entirely -- the original's
+ * M_Object1List gives every object in every dialog click (buttons) and
+ * click+drag (thumbbars). */
+static int mouse_in(const it_mouse_t *m, int x0, int y0, int x1, int y1)
+{
+    return m->x >= x0 && m->x <= x1 && m->y >= y0 && m->y <= y1;
+}
+
+/* a click on a plain thumbbar at (barx,bary): 1 when it hit the bar,
+ * *v = the pointer's value (thumb_from_px mapping: one logical pixel per
+ * step from 4px into the bar) */
+static int thumb_hit(const it_mouse_t *m, int barx, int bary, int min,
+                     int max, int *v)
+{
+    int width = (max - min + 15) >> 3;
+    int r;
+
+    if (m->y != bary || m->x < barx || m->x >= barx + width)
+        return 0;
+    r = min + (m->px - (barx * 8 + 4));
+    *v = r < min ? min : r > max ? max : r;
+    return 1;
+}
+
+static int confirm_box_bg(const char *text, int default_yes,
+                          void (*bg)(void))
 {
     int sel = default_yes ? 0 : 1;
 
     for (;;) {
         int key, tx;
 
-        draw_screen();
+        bg();
         /* ConfirmOverWriteBox (26,25)-(54,32) style 3, the text on row 27
          * (O1_ConfirmQuit & friends), and the two raised style-8 buttons
          * ConfirmOverWriteOKButton (30,29)-(39,31) "   OK" and
@@ -1693,9 +1728,20 @@ static int confirm_box_def(const char *text, int default_yes)
         case 'y': case 'Y': return 1;
         case 'n': case 'N': case ITK_ESC: return 0;
         case ITK_ENTER: return sel == 0;
+        case ITK_MOUSE: {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 30, 29, 39, 31)) return 1;     /* OK */
+            if (mouse_in(&m, 41, 29, 50, 31)) return 0;     /* Cancel */
+            break; }
         default: break;
         }
     }
+}
+
+static int confirm_box_def(const char *text, int default_yes)
+{
+    return confirm_box_bg(text, default_yes, draw_screen);
 }
 
 static int confirm_box(const char *text)
@@ -1771,6 +1817,13 @@ static int quality_dialog(int to16)
         case ITK_LEFT:  sel = (sel + 2) % 3; break;
         case ITK_RIGHT: case ITK_TAB: sel = (sel + 1) % 3; break;
         case ITK_ENTER: return sel == 0 ? 1 : sel == 1 ? 2 : 0;
+        case ITK_MOUSE: {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 21, 24, 34, 26)) return 1;     /* Convert */
+            if (mouse_in(&m, 36, 24, 49, 26)) return 2;     /* Adjust */
+            if (mouse_in(&m, 51, 24, 59, 26)) return 0;     /* Cancel */
+            break; }
         default: break;
         }
     }
@@ -7657,7 +7710,8 @@ static void pe_apply_pattern_length(void)
 static void pe_set_pattern_length(void)
 {
     /* focus: 0 length bar, 1 start bar, 2 end bar, 3 OK */
-    int focus = 0;
+    int focus = 0, drag = -1;
+    static const int bary[3] = { 24, 27, 28 };
 
     PatternLengthStart = CurPattern;
     PatternLengthEnd = CurPattern;
@@ -7669,6 +7723,21 @@ static void pe_set_pattern_length(void)
                       : focus == 2 ? &PatternLengthEnd : NULL;
         int vmin = focus == 0 ? 32 : 0;
         int vmax = focus == 0 ? 200 : 199;
+
+        if (drag >= 0) {                    /* thumbbar drag */
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (!m.b) {
+                drag = -1;
+            } else {
+                uint16_t *dv = drag == 0 ? &PatternSetLength
+                             : drag == 1 ? &PatternLengthStart
+                             : &PatternLengthEnd;
+                int lo = drag == 0 ? 32 : 0, hi = drag == 0 ? 200 : 199;
+                int r = lo + (m.px - (34 * 8 + 4));
+                *dv = (uint16_t)(r < lo ? lo : r > hi ? hi : r);
+            }
+        }
 
         draw_screen();
         Screen_DrawBox(15, 19, 65, 33, 3);
@@ -7702,6 +7771,23 @@ static void pe_set_pattern_length(void)
                 return;
             }
             continue;
+        case ITK_MOUSE: {
+            it_mouse_t m;
+            int i, v;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 35, 30, 44, 32)) {         /* OK */
+                pe_apply_pattern_length();
+                return;
+            }
+            for (i = 0; i < 3; i++)
+                if (thumb_hit(&m, 34, bary[i], i == 0 ? 32 : 0,
+                              i == 0 ? 200 : 199, &v)) {
+                    focus = drag = i;
+                    *(i == 0 ? &PatternSetLength : i == 1
+                      ? &PatternLengthStart : &PatternLengthEnd) =
+                        (uint16_t)v;
+                }
+            continue; }
         default: break;
         }
         if (val) {
@@ -7711,15 +7797,171 @@ static void pe_set_pattern_length(void)
             else if (key == ITK_HOME)  v = vmin;
             else if (key == ITK_END)   v = vmax;
             else if (key >= '0' && key <= '9') {
-                v = v * 10 + (key - '0');   /* F_PostThumbBar 2196 */
-                if (v > vmax)
-                    v = key - '0';
+                int nv;                     /* F_PostThumbBar30 */
+                if (!thumb_value_dialog(key, vmin, vmax, &nv, draw_screen))
+                    continue;
+                v = nv;
             } else
                 continue;
             if (v < vmin) v = vmin;
             if (v > vmax) v = vmax;
             *val = (uint16_t)v;
         }
+    }
+}
+
+/* Glbl_F2_1 + O1_PEConfigList (IT_G.ASM 224, IT_OBJ1.ASM 632): F2 while
+ * already in the pattern editor opens "Pattern Editor Options" (issue #4).
+ * Box (10,18)-(69,43) style 3; five thumbbars at x=40 in style-9 boxes --
+ * Base octave 0..8, Cursor step 0..16, Row hilight minor 0..32 / major
+ * 0..128, Number of rows in pattern 32..200 -- then the Command/Value
+ * columns Link/Split buttons (set CommandToValue 1/0, drawn pressed when
+ * selected) and Done. Values change live; Done, Esc or F2 closes
+ * (ESCF2&ReturnList). "Number of rows" starts at the current pattern's
+ * length (NumberOfRows = MaxRow+1) and is applied to that pattern on
+ * close (MaxRow = NumberOfRows-1), through the same path as Ctrl-F2. */
+static void pe_options_dialog(void)
+{
+    /* focus = object number: 14..18 thumbbars, 19 Link, 20 Split, 13 Done */
+    int focus = 14, drag = -1;
+    int rows = CurRows;
+    static const int tb_y[5]  = { 23, 26, 29, 32, 35 };
+    static const int tb_lo[5] = { 0, 0, 0, 0, 32 };
+    static const int tb_hi[5] = { 8, 16, 32, 128, 200 };
+
+    while (Running) {
+        int key, v;
+        int b1 = RowHiLight1, b2 = RowHiLight2;
+
+        if (drag >= 0) {                    /* thumbbar drag (mouse) */
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (!m.b) {
+                drag = -1;
+            } else {
+                int r = tb_lo[drag] + (m.px - (40 * 8 + 4));
+                r = r < tb_lo[drag] ? tb_lo[drag]
+                  : r > tb_hi[drag] ? tb_hi[drag] : r;
+                if (drag == 0) BaseOctave = r;
+                else if (drag == 1) EditStep = r;
+                else if (drag == 2) RowHiLight1 = (uint8_t)r;
+                else if (drag == 3) RowHiLight2 = (uint8_t)r;
+                else rows = r;
+                b1 = RowHiLight1;
+                b2 = RowHiLight2;
+            }
+        }
+
+        draw_screen();
+        Screen_DrawBox(10, 18, 69, 43, 3);                  /* PEConfigBox */
+        Screen_DrawString(28, 19, "Pattern Editor Options", 0x20);
+        Screen_DrawString(28, 23, "Base octave", 0x20);
+        Screen_DrawString(28, 26, "Cursor step", 0x20);
+        Screen_DrawString(22, 29, "Row hilight minor", 0x20);
+        Screen_DrawString(22, 32, "Row hilight major", 0x20);
+        Screen_DrawString(14, 35, "Number of rows in pattern", 0x20);
+        Screen_DrawString(18, 38, "Command/Value columns", 0x20);
+        Screen_DrawBox(39, 22, 42, 24, 9);                  /* PECBox1..5 */
+        Screen_DrawBox(39, 25, 43, 27, 9);
+        Screen_DrawBox(39, 28, 45, 30, 9);
+        Screen_DrawBox(39, 31, 57, 33, 9);
+        Screen_DrawBox(39, 34, 62, 36, 9);
+        draw_thumbbar(40, 23, 0, 8, BaseOctave, focus == 14 ? 0x03 : 0x02);
+        draw_thumbbar(40, 26, 0, 16, EditStep, focus == 15 ? 0x03 : 0x02);
+        draw_thumbbar(40, 29, 0, 32, b1, focus == 16 ? 0x03 : 0x02);
+        draw_thumbbar(40, 32, 0, 128, b2, focus == 17 ? 0x03 : 0x02);
+        draw_thumbbar(40, 35, 32, 200, rows, focus == 18 ? 0x03 : 0x02);
+        draw_button_style(39, 37, 50, 39, 8, "   Link", CommandToValue == 1,
+                          focus == 19);
+        draw_button_style(51, 37, 63, 39, 8, "   Split", CommandToValue == 0,
+                          focus == 20);
+        draw_button_style(34, 40, 45, 42, 8, "   Done", 0, focus == 13);
+        Screen_Update();
+
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return; }
+        if (key == ITK_ESC || key == ITK_F2)
+            break;
+        if (key == ITK_MOUSE) {             /* M_Object1List mouse */
+            it_mouse_t m;
+            int i, hv;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 34, 40, 45, 42))              /* Done */
+                break;
+            if (mouse_in(&m, 39, 37, 50, 39)) {            /* Link */
+                focus = 19; CommandToValue = 1; continue;
+            }
+            if (mouse_in(&m, 51, 37, 63, 39)) {            /* Split */
+                focus = 20; CommandToValue = 0; continue;
+            }
+            for (i = 0; i < 5; i++)
+                if (thumb_hit(&m, 40, tb_y[i], tb_lo[i], tb_hi[i], &hv)) {
+                    focus = 14 + i;
+                    drag = i;
+                    if (i == 0) BaseOctave = hv;
+                    else if (i == 1) EditStep = hv;
+                    else if (i == 2) RowHiLight1 = (uint8_t)hv;
+                    else if (i == 3) RowHiLight2 = (uint8_t)hv;
+                    else rows = hv;
+                }
+            continue;
+        }
+        switch (key) {                      /* the objects' Up/Down links */
+        case ITK_DOWN: case ITK_TAB:
+            focus = focus == 13 ? 14 : focus == 20 ? 13
+                  : focus == 19 ? 13 : focus + 1;
+            continue;
+        case ITK_UP: case ITK_SHIFT_TAB:
+            focus = focus == 14 ? 13 : focus == 13 ? 19
+                  : focus == 20 ? 18 : focus - 1;
+            continue;
+        default: break;
+        }
+        if (focus >= 19 || focus == 13) {   /* buttons */
+            if ((key == ITK_LEFT || key == ITK_RIGHT) && focus != 13)
+                focus = focus == 19 ? 20 : 19;
+            else if (key == ITK_ENTER || key == ' ') {
+                if (focus == 13)
+                    break;                  /* Done */
+                CommandToValue = focus == 19 ? 1 : 0;
+            }
+            continue;
+        }
+        {                                   /* thumbbars */
+            static const int lo[5] = { 0, 0, 0, 0, 32 };
+            static const int hi[5] = { 8, 16, 32, 128, 200 };
+            int t = focus - 14;
+            int *pv[5];
+            int b1i = b1, b2i = b2;
+            pv[0] = &BaseOctave; pv[1] = &EditStep; pv[2] = &b1i;
+            pv[3] = &b2i; pv[4] = &rows;
+            v = *pv[t];
+            if (key == ITK_LEFT)       v--;
+            else if (key == ITK_RIGHT) v++;
+            else if (key == ITK_HOME)  v = lo[t];
+            else if (key == ITK_END)   v = hi[t];
+            else if (key >= '0' && key <= '9') {
+                int nv;
+                if (!thumb_value_dialog(key, lo[t], hi[t], &nv, draw_screen))
+                    continue;
+                v = nv;
+            } else
+                continue;
+            if (v < lo[t]) v = lo[t];
+            if (v > hi[t]) v = hi[t];
+            *pv[t] = v;
+            RowHiLight1 = (uint8_t)b1i;
+            RowHiLight2 = (uint8_t)b2i;
+        }
+    }
+
+    if (rows != CurRows) {                  /* MaxRow = NumberOfRows - 1 */
+        uint16_t keep = PatternSetLength;
+        PatternSetLength = (uint16_t)rows;
+        PatternLengthStart = PatternLengthEnd = CurPattern;
+        pe_apply_pattern_length();
+        PatternSetLength = keep;
     }
 }
 
@@ -8826,41 +9068,13 @@ static void draw_file_requester(void)
     }
 }
 
-/* D_CheckOverWrite's confirm dialog (O1_ConfirmOverWriteList):
- * "Overwrite file?" with Yes/No, default No. `bg` redraws the screen
- * beneath the modal. */
+/* D_CheckOverWrite's confirm dialog (O1_ConfirmOverWriteList, default
+ * object 4 = Cancel): "Overwrite file?" in the shared confirm box with
+ * OK/Cancel -- it had kept the old flat Yes/No look. `bg` redraws the
+ * screen beneath the modal. */
 static int confirm_overwrite(void (*bg)(void))
 {
-    int sel = 1;                        /* 0 = Yes, 1 = No */
-
-    for (;;) {
-        int key;
-
-        bg();
-        Screen_DrawBox(24, 22, 55, 27, 3);      /* ConfirmOverWriteBox: tan panel */
-        Screen_DrawString(32, 23, "Overwrite file?", 0x20);
-        draw_button_style(30, 24, 36, 26, 3, " Yes", 0, sel == 0);
-        draw_button_style(43, 24, 48, 26, 3, " No", 0, sel == 1);
-        Screen_Update();
-
-        key = ed_get_key();
-        if (key == ITK_NONE) { ma_sleep(15); continue; }
-        switch (key) {
-        case ITK_QUIT: Running = 0; return 0;
-        case ITK_LEFT: case ITK_RIGHT: case ITK_TAB:
-        case ITK_SHIFT_TAB:
-            sel ^= 1;
-            break;
-        case 'y': case 'Y':
-            return 1;
-        case 'n': case 'N': case ITK_ESC:
-            return 0;
-        case ITK_ENTER:
-            return sel == 0;
-        default:
-            break;
-        }
-    }
+    return confirm_box_bg("Overwrite file?", 0, bg);
 }
 
 /* O1_StereoSampleList (feature 013): the "Loading Stereo Sample"
@@ -8958,6 +9172,7 @@ static int save_module_dispatch(const char *name)
         save_s3m_keywait();
         Save_S3MWarning = NULL;
     } else {
+        Song.Header.PHiligt = (uint16_t)(RowHiLight1 | (RowHiLight2 << 8));
         ok = Save_ITModule(name);
     }
     Save_Progress = NULL;
@@ -10240,12 +10455,40 @@ static void ls_draw_focus(void)
 /* the shared screen loop; view = 1 for the Sample Library (Ctrl-F3) */
 static void load_sample_screen_run(int view)
 {
+    /* thumbbar objects 25..29: x=63, rows, ranges; 28/29 are the scaled
+     * 8-cell bars */
+    static const int tb_y[5]  = { 33, 34, 37, 38, 39 };
+    static const int tb_hi[5] = { 64, 64, 64, 32, 255 };
+    int drag = -1;
+
     LsView = view;
     LsFocus = 15;
     ls_set_dir(DirSample[0] ? DirSample : ".");
 
     while (Running) {
         int key;
+
+        if (drag >= 0 && LsN) {                 /* thumbbar drag */
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (!m.b) {
+                drag = -1;
+            } else {
+                sample_t *s = &LsEnt[LsCur].hdr;
+                uint8_t *v = drag == 0 ? &s->Vol : drag == 1 ? &s->GvL
+                           : drag == 2 ? &s->ViS : drag == 3 ? &s->ViD
+                           : &s->ViR;
+                int rel = m.px - (63 * 8 + 4), r;
+                if (rel < 0) rel = 0;
+                if (drag >= 3) {                /* scaled: 8 cells */
+                    if (rel > 64) rel = 64;
+                    r = (tb_hi[drag] * rel + 32) / 64;
+                } else {
+                    r = rel;
+                }
+                *v = (uint8_t)(r > tb_hi[drag] ? tb_hi[drag] : r);
+            }
+        }
 
         ls_snapshot();
         ls_draw();
@@ -10256,6 +10499,45 @@ static void load_sample_screen_run(int view)
         if (key == ITK_QUIT) { Running = 0; break; }
         if (key == ITK_ESC)
             break;
+
+        if (key == ITK_MOUSE) {                 /* M_Object1List mouse */
+            it_mouse_t m;
+            int i;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 2, 13, 43, 47)) {          /* the list */
+                int idx = LsTop + (m.y - 13);
+                if (idx >= LsN)
+                    continue;
+                if (idx == LsCur && LsFocus == 15) {
+                    key = ITK_ENTER;            /* click again = Enter */
+                } else {
+                    LsFocus = 15;
+                    if (idx != LsCur && ls_check_modified())
+                        LsCur = idx;
+                    continue;
+                }
+            } else if (mouse_in(&m, 46, 13, 53, 22)) {  /* drives */
+                int di = LsDrvTop + (m.y - 13);
+                LsFocus = 16;
+                if (di < LsNDrv) {
+                    LsDrvCur = di;
+                    ls_enter_drive();
+                }
+                continue;
+            } else if (LsN && mouse_in(&m, 64, 13, 76, 20)) { /* fields */
+                LsFocus = 17 + (m.y - 13);
+                if (LsFocus == 19 || LsFocus == 22)     /* toggles */
+                    ls_field_key(ITK_ENTER);
+                continue;
+            } else {
+                for (i = 0; i < 5; i++)
+                    if (LsN && m.y == tb_y[i] && m.x >= 63 && m.x <= 71) {
+                        LsFocus = 25 + i;
+                        drag = i;
+                    }
+                continue;
+            }
+        }
 
         if (LsFocus >= 17) {                    /* LS*Input objects */
             ls_field_key(key);
@@ -10405,6 +10687,7 @@ static int do_load_named(const char *path)
         ed_unlock();
         CurPattern = 0; CurRow = CurChan = CurCol = 0; ListSel = 0;
         load_pattern(0);
+        row_hilight_from_song();
         for (p = path; *p; p++)
             if (*p == '/' || *p == '\\')
                 base = p + 1;
@@ -10815,6 +11098,8 @@ static void handle_global(int key)
         if (Screen != SCR_PATTERN) {
             Screen_DefineSmallNumbers();
             Screen = SCR_PATTERN;
+        } else {
+            pe_options_dialog();        /* Glbl_F2_1 (issue #4) */
         }
         return;
     case ITK_F3:  Screen = SCR_SAMPLES; ListSel = CurInstr-1; return;
@@ -10935,6 +11220,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "failed to load %s\n", startmod);
             return 1;
         }
+        row_hilight_from_song();
         {
             const char *base = startmod, *p;
             char *q;
@@ -11053,6 +11339,14 @@ int main(int argc, char **argv)
             } else if (scr == 8) {          /* file requester */
                 req_scan();
                 draw_file_requester();
+            } else if (scr == 16) {         /* Pattern Editor Options */
+                it_key_t fk;
+                memset(&fk, 0, sizeof(fk));
+                fk.flags = ITKF_PRESSED;
+                fk.code = ITK_ESC;
+                Screen_KeyFeedTest(&fk, 1);
+                Screen = SCR_PATTERN;
+                pe_options_dialog();
             } else if (scr == 15) {         /* the Quit confirm box */
                 it_key_t fk;
                 memset(&fk, 0, sizeof(fk));
@@ -12802,6 +13096,43 @@ int main(int argc, char **argv)
                 }
                 Song.Header.IT = keep_it;
                 Screen = keep_scr2;
+            }
+
+            /* issue #4: F2 in the pattern editor opens Pattern Editor
+             * Options. Right on Base octave, then Number of rows via
+             * "Enter Value" (9 6 Enter), Esc closes and resizes the
+             * current pattern; Link/Split set CommandToValue. */
+            {
+                static const int seq1[] = {
+                    ITK_RIGHT, ITK_DOWN, ITK_DOWN, ITK_DOWN, ITK_DOWN,
+                    '9', '6', ITK_ENTER, ITK_ESC };
+                static const int seq2[] = {
+                    ITK_DOWN, ITK_DOWN, ITK_DOWN, ITK_DOWN,
+                    '6', '4', ITK_ENTER, ITK_ESC };
+                static const int seq3[] = {
+                    ITK_DOWN, ITK_DOWN, ITK_DOWN, ITK_DOWN, ITK_DOWN,
+                    ITK_RIGHT, ITK_ENTER, ITK_ESC };
+                int keep_oct = BaseOctave, keep_ctv = CommandToValue;
+                int keep_scr3 = Screen, k;
+                it_key_t fk;
+#define PE4_FEED(arr) for (k = 0; k < (int)(sizeof(arr)/sizeof(arr[0])); k++) { \
+    memset(&fk, 0, sizeof(fk)); fk.flags = ITKF_PRESSED; fk.code = arr[k]; \
+    fk.ch = (uint16_t)(arr[k] < 256 ? arr[k] : 0); Screen_KeyFeedTest(&fk, 1); }
+                Screen = SCR_PATTERN;
+                PE4_FEED(seq1);
+                handle_global(ITK_F2);
+                if (BaseOctave != keep_oct + 1 || CurRows != 96) i_ok = 0;
+                PE4_FEED(seq2);
+                handle_global(ITK_F2);
+                if (CurRows != 64) i_ok = 0;
+                CommandToValue = 1;
+                PE4_FEED(seq3);
+                handle_global(ITK_F2);
+                if (CommandToValue != 0) i_ok = 0;
+#undef PE4_FEED
+                BaseOctave = keep_oct;
+                CommandToValue = (uint8_t)keep_ctv;
+                Screen = keep_scr3;
             }
 
             /* issue #5: Quit asks "Exit Impulse Tracker?" first; Esc

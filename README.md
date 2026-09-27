@@ -454,7 +454,14 @@ Pattern editor (F2):
 - ViewDivision/ViewTracking/row-hilight+centralise (`PEConfig`) persist
   in `ited.cfg`; the original kept them in IT.CFG's Pattern segment.
 - **Not ported (documented leftovers):** MIDI input triggers (no
-  MIDI-in exists); the Ctrl-V default-volume display toggle.
+  MIDI-in exists); the Ctrl-V default-volume display toggle. Further
+  differences found by testing against IT 2.14 are tracked as GitHub
+  issues.
+- Pattern Editor Options (F2 while in the pattern editor, issue #4) is
+  the original's `O1_PEConfigList`. The row-hilight setting is the
+  editor's own (default 4/16, 0 = off) as in the original; the port
+  also seeds it from a loaded module's header and writes it back on
+  save so it persists with the song.
 - The POSIX terminal backend decodes the full modifier surface since
   feature 011 (ESC-prefix Alt, xterm modified CSI, `modifyOtherKeys`
   level 1 for Ctrl-digits) plus SGR mouse (button-event tracking; px/py
