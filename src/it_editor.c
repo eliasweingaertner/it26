@@ -7707,6 +7707,29 @@ static void pe_apply_pattern_length(void)
         CurRow = (int)CurRows - 1;
 }
 
+/* The Set Pattern Length box over the pattern editor. Also the background
+ * of the "Enter Value" box, which the original draws on top of it. */
+static int PslFocus;
+static void psl_draw(void)
+{
+    int focus = PslFocus;
+    draw_screen();
+    Screen_DrawBox(15, 19, 65, 33, 3);
+    Screen_DrawString(31, 21, "Set Pattern Length", 0x20);
+    Screen_DrawString(19, 24, "Pattern Length", 0x20);
+    Screen_DrawString(19, 27, " Start Pattern", 0x20);
+    Screen_DrawString(19, 28, "   End Pattern", 0x20);
+    Screen_DrawBox(33, 23, 56, 25, 25);
+    Screen_DrawBox(33, 26, 60, 29, 25);
+    draw_thumbbar(34, 24, 32, 200, PatternSetLength,
+                  focus == 0 ? 0x03 : 0x02);
+    draw_thumbbar(34, 27, 0, 199, PatternLengthStart,
+                  focus == 1 ? 0x03 : 0x02);
+    draw_thumbbar(34, 28, 0, 199, PatternLengthEnd,
+                  focus == 2 ? 0x03 : 0x02);
+    draw_button_style(35, 30, 44, 32, 8, "   OK", 0, focus == 3);
+}
+
 static void pe_set_pattern_length(void)
 {
     /* focus: 0 length bar, 1 start bar, 2 end bar, 3 OK */
@@ -7739,21 +7762,8 @@ static void pe_set_pattern_length(void)
             }
         }
 
-        draw_screen();
-        Screen_DrawBox(15, 19, 65, 33, 3);
-        Screen_DrawString(31, 21, "Set Pattern Length", 0x20);
-        Screen_DrawString(19, 24, "Pattern Length", 0x20);
-        Screen_DrawString(19, 27, " Start Pattern", 0x20);
-        Screen_DrawString(19, 28, "   End Pattern", 0x20);
-        Screen_DrawBox(33, 23, 56, 25, 25);
-        Screen_DrawBox(33, 26, 60, 29, 25);
-        draw_thumbbar(34, 24, 32, 200, PatternSetLength,
-                      focus == 0 ? 0x03 : 0x02);
-        draw_thumbbar(34, 27, 0, 199, PatternLengthStart,
-                      focus == 1 ? 0x03 : 0x02);
-        draw_thumbbar(34, 28, 0, 199, PatternLengthEnd,
-                      focus == 2 ? 0x03 : 0x02);
-        draw_button_style(35, 30, 44, 32, 8, "   OK", 0, focus == 3);
+        PslFocus = focus;
+        psl_draw();
         Screen_Update();
 
         key = ed_get_key();
@@ -7798,7 +7808,7 @@ static void pe_set_pattern_length(void)
             else if (key == ITK_END)   v = vmax;
             else if (key >= '0' && key <= '9') {
                 int nv;                     /* F_PostThumbBar30 */
-                if (!thumb_value_dialog(key, vmin, vmax, &nv, draw_screen))
+                if (!thumb_value_dialog(key, vmin, vmax, &nv, psl_draw))
                     continue;
                 v = nv;
             } else
@@ -7820,6 +7830,38 @@ static void pe_set_pattern_length(void)
  * (ESCF2&ReturnList). "Number of rows" starts at the current pattern's
  * length (NumberOfRows = MaxRow+1) and is applied to that pattern on
  * close (MaxRow = NumberOfRows-1), through the same path as Ctrl-F2. */
+/* The options box over the pattern editor; also the background of the
+ * "Enter Value" box, which the original draws on top of it. */
+static int PecFocus, PecRows;
+static void pec_draw(void)
+{
+    int focus = PecFocus;
+    draw_screen();
+    Screen_DrawBox(10, 18, 69, 43, 3);                      /* PEConfigBox */
+    Screen_DrawString(28, 19, "Pattern Editor Options", 0x20);
+    Screen_DrawString(28, 23, "Base octave", 0x20);
+    Screen_DrawString(28, 26, "Cursor step", 0x20);
+    Screen_DrawString(22, 29, "Row hilight minor", 0x20);
+    Screen_DrawString(22, 32, "Row hilight major", 0x20);
+    Screen_DrawString(14, 35, "Number of rows in pattern", 0x20);
+    Screen_DrawString(18, 38, "Command/Value columns", 0x20);
+    Screen_DrawBox(39, 22, 42, 24, 9);                      /* PECBox1..5 */
+    Screen_DrawBox(39, 25, 43, 27, 9);
+    Screen_DrawBox(39, 28, 45, 30, 9);
+    Screen_DrawBox(39, 31, 57, 33, 9);
+    Screen_DrawBox(39, 34, 62, 36, 9);
+    draw_thumbbar(40, 23, 0, 8, BaseOctave, focus == 14 ? 0x03 : 0x02);
+    draw_thumbbar(40, 26, 0, 16, EditStep, focus == 15 ? 0x03 : 0x02);
+    draw_thumbbar(40, 29, 0, 32, RowHiLight1, focus == 16 ? 0x03 : 0x02);
+    draw_thumbbar(40, 32, 0, 128, RowHiLight2, focus == 17 ? 0x03 : 0x02);
+    draw_thumbbar(40, 35, 32, 200, PecRows, focus == 18 ? 0x03 : 0x02);
+    draw_button_style(39, 37, 50, 39, 8, "   Link", CommandToValue == 1,
+                      focus == 19);
+    draw_button_style(51, 37, 63, 39, 8, "   Split", CommandToValue == 0,
+                      focus == 20);
+    draw_button_style(34, 40, 45, 42, 8, "   Done", 0, focus == 13);
+}
+
 static void pe_options_dialog(void)
 {
     /* focus = object number: 14..18 thumbbars, 19 Link, 20 Split, 13 Done */
@@ -7852,30 +7894,9 @@ static void pe_options_dialog(void)
             }
         }
 
-        draw_screen();
-        Screen_DrawBox(10, 18, 69, 43, 3);                  /* PEConfigBox */
-        Screen_DrawString(28, 19, "Pattern Editor Options", 0x20);
-        Screen_DrawString(28, 23, "Base octave", 0x20);
-        Screen_DrawString(28, 26, "Cursor step", 0x20);
-        Screen_DrawString(22, 29, "Row hilight minor", 0x20);
-        Screen_DrawString(22, 32, "Row hilight major", 0x20);
-        Screen_DrawString(14, 35, "Number of rows in pattern", 0x20);
-        Screen_DrawString(18, 38, "Command/Value columns", 0x20);
-        Screen_DrawBox(39, 22, 42, 24, 9);                  /* PECBox1..5 */
-        Screen_DrawBox(39, 25, 43, 27, 9);
-        Screen_DrawBox(39, 28, 45, 30, 9);
-        Screen_DrawBox(39, 31, 57, 33, 9);
-        Screen_DrawBox(39, 34, 62, 36, 9);
-        draw_thumbbar(40, 23, 0, 8, BaseOctave, focus == 14 ? 0x03 : 0x02);
-        draw_thumbbar(40, 26, 0, 16, EditStep, focus == 15 ? 0x03 : 0x02);
-        draw_thumbbar(40, 29, 0, 32, b1, focus == 16 ? 0x03 : 0x02);
-        draw_thumbbar(40, 32, 0, 128, b2, focus == 17 ? 0x03 : 0x02);
-        draw_thumbbar(40, 35, 32, 200, rows, focus == 18 ? 0x03 : 0x02);
-        draw_button_style(39, 37, 50, 39, 8, "   Link", CommandToValue == 1,
-                          focus == 19);
-        draw_button_style(51, 37, 63, 39, 8, "   Split", CommandToValue == 0,
-                          focus == 20);
-        draw_button_style(34, 40, 45, 42, 8, "   Done", 0, focus == 13);
+        PecFocus = focus;
+        PecRows = rows;
+        pec_draw();
         Screen_Update();
 
         key = ed_get_key();
@@ -7943,7 +7964,7 @@ static void pe_options_dialog(void)
             else if (key == ITK_END)   v = hi[t];
             else if (key >= '0' && key <= '9') {
                 int nv;
-                if (!thumb_value_dialog(key, lo[t], hi[t], &nv, draw_screen))
+                if (!thumb_value_dialog(key, lo[t], hi[t], &nv, pec_draw))
                     continue;
                 v = nv;
             } else
