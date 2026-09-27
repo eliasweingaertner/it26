@@ -1668,11 +1668,20 @@ static int confirm_box_def(const char *text, int default_yes)
         int key, tx;
 
         draw_screen();
-        Screen_DrawBox(24, 22, 55, 27, 3);      /* ConfirmOverWriteBox: tan panel */
+        /* ConfirmOverWriteBox (26,25)-(54,32) style 3, the text on row 27
+         * (O1_ConfirmQuit & friends), and the two raised style-8 buttons
+         * ConfirmOverWriteOKButton (30,29)-(39,31) "   OK" and
+         * ConfirmOverWriteCancelButton (41,29)-(50,31) " Cancel"
+         * (IT_OBJ1.ASM; issue #5). Texts too long for that box get
+         * ConfirmNosaveBox's wider (20,25)-(60,32). */
+        if ((int)strlen(text) > 27)
+            Screen_DrawBox(20, 25, 60, 32, 3);
+        else
+            Screen_DrawBox(26, 25, 54, 32, 3);
         tx = 40 - (int)strlen(text) / 2;
-        Screen_DrawString(tx, 23, text, 0x20);
-        draw_button_style(30, 24, 36, 26, 3, " Yes", 0, sel == 0);
-        draw_button_style(43, 24, 48, 26, 3, " No", 0, sel == 1);
+        Screen_DrawString(tx, 27, text, 0x20);
+        draw_button_style(30, 29, 39, 31, 8, "   OK", 0, sel == 0);
+        draw_button_style(41, 29, 50, 31, 8, " Cancel", 0, sel == 1);
         Screen_Update();
 
         key = ed_get_key();
@@ -10588,7 +10597,20 @@ static int act_file_new(void)   { new_song(); status("New song."); return 1; }
 static int act_file_save(void)     { quick_save(); return 1; }
 static int act_file_save_as(void)  { save_requester(); return 1; }
 static int act_file_shell(void) { status("No DOS to shell to."); return 1; }
-static int act_file_quit(void)  { Running = 0; return 1; }
+/* Quit (IT.ASM 857): O1_ConfirmQuit, "Exit Impulse Tracker?", default
+ * OK (object 3); Cancel returns to the tracker (issue #5). Shared by
+ * Ctrl-Q and the menu. */
+static int confirm_quit(void)
+{
+    return confirm_box_def("Exit Impulse Tracker?", 1);
+}
+
+static int act_file_quit(void)
+{
+    if (confirm_quit())
+        Running = 0;
+    return 1;
+}
 
 static int act_pb_info(void)
 { Screen = SCR_INFO; return 1; }
@@ -11016,6 +11038,14 @@ int main(int argc, char **argv)
             } else if (scr == 8) {          /* file requester */
                 req_scan();
                 draw_file_requester();
+            } else if (scr == 15) {         /* the Quit confirm box */
+                it_key_t fk;
+                memset(&fk, 0, sizeof(fk));
+                fk.flags = ITKF_PRESSED;
+                fk.code = ITK_ESC;          /* draw it, then Cancel */
+                Screen_KeyFeedTest(&fk, 1);
+                Screen = SCR_PATTERN;
+                confirm_quit();
             } else if (scr == 13 || scr == 14) { /* Load Sample / Sample
                                                     Library (feature 015) */
                 const char *d = getenv("ITED_SHOT_DIR");
@@ -12759,6 +12789,22 @@ int main(int argc, char **argv)
                 Screen = keep_scr2;
             }
 
+            /* issue #5: Quit asks "Exit Impulse Tracker?" first; Esc
+             * (Cancel) keeps running, Enter (default OK) quits */
+            {
+                it_key_t fk;
+                memset(&fk, 0, sizeof(fk));
+                fk.flags = ITKF_PRESSED; fk.code = ITK_ESC;
+                Screen_KeyFeedTest(&fk, 1);
+                act_file_quit();
+                if (!Running) i_ok = 0;
+                fk.code = ITK_ENTER;
+                Screen_KeyFeedTest(&fk, 1);
+                act_file_quit();
+                if (Running) i_ok = 0;
+                Running = 1;                /* carry on with the selftest */
+            }
+
             /* F5 title is the original's DisplayHeader, "Info Page (F5)"
              * (IT_OBJ1.ASM 6580; reported in PR #3 by esaruoho) */
             {
@@ -13131,8 +13177,12 @@ int main(int argc, char **argv)
     while (Running && !g_sig) {
         int key = ed_get_key();
         if (key != ITK_NONE) {
-            if (key == 0x11 /* Ctrl-Q */) break;
-            handle_global(key);
+            if (key == 0x11) {              /* Ctrl-Q -> Quit */
+                if (confirm_quit())
+                    break;
+            } else {
+                handle_global(key);
+            }
         }
         /* thumbbar mouse drag: follow the pointer while the button is
          * held (the table is rebuilt every frame, so check the slot) */
