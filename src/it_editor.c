@@ -8381,16 +8381,31 @@ static int pan_col_lkey(int key, int base)
 static int pan_left_lkey(int key)  { return pan_col_lkey(key, 0); }
 static int pan_right_lkey(int key) { return pan_col_lkey(key, 32); }
 
+/* The pan columns are ordinary 0..64 thumbbars (issue #10), so the
+ * pointer maps like every other thumbbar (thumb_from_px): one logical
+ * pixel per step from 4px into the bar. A click inside a bar also starts
+ * a drag that the main loop follows while the button is held (issue #8
+ * -- the pan bars are drawn inside list widgets, which the generic
+ * thumbbar drag never covered). */
+static int PanDragChan = -1, PanDragBx;
+
+static void pan_from_px(int chan, int bx, int mpx)
+{
+    int p = mpx - (bx * 8 + 4);
+    if (p < 0) p = 0;
+    if (p > 64) p = 64;
+    pan_set(chan, p);
+}
+
 static void pan_col_lclick(int row, int mx, int mpx, int base, int bx)
 {
     if (row < 0 || row > 31)
         return;
     PanSel = base + row;
     if (mx >= bx && mx <= bx + 8) {         /* inside the slider */
-        int p = (mpx - bx * 8) * 65 / 72;
-        if (p < 0) p = 0;
-        if (p > 64) p = 64;
-        pan_set(PanSel, p);
+        pan_from_px(PanSel, bx, mpx);
+        PanDragChan = PanSel;
+        PanDragBx = bx;
     }
 }
 
@@ -13197,6 +13212,15 @@ int main(int argc, char **argv)
                 thumb_from_px(&W[DragIdx], m.px);
             else if (W[DragIdx].cdrag)
                 W[DragIdx].cdrag(&m);
+        }
+        /* F11 pan bar drag (issue #8) */
+        if (PanDragChan >= 0) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (!m.b || Screen != SCR_ORDER)
+                PanDragChan = -1;
+            else
+                pan_from_px(PanDragChan, PanDragBx, m.px);
         }
         redraw();
         if (key == ITK_NONE)
