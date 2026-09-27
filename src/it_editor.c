@@ -654,11 +654,22 @@ static void nav_move(int dir)              /* 0=up 1=down 2=left 3=right */
         x = (W[i].x0 + W[i].x1) / 2;
         y = (W[i].y0 + W[i].y1) / 2;
         dx = x - cx; dy = y - cy;
+        /* Up/Down prefer a widget whose columns overlap the current one
+         * (the original's object links mostly point straight down); only
+         * without one does the nearest-centre fallback apply. Centre
+         * distance alone jumped from the long F12 Tempo/Speed bars to
+         * the Control buttons and past the path fields (issue #19). */
         switch (dir) {
         case 0: if (dy >= 0) continue; score = -dy + abs(dx) * 4; break;
         case 1: if (dy <= 0) continue; score =  dy + abs(dx) * 4; break;
         case 2: if (dx >= 0) continue; score = -dx + abs(dy) * 4; break;
         default:if (dx <= 0) continue; score =  dx + abs(dy) * 4; break;
+        }
+        if (dir < 2) {
+            if (W[i].x1 >= c->x0 && W[i].x0 <= c->x1)
+                score = abs(dy) * 8 + abs(dx);      /* overlapping */
+            else
+                score += 100000;                    /* fallback only */
         }
         if (score < bestscore) {
             bestscore = score;
@@ -13144,6 +13155,23 @@ int main(int argc, char **argv)
                     Song.Header.IT = 253;
                     handle_global(ITK_SHIFT_RIGHT);
                     if (Song.Header.IT != 255) i_ok = 0;
+                }
+                /* issue #19: F12 cursor-down walks the left column from
+                 * Song Name to Save all Preferences, and Amiga reaches
+                 * the Module path */
+                {
+                    static const int chain[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8,
+                                                 10, 12, 14, 15, 16, 17 };
+                    FocusIdx[SCR_VARS] = 0;
+                    for (k = 1; k < (int)(sizeof(chain) / sizeof(chain[0]));
+                         k++) {
+                        handle_global(ITK_DOWN);
+                        redraw();
+                        if (FocusIdx[SCR_VARS] != chain[k]) i_ok = 0;
+                    }
+                    FocusIdx[SCR_VARS] = 13;            /* Amiga */
+                    handle_global(ITK_DOWN);
+                    if (FocusIdx[SCR_VARS] != 14) i_ok = 0;
                 }
                 Song.Header.IT = keep_it;
                 Screen = keep_scr2;
