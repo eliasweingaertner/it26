@@ -3997,22 +3997,22 @@ static void draw_order(void)
             int sel = (PanSel == chan) && (focusw == 1 + c);
             int bx = c ? 65 : 31;
             uint8_t pan = Song.Header.ChnlPan[chan];
-            uint8_t a = sel ? 0x03 : 0x02;
 
             drawf(bx - 11, 15 + i, sel ? 0x30 : 0x20,
                   "Channel %02d", chan + 1);
-            if (pan & 0x80) {
-                Screen_DrawString(bx + 1, 15 + i, "Muted", a);
-            } else if ((pan & 0x7F) == 100) {
-                Screen_DrawString(bx, 15 + i, "Surround", a);
-            } else if ((pan & 0x7F) <= 64) {
-                int pos = (pan & 0x7F) * 8 / 64;
-                Screen_PutChar(bx + pos, 15 + i, 254, a);
-            }
-            /* port safety: pan 65..99/101.. is out of range; draw no
-             * marker rather than one outside the (30/64,14)-(40/74,47)
-             * box. Such values cannot come from the pan editor (clamped)
-             * -- they indicate corrupt ChnlPan data. */
+            /* Channel1..64 are type-9 objects (IT_OBJ1.ASM): an ordinary
+             * F_DrawThumbBar over 0..64 -- the fine fractional thumb
+             * glyphs and the 3-digit value in attr 21h, as on every other
+             * slider (issue #10). Values outside 0..64 skip the bar; its
+             * draw hook DrawPanning (IT_F.ASM 2690) then writes
+             * "  Muted" (bit 7) or "Surround" (100) at the bar's x in
+             * attr 5, and nothing for any other out-of-range value. */
+            if (pan <= 64)
+                draw_thumbbar(bx, 15 + i, 0, 64, pan, sel ? 0x03 : 0x02);
+            else if (pan & 0x80)
+                Screen_DrawString(bx, 15 + i, "  Muted", 0x05);
+            else if (pan == 100)
+                Screen_DrawString(bx, 15 + i, "Surround", 0x05);
         }
     }
 
