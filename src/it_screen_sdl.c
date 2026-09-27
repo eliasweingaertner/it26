@@ -153,22 +153,37 @@ static int MapSDLKey(SDL_Keycode kc)
     }
 }
 
-/* Convert window-space coords to logical 640x400 pixels. Uses the SDL
- * helper where available (2.0.18+, correct under HiDPI); otherwise scales
- * by the renderer's logical-size ratio. */
+/* Convert window-space coords to logical 640x400 pixels (issue #8).
+ * Computed explicitly rather than with SDL_RenderWindowToLogical, whose
+ * HiDPI + letterbox handling has varied between SDL2 releases -- on a
+ * Retina Mac mouse events arrive in points while the renderer works in
+ * pixels, and a mis-scaled result put slider clicks on the wrong cells.
+ * The mapping mirrors SDL_RenderSetLogicalSize: points -> drawable pixels
+ * by the real HiDPI factor, then undo the centred, aspect-preserving
+ * letterbox (scale = min of the two axis ratios). */
 static void WinToLogical(int wx, int wy, int *lx, int *ly)
 {
-#if SDL_VERSION_ATLEAST(2, 0, 18)
-    float fx, fy;
-    SDL_RenderWindowToLogical(Ren, wx, wy, &fx, &fy);
-    *lx = (int)fx;
-    *ly = (int)fy;
-#else
-    int ww = 1, wh = 1;
-    SDL_GetWindowSize(Wnd, &ww, &wh);
-    *lx = (ww > 0) ? wx * PIX_W / ww : 0;
-    *ly = (wh > 0) ? wy * PIX_H / wh : 0;
-#endif
+    int ww = 1, wh = 1, ow = 0, oh = 0;
+    float sx, sy, scale, vx, vy;
+
+    SDL_GetWindowSize(Wnd, &ww, &wh);               /* points */
+    if (SDL_GetRendererOutputSize(Ren, &ow, &oh) != 0 || ow <= 0 || oh <= 0) {
+        ow = ww;                                    /* pixels */
+        oh = wh;
+    }
+    if (ww <= 0 || wh <= 0) {
+        *lx = *ly = 0;
+        return;
+    }
+    sx = (float)ow / (float)ww;                     /* HiDPI factor */
+    sy = (float)oh / (float)wh;
+    scale = (float)ow / PIX_W;
+    if ((float)oh / PIX_H < scale)
+        scale = (float)oh / PIX_H;
+    vx = ((float)ow - PIX_W * scale) / 2.0f;        /* letterbox margins */
+    vy = ((float)oh - PIX_H * scale) / 2.0f;
+    *lx = (int)(((float)wx * sx - vx) / scale);
+    *ly = (int)(((float)wy * sy - vy) / scale);
     if (*lx < 0) *lx = 0; else if (*lx >= PIX_W) *lx = PIX_W - 1;
     if (*ly < 0) *ly = 0; else if (*ly >= PIX_H) *ly = PIX_H - 1;
 }
