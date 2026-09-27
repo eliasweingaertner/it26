@@ -281,8 +281,10 @@ static void draw_thumbbar(int x, int y, int min, int max, int val,
     draw3num(x + width + 1, y, val, 0x21);
 }
 
-/* scalable thumbbar (F_DrawScalableThumbBar approximation): fixed cell
- * width, value range compressed onto it. */
+/* F_DrawScalableThumbBar (IT_F.ASM 1738), ported 1:1: `width` is the
+ * object's display length L; the groove is L+1 cells, the thumb sits at
+ * pixel (val-min)*L*8/(max-min)+1 and the 3-digit value at x+L+2 --
+ * outside the object's box (issue #6: F12 Initial Tempo/Speed). */
 static void draw_thumbbar_scaled(int x, int y, int min, int max, int val,
                                  int width, uint8_t tattr)
 {
@@ -291,17 +293,17 @@ static void draw_thumbbar_scaled(int x, int y, int min, int max, int val,
     if (val < min) val = min;
     if (val > max) val = max;
 
-    for (i = 0; i < width; i++)
+    for (i = 0; i <= width; i++)
         Screen_PutChar(x + i, y, 0, 0x03);
 
-    v = (val - min) * (width * 8 - 2) / (max - min) + 1;
+    v = (val - min) * width * 8 / (max - min) + 1;
     cell = v >> 3;
     sub = v & 7;
     Screen_PutChar(x + cell, y, (uint8_t)(155 + sub), tattr);
     if (155 + sub > 157)
         Screen_PutChar(x + cell + 1, y, (uint8_t)(155 + sub + 5), tattr);
 
-    draw3num(x + width + 1, y, val, 0x21);
+    draw3num(x + width + 2, y, val, 0x21);
 }
 
 static const char NoteNameChars[] = "C-C#D-D#E-F-F#G-G#A-A#B-";
@@ -415,7 +417,7 @@ static widget_t *wradiof(int x0, int y0, int x1, int y1, const char *label,
 static widget_t *wthumb(int x, int y, int min, int max, uint8_t *v,
                         uint8_t vmask, int dw)
 {
-    int width = dw ? dw : ((max - min + 15) >> 3);
+    int width = dw ? dw + 1 : ((max - min + 15) >> 3);    /* L+1 cells */
     widget_t *w = wadd(WT_THUMB, x, y, x + width - 1, y);
     w->barx = x; w->bary = y;
     w->min = min; w->max = max; w->dw = dw;
@@ -4168,9 +4170,9 @@ static void draw_vars(void)
 
     {
         widget_t *w;
-        w = wthumb(17, 19, 31, 255, &Song.Header.IT, 0, 28);
+        w = wthumb(17, 19, 31, 255, &Song.Header.IT, 0, 32);
         w->action = act_tempo_changed;
-        w = wthumb(17, 20, 1, 255, &Song.Header.IS, 0, 28);
+        w = wthumb(17, 20, 1, 255, &Song.Header.IS, 0, 32);
         w->action = act_speed_changed;
     }
     wthumb(17, 23, 0, 128, &Song.Header.GV, 0, 0)->action = act_gv_changed;
