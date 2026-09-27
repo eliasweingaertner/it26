@@ -19,6 +19,7 @@
 /itplay
 /ited
 /test_pattern
+/pushthis
 
 # VGA ROM font: fetched on demand by `make font` (a dump of IBM's VGA BIOS
 # character ROM), never committed. See the Makefile "ROM font" section.

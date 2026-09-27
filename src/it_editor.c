@@ -3940,7 +3940,7 @@ static void draw_order(void)
     if (PanSel > 63) PanSel = 63;
 
     NW = 0;
-    wlist(6, 15, 9, 46, 15, order_list_lkey, order_list_lclick);
+    wlist(6, 15, 8, 46, 15, order_list_lkey, order_list_lclick);
     wlist(20, 15, 39, 46, 15, pan_left_lkey, pan_left_lclick);
     wlist(54, 15, 73, 46, 15, pan_right_lkey, pan_right_lclick);
 
@@ -3957,7 +3957,7 @@ static void draw_order(void)
         if (top < 0) top = 0;
         OrdListTop = top;
 
-        Screen_DrawBox(5, 14, 10, 47, 27);
+        Screen_DrawBox(5, 14, 9, 47, 27);
         for (i = 0; i < 32; i++) {
             int idx = top + i;
             uint8_t o = Song.Orders[idx];
