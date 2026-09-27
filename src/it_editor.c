@@ -667,6 +667,68 @@ static void nav_move(int dir)              /* 0=up 1=down 2=left 3=right */
         FocusIdx[Screen] = best;
 }
 
+/* F_PostThumbBar30 + O1_ThumbStringList (IT_F.ASM / IT_OBJ1.ASM): typing
+ * a digit on a thumbbar opens "Enter Value" -- box (29,24)-(50,28) style
+ * 3, text at (32,26) attr 23h, a 4-char input at (44,26) in a style-27
+ * box (43,25)-(48,27) -- seeded with that digit. Enter parses it; a
+ * non-digit, an empty entry or a value outside min..max changes nothing
+ * (the original rejects, it does not clamp). Esc cancels. `bg` redraws
+ * the screen underneath (the original's S_SaveScreen/S_RestoreScreen).
+ * Returns 1 and sets *out when a value was accepted (issue #9). */
+static void draw_screen(void);
+
+static int thumb_value_dialog(int first, int min, int max, int *out,
+                              void (*bg)(void))
+{
+    char buf[5];
+    int len = 1;
+
+    buf[0] = (char)first;
+    buf[1] = 0;
+    while (Running) {
+        int key, x;
+
+        bg();
+        Screen_DrawBox(29, 24, 50, 28, 3);          /* ThumbBox */
+        Screen_DrawString(32, 26, "Enter Value", 0x23);
+        Screen_DrawBox(43, 25, 48, 27, 27);         /* ThumbInputBox */
+        for (x = 0; x < 4; x++)
+            Screen_PutChar(44 + x, 26, x < len ? (uint8_t)buf[x] : ' ',
+                           x == len ? 0x30 : 0x02);  /* cursor cell */
+        Screen_Update();
+
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return 0; }
+        if (key == ITK_ESC)
+            return 0;
+        if (key == ITK_BACKSPACE) {
+            if (len > 0)
+                buf[--len] = 0;
+            continue;
+        }
+        if (key == ITK_ENTER) {
+            int v = 0, i;
+            if (len == 0)
+                return 0;
+            for (i = 0; i < len; i++) {
+                if (buf[i] < '0' || buf[i] > '9')
+                    return 0;
+                v = v * 10 + (buf[i] - '0');
+            }
+            if (v < min || v > max)
+                return 0;
+            *out = v;
+            return 1;
+        }
+        if (key >= 32 && key < 127 && len < 4) {
+            buf[len++] = (char)key;
+            buf[len] = 0;
+        }
+    }
+    return 0;
+}
+
 static int widgets_key(int key)
 {
     widget_t *w;
@@ -721,14 +783,11 @@ static int widgets_key(int key)
         case ITK_END:   thumb_set(w, w->max);           return 1;
         default: break;
         }
-        /* typed digits enter a value directly (F_PostThumbBar 2196):
-         * accumulate while it stays within range, else replace */
+        /* a typed digit opens "Enter Value" (F_PostThumbBar30) */
         if (key >= '0' && key <= '9') {
-            int cur = thumb_get(w);
-            int acc = cur * 10 + (key - '0');
-            if (acc > w->max)
-                acc = key - '0';
-            thumb_set(w, acc);
+            int v;
+            if (thumb_value_dialog(key, w->min, w->max, &v, draw_screen))
+                thumb_set(w, v);
             return 1;
         }
     } else {
@@ -8294,6 +8353,12 @@ static int pan_col_lkey(int key, int base)
     case 'm': case 'M': pan_set(PanSel, 32);  return 1;
     case 'r': case 'R': pan_set(PanSel, 64);  return 1;
     case 's': case 'S': pan_set(PanSel, 100); return 1;
+    case '0': case '1': case '2': case '3': case '4':
+    case '5': case '6': case '7': case '8': case '9': {
+        int v;                      /* the pan bars are type-9 thumbbars */
+        if (thumb_value_dialog(key, 0, 64, &v, draw_screen))
+            pan_set(PanSel, v);
+        return 1; }
     case ' ':
         ed_lock();
         Song.Header.ChnlPan[PanSel] ^= 0x80;
@@ -10111,7 +10176,12 @@ static void ls_field_key(int key)
         uint8_t *v = obj == 25 ? &s->Vol : obj == 26 ? &s->GvL
                    : obj == 27 ? &s->ViS : obj == 28 ? &s->ViD : &s->ViR;
         int mx = obj == 28 ? 32 : obj == 29 ? 255 : 64;
-        if (key == ITK_LEFT && *v > 0) (*v)--;
+        if (key >= '0' && key <= '9') {     /* F_PostThumbBar30 */
+            int nv;
+            if (thumb_value_dialog(key, 0, mx, &nv, ls_draw))
+                *v = (uint8_t)nv;
+        }
+        else if (key == ITK_LEFT && *v > 0) (*v)--;
         else if (key == ITK_RIGHT && *v < mx) (*v)++;
         else if (key == ITK_HOME) *v = 0;
         else if (key == ITK_END) *v = (uint8_t)mx;
@@ -12639,6 +12709,54 @@ int main(int argc, char **argv)
                 Song.Smp[90] = keep91;
                 Song.Smp[91] = keep92;
                 Song.Header.Flags = keepflags;
+            }
+
+            /* issue #9: typing digits on a thumbbar opens "Enter Value"
+             * (F_PostThumbBar30). F12 Initial Tempo, "8" "0" Enter -> 80;
+             * out of range (999 > 255) is rejected, not clamped; Esc
+             * cancels. */
+            {
+                uint8_t keep_it = Song.Header.IT;
+                int keep_scr2 = Screen, wi = -1, k;
+                it_key_t fk;
+                Screen = SCR_VARS;
+                redraw();
+                for (k = 0; k < NW; k++)
+                    if (W[k].type == WT_THUMB &&
+                        W[k].v8 == (uint8_t *)&Song.Header.IT)
+                        wi = k;
+                if (wi < 0) {
+                    i_ok = 0;
+                } else {
+                    static const int seq1[] = { '0', ITK_ENTER };
+                    static const int seq2[] = { '9', '9', ITK_ENTER };
+                    static const int seq3[] = { ITK_ESC };
+                    FocusIdx[SCR_VARS] = wi;
+                    Song.Header.IT = 112;
+                    for (k = 0; k < 2; k++) {
+                        memset(&fk, 0, sizeof(fk));
+                        fk.flags = ITKF_PRESSED; fk.code = seq1[k];
+                        fk.ch = (uint16_t)(seq1[k] < 256 ? seq1[k] : 0);
+                        Screen_KeyFeedTest(&fk, 1);
+                    }
+                    handle_global('8');
+                    if (Song.Header.IT != 80) i_ok = 0;
+                    for (k = 0; k < 3; k++) {
+                        memset(&fk, 0, sizeof(fk));
+                        fk.flags = ITKF_PRESSED; fk.code = seq2[k];
+                        fk.ch = (uint16_t)(seq2[k] < 256 ? seq2[k] : 0);
+                        Screen_KeyFeedTest(&fk, 1);
+                    }
+                    handle_global('9');
+                    if (Song.Header.IT != 80) i_ok = 0;
+                    memset(&fk, 0, sizeof(fk));
+                    fk.flags = ITKF_PRESSED; fk.code = seq3[0];
+                    Screen_KeyFeedTest(&fk, 1);
+                    handle_global('5');
+                    if (Song.Header.IT != 80) i_ok = 0;
+                }
+                Song.Header.IT = keep_it;
+                Screen = keep_scr2;
             }
 
             /* F5 title is the original's DisplayHeader, "Info Page (F5)"
