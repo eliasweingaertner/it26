@@ -781,6 +781,11 @@ static int widgets_key(int key)
         switch (key) {
         case ITK_LEFT:  thumb_set(w, thumb_get(w) - 1); return 1;
         case ITK_RIGHT: thumb_set(w, thumb_get(w) + 1); return 1;
+        /* F_PostThumbBar16/17: Shift = 4 steps, Ctrl = 2 (issue #7) */
+        case ITK_SHIFT_LEFT:  thumb_set(w, thumb_get(w) - 4); return 1;
+        case ITK_SHIFT_RIGHT: thumb_set(w, thumb_get(w) + 4); return 1;
+        case ITK_CTRL_LEFT:   thumb_set(w, thumb_get(w) - 2); return 1;
+        case ITK_CTRL_RIGHT:  thumb_set(w, thumb_get(w) + 2); return 1;
         case ITK_HOME:  thumb_set(w, w->min);           return 1;
         case ITK_END:   thumb_set(w, w->max);           return 1;
         default: break;
@@ -7806,6 +7811,10 @@ static void pe_set_pattern_length(void)
             int v = *val;
             if (key == ITK_LEFT)       v--;
             else if (key == ITK_RIGHT) v++;
+            else if (key == ITK_SHIFT_LEFT)  v -= 4;    /* issue #7 */
+            else if (key == ITK_SHIFT_RIGHT) v += 4;
+            else if (key == ITK_CTRL_LEFT)   v -= 2;
+            else if (key == ITK_CTRL_RIGHT)  v += 2;
             else if (key == ITK_HOME)  v = vmin;
             else if (key == ITK_END)   v = vmax;
             else if (key >= '0' && key <= '9') {
@@ -7962,6 +7971,10 @@ static void pe_options_dialog(void)
             v = *pv[t];
             if (key == ITK_LEFT)       v--;
             else if (key == ITK_RIGHT) v++;
+            else if (key == ITK_SHIFT_LEFT)  v -= 4;    /* issue #7 */
+            else if (key == ITK_SHIFT_RIGHT) v += 4;
+            else if (key == ITK_CTRL_LEFT)   v -= 2;
+            else if (key == ITK_CTRL_RIGHT)  v += 2;
             else if (key == ITK_HOME)  v = lo[t];
             else if (key == ITK_END)   v = hi[t];
             else if (key >= '0' && key <= '9') {
@@ -10445,6 +10458,13 @@ static void ls_field_key(int key)
         }
         else if (key == ITK_LEFT && *v > 0) (*v)--;
         else if (key == ITK_RIGHT && *v < mx) (*v)++;
+        else if (key == ITK_SHIFT_LEFT || key == ITK_CTRL_LEFT) {
+            int d = key == ITK_SHIFT_LEFT ? 4 : 2;      /* issue #7 */
+            *v = (uint8_t)(*v > d ? *v - d : 0);
+        } else if (key == ITK_SHIFT_RIGHT || key == ITK_CTRL_RIGHT) {
+            int d = key == ITK_SHIFT_RIGHT ? 4 : 2;
+            *v = (uint8_t)(*v + d < mx ? *v + d : mx);
+        }
         else if (key == ITK_HOME) *v = 0;
         else if (key == ITK_END) *v = (uint8_t)mx;
     }
@@ -13116,6 +13136,14 @@ int main(int argc, char **argv)
                     Screen_KeyFeedTest(&fk, 1);
                     handle_global('5');
                     if (Song.Header.IT != 80) i_ok = 0;
+                    /* issue #7: Shift-arrows step 4, Ctrl-arrows 2, clamped */
+                    handle_global(ITK_SHIFT_RIGHT);
+                    if (Song.Header.IT != 84) i_ok = 0;
+                    handle_global(ITK_CTRL_LEFT);
+                    if (Song.Header.IT != 82) i_ok = 0;
+                    Song.Header.IT = 253;
+                    handle_global(ITK_SHIFT_RIGHT);
+                    if (Song.Header.IT != 255) i_ok = 0;
                 }
                 Song.Header.IT = keep_it;
                 Screen = keep_scr2;
