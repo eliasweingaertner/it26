@@ -10622,7 +10622,7 @@ static void load_sample_screen_run(int view)
              * (DisableStereoMenu); this is what makes the waveform
              * appear */
             if (LsN && LsEnt[LsCur].Format >= 2 &&
-                LsEnt[LsCur].Format < 0x20 && LsEnt[LsCur].Format != 4) {
+                LsEnt[LsCur].Format < 0x20) {   /* unknown = raw (#17) */
                 int (*keep)(void) = Load_StereoChoice;
                 Load_StereoChoice = NULL;
                 lib_preview_key(&LsEnt[LsCur], LsCur, key);
@@ -13239,6 +13239,22 @@ int main(int argc, char **argv)
                 /* unrecognised files are still listed, as unknown */
                 if (le[7].Format != 4 || le[7].SortPri != 3)
                     l_ok = 0;
+                /* ... and load as raw 8-bit unsigned data (D_GetSampleInfo2,
+                 * issue #17): whole file, C-5 8363, first byte ^ 80h */
+                {
+                    sample_t raw;
+                    FILE *rf = fopen(le[7].SrcFile, "rb");
+                    int b0 = rf ? fgetc(rf) : -1;
+                    if (rf) fclose(rf);
+                    memset(&raw, 0, sizeof(raw));
+                    if (!(le[7].hdr.Flags & 1) || le[7].hdr.C5Speed != 8363 ||
+                        le[7].hdr.Length != le[7].FileSize ||
+                        le[7].hdr.Cvt != 0 || b0 < 0 ||
+                        !RIS_LoadSample(&le[7], &raw) || !raw.Data ||
+                        ((uint8_t *)raw.Data)[0] != (uint8_t)(b0 ^ 0x80))
+                        l_ok = 0;
+                    free(raw.Data);
+                }
                 /* file dates are real (year >= 2020 packs to >= 40<<9) */
                 if (le[6].Date < (40u << 9))
                     l_ok = 0;

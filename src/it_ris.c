@@ -995,6 +995,28 @@ static int ls_module_type(const uint8_t *d, size_t n, const char *path)
     return 0;
 }
 
+/* D_GetSampleInfo2 (IT_D_INF.INC 728): a file nothing recognises becomes
+ * "Unknown sample format" -- raw 8-bit unsigned data (Cvt 0) from the
+ * start of the file, up to 4177910 bytes, C-5 8363, volumes 64, no loop,
+ * the filename as the sample name. So IT loads "any old thing" (issue
+ * #17). An empty file keeps length 0 and is refused at load time. */
+static void ls_unknown(slibent_t *e)
+{
+    sample_t *h = &e->hdr;
+    char keep[12];
+
+    memcpy(keep, h->DOSFileName, sizeof(keep));
+    memset(h, 0, sizeof(*h));
+    memcpy(h->DOSFileName, keep, sizeof(keep));
+    memcpy(&h->ID, "IMPS", 4);
+    h->GvL = 64;
+    h->Flags = 1;
+    h->Vol = 64;
+    memcpy(h->SampleName, keep, sizeof(keep));
+    h->Length = e->FileSize < 4177910 ? e->FileSize : 4177910;
+    h->C5Speed = 8363;
+}
+
 /* identify one file into its record (D_LoadSampleHeader+GetSampleInfo) */
 static void ls_identify(slibent_t *e)
 {
@@ -1005,12 +1027,17 @@ static void ls_identify(slibent_t *e)
 
     e->Format = 4;                      /* unknown until proven otherwise */
     e->SortPri = 3;
+    ls_unknown(e);
     if (!fp)
         return;
     n = fread(d, 1, sizeof(d), fp);
     fclose(fp);
 
     if ((mt = ls_module_type(d, n, e->SrcFile)) != 0) {
+        char keep[12];
+        memcpy(keep, e->hdr.DOSFileName, sizeof(keep));
+        memset(&e->hdr, 0, sizeof(e->hdr));     /* no raw fallback */
+        memcpy(e->hdr.DOSFileName, keep, sizeof(keep));
         e->Format = (uint8_t)mt;
         e->SortPri = 1;
         fill_marker(&e->hdr, 9, "Library");
