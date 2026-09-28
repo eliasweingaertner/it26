@@ -6,7 +6,9 @@
   device, the sample rates that device supports (up to 192 kHz), buffer
   size, 16-bit dithered / 24-bit / 32-bit float output, and on Windows
   exclusive device access, which opens the device at the chosen rate
-  (for example 96 or 192 kHz) without resampling. It also has
+  (for example 96 or 192 kHz) without resampling. For the lo-fi end:
+  8-bit output (truncated like an 8-bit Sound Blaster, or dithered), true
+  mono output, and 8 / 11.025 / 16 / 22.05 kHz mixing. It also has
   the Sound Blaster 16 driver's 50%/75% filter and feedback (echo) modes,
   and "ramp volume at start of sample". Defaults keep playback
   bit-identical to before (#16).

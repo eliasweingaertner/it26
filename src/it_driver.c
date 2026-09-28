@@ -30,7 +30,11 @@
  *    time;
  *  - 24-bit and 32-bit float output next to the original 16-bit
  *    error-feedback dithered conversion (the mix carries 14 more bits
- *    than 16-bit output keeps);
+ *    than 16-bit output keeps), and 8-bit output, truncated like an
+ *    8-bit Sound Blaster or with the same error-feedback dither;
+ *  - forced mono: the mixer renders one channel (IT's own mono path,
+ *    as with F12 "Mono", without touching the song's flag) and the
+ *    output can be a real single channel;
  *  - the Sound Blaster 16 driver's output filter (50% / 75% one-pole
  *    low-pass) and feedback modes (previous tick at half volume,
  *    separated or crossed), SB16DRV.ASM.
@@ -63,6 +67,9 @@ static int32_t  RampComp = RAMPCOMPENSATE;
  * in a 32-bit container, 2 = 32-bit float; SB16 filter 0/1/2 = none/
  * 50%/75%; SB16 feedback 0/1/2 = none/separated/crossed */
 static int      OutFormat = 0, SBFilter = 0, SBFeedback = 0;
+/* output format 3 = 8-bit truncated, 4 = 8-bit dithered (unsigned) */
+static int      OutChannels = 2, ForceMono = 0;
+static int32_t  Dither8L, Dither8R;
 static int64_t  SBFilterL, SBFilterR;
 static uint16_t MixVolume = 0;
 static uint8_t  Stereo = 0, StereoSet = 0;
@@ -1004,6 +1011,7 @@ static int WAV_InitSound(void)
     memset(EQBand, 0, sizeof(EQBand));
     memset(MixBuffer, 0, sizeof(MixBuffer));    /* no stale feedback */
     SBFilterL = SBFilterR = 0;
+    Dither8L = Dither8R = 0;
     ResetFilters();
 
     FreqMultiplier = (float)MixSpeed * f32_from_bits(FREQMULTIPLIER_BASE_BITS);
@@ -1063,8 +1071,8 @@ static void DoTick(void)
     int32_t *si;
     int16_t *di;
 
-    if (PlayMode == 0)
-        Stereo = StereoSet;     /* stereo switch applies when idle */
+    if (PlayMode == 0)          /* stereo switch applies when idle */
+        Stereo = ForceMono ? 0 : StereoSet;
 
     /* Serialise the sequencer tick (which reads packed pattern data and
      * channel tables) against editor pattern edits on the main thread. */
@@ -1095,7 +1103,7 @@ static void DoTick(void)
         SBFilterR = r;
     }
 
-    if (OutFormat != 0) {               /* 24-bit / float: no dither */
+    if (OutFormat != 0) {               /* 24-bit / float / 8-bit */
         int32_t *w = OutWide;
         si = MixBuffer;
         di = OutBuffer;                 /* 16-bit copy for the Alt-F12 tap */
@@ -1106,7 +1114,19 @@ static void DoTick(void)
                 int32_t t = v >> 14;
                 if (t < -0x8000) t = -0x8000; else if (t > 0x7FFF) t = 0x7FFF;
                 di[k] = (int16_t)t;
-                if (OutFormat == 1) {   /* 24 significant bits */
+                if (OutFormat >= 3) {   /* 8-bit unsigned */
+                    int32_t x;
+                    if (OutFormat == 4) {   /* error feedback, >> 22 */
+                        int32_t *acc = k ? &Dither8R : &Dither8L;
+                        *acc += v;
+                        x = *acc >> 22;
+                        *acc &= 0x3FFFFF;
+                    } else
+                        x = v >> 22;
+                    if (x < -128) { x = -128; NumClipped++; }
+                    else if (x > 127) { x = 127; NumClipped++; }
+                    w[k] = x + 128;
+                } else if (OutFormat == 1) {   /* 24 significant bits */
                     int32_t x = v >> 6;
                     if (x < -0x800000) { x = -0x800000; NumClipped++; }
                     else if (x > 0x7FFFFF) { x = 0x7FFFFF; NumClipped++; }
@@ -1198,19 +1218,25 @@ void WAVDriver_GetWaveForm(int16_t *out2048)
 
 void WAVDriver_Render(int16_t *dst, uint32_t frames);
 
-void WAVDriver_SetOutputFormat(int fmt)    { OutFormat = fmt >= 0 && fmt <= 2 ? fmt : 0; }
+void WAVDriver_SetOutputFormat(int fmt)    { OutFormat = fmt >= 0 && fmt <= 4 ? fmt : 0; }
+void WAVDriver_SetOutputChannels(int ch)   { OutChannels = ch == 1 ? 1 : 2; }
+void WAVDriver_SetForceMono(int on)        { ForceMono = on ? 1 : 0; }
 int  WAVDriver_GetOutputFormat(void)       { return OutFormat; }
 void WAVDriver_SetSBFilter(int mode)       { SBFilter = mode >= 0 && mode <= 2 ? mode : 0; }
 void WAVDriver_SetSBFeedback(int mode)     { SBFeedback = mode >= 0 && mode <= 2 ? mode : 0; }
 void WAVDriver_SetStartRamp(int on)        { StartNoRamp = on ? 0 : 1; }
 
-/* any output format: 16-bit frames are int16 pairs, 24-bit ones int32
- * pairs (24 significant bits), float ones float pairs */
+/* any output format and channel count: frames are int16 (16-bit),
+ * int32 with 24 significant bits (24-bit), float, or unsigned bytes
+ * (8-bit), one or two per frame. With one output channel the left mix
+ * channel is sent (forced mono makes both the same). */
 void WAVDriver_RenderAny(void *dst, uint32_t frames)
 {
+    static const int bps[5] = { 2, 4, 4, 1, 1 };
     uint8_t *d = (uint8_t *)dst;
+    int b = bps[OutFormat], ch = OutChannels;
 
-    if (OutFormat == 0) {
+    if (OutFormat == 0 && ch == 2) {    /* the original path, untouched */
         WAVDriver_Render((int16_t *)dst, frames);
         return;
     }
@@ -1222,13 +1248,23 @@ void WAVDriver_RenderAny(void *dst, uint32_t frames)
         n = OutFilled - OutPos;
         if (n > frames)
             n = frames;
-        memcpy(d, &OutWide[OutPos * 2], n * 8);
         for (i = 0; i < n; i++) {
             const int16_t *t = &OutBuffer[(OutPos + i) * 2];
+            const int32_t *w = &OutWide[(OutPos + i) * 2];
+            int k;
+            for (k = 0; k < ch; k++) {
+                if (OutFormat == 0) {
+                    memcpy(d, &t[k], 2);
+                } else if (b == 4) {
+                    memcpy(d, &w[k], 4);
+                } else {
+                    *d = (uint8_t)w[k];
+                }
+                d += b;
+            }
             WaveTap[WaveTapPos] = (int16_t)((t[0] + t[1]) >> 1);
             WaveTapPos = (WaveTapPos + 1) & 2047;
         }
-        d += n * 8;
         OutPos += n;
         frames -= n;
     }

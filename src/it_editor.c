@@ -71,6 +71,8 @@ int  WAVDriver_GetOutputFormat(void);
 void WAVDriver_SetSBFilter(int mode);
 void WAVDriver_SetSBFeedback(int mode);
 void WAVDriver_SetStartRamp(int on);
+void WAVDriver_SetOutputChannels(int ch);
+void WAVDriver_SetForceMono(int on);
 int  Music_LoadIT(const char *path);
 void Music_FreeIT(void);
 
@@ -12024,16 +12026,19 @@ static int      AudFormat = 0;              /* 0 16-bit, 1 24-bit, 2 float */
 static uint32_t AudBuffer = 0;              /* frames, 0 = backend's */
 static int      AudFilter = 0, AudFeedback = 0, AudRamp = 1;
 static int      AudExclusive = 0;           /* WASAPI exclusive mode */
+static int      AudMono = 0;                /* one output channel, mixer
+                                               forced to mono */
 static int      AudRateFromCmdline = 0;
 
 static char     AudStatus[4][48];           /* the running device */
 
-#define DRV_MAXRATE 10
+#define DRV_MAXRATE 12
 static uint8_t  DrvSelDev, DrvSelRate, DrvSelFmt, DrvSelBuf;
 static uint8_t  DrvSelFilter, DrvSelFeedback, DrvSelRamp, DrvSelExcl;
+static uint8_t  DrvSelMono;
 static int      DrvDevTop;
 static uint8_t  DrvOpenDev, DrvOpenRate, DrvOpenFmt, DrvOpenBuf,
-                DrvOpenExcl;                /* as opened: Apply pending? */
+                DrvOpenExcl, DrvOpenMono;   /* as opened: Apply pending? */
 static uint32_t DrvRates[DRV_MAXRATE];
 static int      DrvNRates;
 static char     DrvRateLbl[DRV_MAXRATE][14];
@@ -12041,8 +12046,9 @@ static const uint32_t DrvBuffers[6] = { 0, 256, 512, 1024, 2048, 4096 };
 static const char *const DrvBufLbl[6] = {
     " Default", "     256", "     512", "    1024", "    2048", "    4096"
 };
-static const char *const DrvFmtLbl[3] = {
-    "  16 Bit, Dithered (original)", "  24 Bit", "  32 Bit Float"
+static const char *const DrvFmtLbl[5] = {
+    " 16 Bit, Dither", "     24 Bit", "  32 Bit Float", "     8 Bit",
+    "  8 Bit, Dither"
 };
 
 static void audio_pref_line(const char *line)
@@ -12052,7 +12058,7 @@ static void audio_pref_line(const char *line)
     else if (!strncmp(line, "audio_rate=", 11))
         AudRate = (uint32_t)strtoul(line + 11, NULL, 10);
     else if (!strncmp(line, "audio_format=", 13))
-        AudFormat = atoi(line + 13) % 3;
+        AudFormat = atoi(line + 13) % 5;
     else if (!strncmp(line, "audio_buffer=", 13))
         AudBuffer = (uint32_t)strtoul(line + 13, NULL, 10);
     else if (!strncmp(line, "audio_filter=", 13))
@@ -12063,15 +12069,17 @@ static void audio_pref_line(const char *line)
         AudRamp = atoi(line + 11) ? 1 : 0;
     else if (!strncmp(line, "audio_exclusive=", 16))
         AudExclusive = atoi(line + 16) ? 1 : 0;
+    else if (!strncmp(line, "audio_mono=", 11))
+        AudMono = atoi(line + 11) ? 1 : 0;
 }
 
 static void audio_pref_save(FILE *fp)
 {
     fprintf(fp, "audio_device=%s\naudio_rate=%u\naudio_format=%d\n"
             "audio_buffer=%u\naudio_filter=%d\naudio_feedback=%d\n"
-            "audio_ramp=%d\naudio_exclusive=%d\n", AudDevName,
-            (unsigned)AudRate, AudFormat, (unsigned)AudBuffer, AudFilter,
-            AudFeedback, AudRamp, AudExclusive);
+            "audio_ramp=%d\naudio_exclusive=%d\naudio_mono=%d\n",
+            AudDevName, (unsigned)AudRate, AudFormat, (unsigned)AudBuffer,
+            AudFilter, AudFeedback, AudRamp, AudExclusive, AudMono);
 }
 
 static void audio_context(void)
@@ -12164,6 +12172,8 @@ static int wasapi_exclusive_rates(int devsel, const uint32_t *std, int nstd,
 /* the rates a device reports natively; a device that takes any rate
  * (nativeDataFormats sampleRate 0) gets the standard list; in exclusive
  * mode, the rates it accepts exclusively */
+static void drv_add_lofi(void);
+
 static void drv_fill_rates(int devsel)
 {
     static const uint32_t std[] = { 22050, 32000, 44100, 48000,
@@ -12175,10 +12185,8 @@ static void drv_fill_rates(int devsel)
 #if defined(MA_HAS_WASAPI)
     if (DrvSelExcl && audio_has_exclusive()) {
         n = wasapi_exclusive_rates(devsel, std, 8, DrvRates);
-        for (i = 0; i < n; i++)
-            snprintf(DrvRateLbl[i], sizeof(DrvRateLbl[i]), "%6u Hz",
-                     (unsigned)DrvRates[i]);
         DrvNRates = n;
+        drv_add_lofi();
         return;
     }
 #endif
@@ -12219,10 +12227,43 @@ static void drv_fill_rates(int devsel)
             DrvRates[j] = DrvRates[j - 1];
             DrvRates[j - 1] = t;
         }
-    for (i = 0; i < n; i++)
-        snprintf(DrvRateLbl[i], sizeof(DrvRateLbl[i]), "%6u Hz",
-                 (unsigned)DrvRates[i]);
     DrvNRates = n;
+    drv_add_lofi();
+}
+
+/* the lo-fi rates are always offered: hardly any device plays them, so
+ * the system resamples, but the mixer really runs at them -- that is
+ * where the character comes from. Rates the device does not play itself
+ * get a '*'. */
+static void drv_add_lofi(void)
+{
+    static const uint32_t lofi[] = { 8000, 11025, 16000, 22050 };
+    int native = DrvNRates, i, j, k;
+
+    for (k = 0; k < 4 && DrvNRates < DRV_MAXRATE; k++) {
+        int dup = 0;
+        for (i = 0; i < DrvNRates; i++)
+            if (DrvRates[i] == lofi[k]) dup = 1;
+        if (!dup)
+            DrvRates[DrvNRates++] = lofi[k];
+    }
+    for (i = 0; i < DrvNRates; i++) {           /* ascending, keep the
+                                                   native flag with it */
+        uint32_t r = DrvRates[i];
+        int nat = i < native;
+        snprintf(DrvRateLbl[i], sizeof(DrvRateLbl[i]), "%6u Hz%s",
+                 (unsigned)r, nat ? "" : "*");
+    }
+    for (i = 1; i < DrvNRates; i++)
+        for (j = i; j > 0 && DrvRates[j - 1] > DrvRates[j]; j--) {
+            uint32_t t = DrvRates[j];
+            char lb[14];
+            DrvRates[j] = DrvRates[j - 1];
+            DrvRates[j - 1] = t;
+            memcpy(lb, DrvRateLbl[j], sizeof(lb));
+            memcpy(DrvRateLbl[j], DrvRateLbl[j - 1], sizeof(lb));
+            memcpy(DrvRateLbl[j - 1], lb, sizeof(lb));
+        }
 }
 
 static int drv_pick_rate(uint32_t want)
@@ -12266,10 +12307,11 @@ static void drv_open(void)
     DrvSelFilter = (uint8_t)AudFilter;
     DrvSelFeedback = (uint8_t)AudFeedback;
     DrvSelRamp = (uint8_t)(AudRamp ? 0 : 1);
+    DrvSelMono = (uint8_t)AudMono;
     DrvDevTop = DrvSelDev > 7 ? DrvSelDev - 7 : 0;
     DrvOpenDev = DrvSelDev; DrvOpenRate = DrvSelRate;
     DrvOpenFmt = DrvSelFmt; DrvOpenBuf = DrvSelBuf;
-    DrvOpenExcl = DrvSelExcl;
+    DrvOpenExcl = DrvSelExcl; DrvOpenMono = DrvSelMono;
     Screen = SCR_DRIVER;
 }
 
@@ -12285,14 +12327,15 @@ static void audio_live_apply(void)
 /* open the output with the audio_* settings; 1 on success */
 static int audio_open(void)
 {
-    static const ma_format fmts[3] = { ma_format_s16, ma_format_s32,
-                                       ma_format_f32 };
+    static const ma_format fmts[5] = { ma_format_s16, ma_format_s32,
+                                       ma_format_f32, ma_format_u8,
+                                       ma_format_u8 };
     ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
     int d = drv_dev_index(AudDevName);
 
     cfg.playback.pDeviceID = d ? &AudDevs[d - 1].id : NULL;
     cfg.playback.format = fmts[AudFormat];
-    cfg.playback.channels = 2;
+    cfg.playback.channels = AudMono ? 1 : 2;
     cfg.sampleRate = AudRate;
     cfg.periodSizeInFrames = AudBuffer;
     cfg.playback.shareMode = AudExclusive && audio_has_exclusive()
@@ -12309,10 +12352,10 @@ static int audio_open(void)
     {
         uint32_t per = Device.playback.internalPeriodSizeInFrames;
         uint32_t irate = Device.playback.internalSampleRate;
-        snprintf(AudStatus[0], sizeof(AudStatus[0]), "%u Hz, %s%s",
-                 (unsigned)AudRate,
-                 AudFormat == 0 ? "16 Bit" : AudFormat == 1 ? "24 Bit"
-                                                            : "32 Bit Float",
+        static const char *const fn[5] = { "16 Bit", "24 Bit", "32 Bit Float",
+                                           "8 Bit", "8 Bit dith." };
+        snprintf(AudStatus[0], sizeof(AudStatus[0]), "%u Hz, %s, %s%s",
+                 (unsigned)AudRate, fn[AudFormat], AudMono ? "mono" : "stereo",
                  irate && irate != AudRate ? ", resampled" : "");
         snprintf(AudStatus[1], sizeof(AudStatus[1]),
                  "Buffer %u frames (%.1f ms)", (unsigned)per,
@@ -12344,6 +12387,8 @@ static int audio_restart(void)
     WAVDriver_SetMixSpeed(AudRate);
     AudRate = WAVDriver_GetMixSpeed();
     WAVDriver_SetOutputFormat(AudFormat);
+    WAVDriver_SetOutputChannels(AudMono ? 1 : 2);
+    WAVDriver_SetForceMono(AudMono);
     Driver->InitSound();
     Music_InitTempo();
     ed_unlock();
@@ -12355,9 +12400,12 @@ static int audio_restart(void)
         AudFormat = 0;
         AudBuffer = 0;
         AudExclusive = 0;
+        AudMono = 0;
         ed_lock();
         WAVDriver_SetMixSpeed(AudRate);
         WAVDriver_SetOutputFormat(0);
+        WAVDriver_SetOutputChannels(2);
+        WAVDriver_SetForceMono(0);
         Driver->InitSound();
         Music_InitTempo();
         ed_unlock();
@@ -12400,6 +12448,7 @@ static void act_drv_apply(void)
     AudFormat = DrvSelFmt;
     AudBuffer = DrvBuffers[DrvSelBuf];
     AudExclusive = DrvSelExcl;
+    AudMono = DrvSelMono;
     if (audio_restart())
         status("Audio output reopened.");
     else
@@ -12413,7 +12462,42 @@ static int drv_pending(void)
 {
     return DrvSelDev != DrvOpenDev || DrvSelRate != DrvOpenRate ||
            DrvSelFmt != DrvOpenFmt || DrvSelBuf != DrvOpenBuf ||
-           DrvSelExcl != DrvOpenExcl;
+           DrvSelExcl != DrvOpenExcl || DrvSelMono != DrvOpenMono;
+}
+
+/* device names come as UTF-8; shown as ASCII (accents folded, anything
+ * else '?'), since the screen font has no accented letters. Draws up to
+ * column maxx. */
+static void draw_utf8(int x, int y, const char *str, int maxx, uint8_t a)
+{
+    const unsigned char *p = (const unsigned char *)str;
+
+    while (*p && x <= maxx) {
+        uint32_t u;
+        int extra;
+        if (*p < 0x80)                 { u = *p;        extra = 0; }
+        else if ((*p & 0xE0) == 0xC0)  { u = *p & 0x1F; extra = 1; }
+        else if ((*p & 0xF0) == 0xE0)  { u = *p & 0x0F; extra = 2; }
+        else if ((*p & 0xF8) == 0xF0)  { u = *p & 0x07; extra = 3; }
+        else                           { p++; continue; }
+        p++;
+        while (extra-- > 0 && (*p & 0xC0) == 0x80)
+            u = (u << 6) | (*p++ & 0x3F);
+        /* IT's font has graphics, not accented letters, above 7Fh:
+         * fold Latin-1 letters to their base letter (o for o-umlaut) */
+        if (u >= 0xC0 && u <= 0xFF) {
+            static const char fold[65] =
+                "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYPs"
+                "aaaaaaaceeeeiiiidnooooo/ouuuuypy";
+            if (u == 0xDF) {                /* sharp s */
+                Screen_PutChar(x++, y, 's', a);
+                if (x <= maxx) Screen_PutChar(x++, y, 's', a);
+                continue;
+            }
+            u = (uint32_t)(unsigned char)fold[u - 0xC0];
+        }
+        Screen_PutChar(x++, y, (uint8_t)(u >= 32 && u < 127 ? u : '?'), a);
+    }
 }
 
 /* the device list: box (2,14)-(38,23), eight rows, "System Default"
@@ -12425,12 +12509,12 @@ static void drv_list_draw(int focused)
     Screen_DrawBox(2, 14, 38, 23, 27);
     for (i = 0; i < 8 && DrvDevTop + i < n; i++) {
         int e = DrvDevTop + i;
-        const char *nm = e == 0 ? "System Default" : AudDevs[e - 1].name;
         uint8_t a = e == DrvSelDev ? (focused ? 0x30 : 0x23) : 0x06;
         int k;
         for (k = 3; k <= 37; k++)
             Screen_PutChar(k, 15 + i, ' ', a);
-        drawf(3, 15 + i, a, "%.35s", nm);
+        draw_utf8(3, 15 + i, e == 0 ? "System Default" : AudDevs[e - 1].name,
+                  37, a);
     }
 }
 
@@ -12477,12 +12561,12 @@ static void draw_driver(void)
     Screen_DrawString(2, 13, "Output Device", 0x20);
     wcustom(2, 14, 38, 23, drv_list_draw, drv_list_key, drv_list_click);
 
-    Screen_DrawString(2, 25, "Sample Rate", 0x20);
+    Screen_DrawString(2, 25, "Sample Rate   (* = resampled)", 0x20);
     if (DrvNRates == 0)
         Screen_DrawString(3, 27, "(none in this mode)", 0x23);
     for (i = 0; i < DrvNRates; i++) {
         int c = i % 3, r = i / 3;
-        wradio8(3 + 12 * c, 26 + 3 * r, 13 + 12 * c, 28 + 3 * r,
+        wradio8(3 + 12 * c, 26 + 3 * r, 14 + 12 * c, 28 + 3 * r,
                 DrvRateLbl[i], &DrvSelRate, 0xFF, (uint8_t)i);
     }
 
@@ -12502,9 +12586,11 @@ static void draw_driver(void)
     }
 
     Screen_DrawString(41, 13, "Output Format", 0x20);
-    for (i = 0; i < 3; i++)
-        wradio8(42, 14 + 3 * i, 76, 16 + 3 * i, DrvFmtLbl[i],
-                &DrvSelFmt, 0xFF, (uint8_t)i);
+    for (i = 0; i < 5; i++) {
+        int c = i % 2, r = i / 2;
+        wradio8(42 + 19 * c, 14 + 3 * r, 58 + 19 * c, 16 + 3 * r,
+                DrvFmtLbl[i], &DrvSelFmt, 0xFF, (uint8_t)i);
+    }
 
     Screen_DrawString(41, 24, "Filter mode", 0x20);
     Screen_DrawString(60, 24, "Feedback mode", 0x20);
@@ -12521,11 +12607,15 @@ static void draw_driver(void)
         }
     }
 
-    Screen_DrawString(41, 35, "Ramp volume at start of sample", 0x20);
-    wradio8(42, 36, 58, 38, "   Enabled", &DrvSelRamp, 0xFF, 0)->action =
+    Screen_DrawString(41, 35, "Sample Start Ramp", 0x20);   /* the WAV
+                              driver's "Ramp volume at start of sample" */
+    wradio8(42, 36, 49, 38, "  On", &DrvSelRamp, 0xFF, 0)->action =
         act_drv_live;
-    wradio8(61, 36, 77, 38, "  Disabled", &DrvSelRamp, 0xFF, 1)->action =
+    wradio8(51, 36, 58, 38, "  Off", &DrvSelRamp, 0xFF, 1)->action =
         act_drv_live;
+    Screen_DrawString(60, 35, "Channels", 0x20);
+    wradio8(61, 36, 69, 38, " Stereo", &DrvSelMono, 0xFF, 0);
+    wradio8(70, 36, 77, 38, "  Mono", &DrvSelMono, 0xFF, 1);
 
     wbutton(42, 40, 58, 42, "     Apply", act_drv_apply);
     wbutton(61, 40, 77, 42, "  Save Prefs", act_drv_save);
@@ -12534,7 +12624,7 @@ static void draw_driver(void)
                           0x23);
 
     for (i = 0; i < 4; i++)                         /* what is running */
-        Screen_DrawString(41, 45 + i, AudStatus[i], 0x21);
+        draw_utf8(41, 45 + i, AudStatus[i], 79, 0x21);
     widgets_draw();
 }
 
@@ -13974,6 +14064,35 @@ int main(int argc, char **argv)
                 }
                 if (bad || !nz || WAVDriver_GetMixSpeed() != 96000)
                     hk_ok = 0;
+                /* lo-fi: 11025 Hz, 8-bit (truncated, then dithered), one
+                 * channel with the mixer forced to mono: bytes around the
+                 * 80h centre, not all silent */
+                {
+                    static uint8_t b8[4096];
+                    int k2, lo = 255, hi = 0;
+                    ed_lock();
+                    Music_Stop();
+                    WAVDriver_SetMixSpeed(11025);
+                    WAVDriver_SetForceMono(1);
+                    WAVDriver_SetOutputChannels(1);
+                    Driver->InitSound();
+                    Music_InitTempo();
+                    Music_PlaySong(0);
+                    ed_unlock();
+                    for (fmt = 3; fmt <= 4; fmt++) {
+                        WAVDriver_SetOutputFormat(fmt);
+                        for (k2 = 0; k2 < 6; k2++)
+                            WAVDriver_RenderAny(b8, 4096);
+                        for (k2 = 0; k2 < 4096; k2++) {
+                            if (b8[k2] < lo) lo = b8[k2];
+                            if (b8[k2] > hi) hi = b8[k2];
+                        }
+                    }
+                    if (hi - lo < 8 || lo > 0x80 || hi < 0x80)
+                        hk_ok = 0;
+                    WAVDriver_SetForceMono(0);
+                    WAVDriver_SetOutputChannels(2);
+                }
                 ed_lock();
                 Music_Stop();
                 WAVDriver_SetOutputFormat(0);

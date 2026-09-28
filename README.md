@@ -298,7 +298,11 @@ the 2*Alt-N Multichannel Selection dialog and the F3/F4 `` ` `` solo and
   with IT's WAV writer mixer. It picks the output device, the sample rate
   (only the rates the device reports natively; up to 192 kHz, the
   original stops at 64 kHz), the buffer size and the output format
-  (16-bit dithered as in the original, 24-bit, or 32-bit float), and on
+  (16-bit dithered as in the original, 24-bit, 32-bit float, or 8-bit
+  truncated / dithered), stereo or true mono (the mixer renders one
+  channel, as with F12 "Mono", without changing the song), lo-fi rates
+  (8 / 11.025 / 16 / 22.05 kHz, always listed and marked `*` when the
+  system resamples them), and on
   Windows shared or **exclusive** device access. Exclusive mode lists the
   rates the device accepts exclusively and opens it at the chosen rate
   (the vendored miniaudio carries a small, marked patch for that). It also
