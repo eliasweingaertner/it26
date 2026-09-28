@@ -156,39 +156,18 @@ static int MapSDLKey(SDL_Keycode kc)
     }
 }
 
-/* Convert window-space coords to logical 640x400 pixels (issue #8).
- * Computed explicitly rather than with SDL_RenderWindowToLogical, whose
- * HiDPI + letterbox handling has varied between SDL2 releases -- on a
- * Retina Mac mouse events arrive in points while the renderer works in
- * pixels, and a mis-scaled result put slider clicks on the wrong cells.
- * The mapping mirrors SDL_RenderSetLogicalSize: points -> drawable pixels
- * by the real HiDPI factor, then undo the centred, aspect-preserving
- * letterbox (scale = min of the two axis ratios). */
-static void WinToLogical(int wx, int wy, int *lx, int *ly)
+/* Mouse event coordinates -> logical 640x400 pixels (issue #8).
+ * With SDL_RenderSetLogicalSize in effect, SDL2's renderer already
+ * rewrites every mouse event into logical coordinates -- Retina scale
+ * and letterbox included -- before we see it. The event values are
+ * used as they are, only clamped. (Until 2026-09 the port converted
+ * them a second time, as if they were window points, which pulled
+ * every click towards the top-left: F4 button clicks landed in the
+ * instrument list, slider clicks missed.) */
+static void EventToLogical(int ex, int ey, int *lx, int *ly)
 {
-    int ww = 1, wh = 1, ow = 0, oh = 0;
-    float sx, sy, scale, vx, vy;
-
-    SDL_GetWindowSize(Wnd, &ww, &wh);               /* points */
-    if (SDL_GetRendererOutputSize(Ren, &ow, &oh) != 0 || ow <= 0 || oh <= 0) {
-        ow = ww;                                    /* pixels */
-        oh = wh;
-    }
-    if (ww <= 0 || wh <= 0) {
-        *lx = *ly = 0;
-        return;
-    }
-    sx = (float)ow / (float)ww;                     /* HiDPI factor */
-    sy = (float)oh / (float)wh;
-    scale = (float)ow / PIX_W;
-    if ((float)oh / PIX_H < scale)
-        scale = (float)oh / PIX_H;
-    vx = ((float)ow - PIX_W * scale) / 2.0f;        /* letterbox margins */
-    vy = ((float)oh - PIX_H * scale) / 2.0f;
-    *lx = (int)(((float)wx * sx - vx) / scale);
-    *ly = (int)(((float)wy * sy - vy) / scale);
-    if (*lx < 0) *lx = 0; else if (*lx >= PIX_W) *lx = PIX_W - 1;
-    if (*ly < 0) *ly = 0; else if (*ly >= PIX_H) *ly = PIX_H - 1;
+    *lx = ex < 0 ? 0 : ex >= PIX_W ? PIX_W - 1 : ex;
+    *ly = ey < 0 ? 0 : ey >= PIX_H ? PIX_H - 1 : ey;
 }
 
 static void PumpEvents(void)
@@ -414,11 +393,11 @@ static void PumpEvents(void)
             break;
         }
         case SDL_MOUSEMOTION:
-            WinToLogical(e.motion.x, e.motion.y, &MousePX, &MousePY);
+            EventToLogical(e.motion.x, e.motion.y, &MousePX, &MousePY);
             break;
         case SDL_MOUSEBUTTONDOWN:
             if (e.button.button == SDL_BUTTON_LEFT) {
-                WinToLogical(e.button.x, e.button.y, &MousePX, &MousePY);
+                EventToLogical(e.button.x, e.button.y, &MousePX, &MousePY);
                 MouseB = 1;
                 PushKey(ITK_MOUSE);
             }
@@ -463,7 +442,8 @@ static int SDL_BInit(void)
     if (!Ren)
         goto fail;
 
-    /* Letterboxed integer scaling; also maps mouse coords to 640x400. */
+    /* Letterboxed scaling; SDL also rewrites mouse event coordinates
+     * into this 640x400 space (see EventToLogical). */
     SDL_RenderSetLogicalSize(Ren, PIX_W, PIX_H);
 
     /* Rasterizer output is 0x00RRGGBB; ARGB8888 is a packed format so the
