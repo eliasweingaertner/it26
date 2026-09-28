@@ -52,6 +52,18 @@ uint16_t NumChannels   = 256;
 uint8_t  SoloSample    = 0xFF;
 uint8_t  SoloInstrument= 0xFF;
 uint8_t  StopSong      = 0;
+/* SamplePlayTable / InstrumentPlayTable (IT_I.ASM 244): 4 = has been
+ * played since playback started (I_TagSample / I_TagInstrument, called
+ * from AllocateChannel); the F3/F4 lists add the live bits (1 = on, 2 =
+ * just started) each redraw and show the dots (I_ShowSamplePlay). */
+uint8_t  SamplePlayTable[128], InstrumentPlayTable[128];
+
+/* I_ClearTables: the original calls it before every play command */
+static void ClearPlayTables(void)
+{
+    memset(SamplePlayTable, 0, sizeof(SamplePlayTable));
+    memset(InstrumentPlayTable, 0, sizeof(InstrumentPlayTable));
+}
 uint8_t  PatternLooping= 0;
 uint8_t  ReverseChannels = 0;
 uint8_t  OrderLockFlag = 0;
@@ -800,6 +812,7 @@ slavechn_t *AllocateChannelPtr(hostchn_t *hc, uint8_t *hflags)
         goto SampleHandler;
     if (ins == 0)
         return NULL;            /* AllocateChannel5 */
+    InstrumentPlayTable[ins & 0x7F] = 4;        /* I_TagInstrument */
 
     insp = INSTRUMENT(ins);
 
@@ -1223,6 +1236,7 @@ SampleHandler:
             uint8_t smp = (uint8_t)(hc->Smp - 1);
             sample_t *s;
 
+            SamplePlayTable[smp & 0x7F] = 4;    /* I_TagSample */
             sc->Smp = smp;
             sc->SmpOffs = smp;
 
@@ -2461,6 +2475,7 @@ void Music_Stop(void)
 
 void Music_PlayPattern(uint16_t Pattern, uint16_t NumRows, uint16_t Row)
 {
+    ClearPlayTables();
     Music_Stop();
 
     MIDIPitchDepthSent = 0;
@@ -2477,6 +2492,7 @@ void Music_PlayPattern(uint16_t Pattern, uint16_t NumRows, uint16_t Row)
  * starting at `Row` (PE_F7 with the order list holding the pattern) */
 void Music_PlayPartSong(uint16_t Order, uint16_t Row)
 {
+    ClearPlayTables();
     Music_Stop();
 
     NumberOfRows = 200;
@@ -2491,6 +2507,7 @@ void Music_PlayPartSong(uint16_t Order, uint16_t Row)
 
 void Music_PlaySong(uint16_t Order)
 {
+    ClearPlayTables();
     Music_Stop();
 
     MIDIPitchDepthSent = 0;

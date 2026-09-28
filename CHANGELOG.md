@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **F3 sample list as in IT 2.14** (#12): the numbers sit left of the list,
+  followed by a divider and the **Play** column (bright for slots with a
+  sample, dark for empty ones). The **play dots** next to the numbers
+  show which samples are playing (large dot when just triggered) and
+  which have played since playback started. F4 shows the same dots for
+  instruments. The list keeps its scroll position like the original,
+  instead of re-centring.
 - **Shift-F5: Miniaudio Driver screen** (a deliberate extension): output
   device, the sample rates that device supports (up to 192 kHz), buffer
   size, 16-bit dithered / 24-bit / 32-bit float output, and on Windows

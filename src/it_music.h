@@ -67,6 +67,7 @@ void Load_OldInstrument(const uint8_t *src, instrument_t *in);
 extern hostchn_t  HChn[64];     /* HostChannelInformationTable  */
 extern slavechn_t SChn[MAXSLAVECHANNELS]; /* SlaveChannelInformationTable */
 extern uint8_t    OrderLockFlag;  /* Alt-F11 order lock (bit 0) */
+extern uint8_t    SamplePlayTable[128], InstrumentPlayTable[128];
 extern uint8_t    MuteChannelTable[64];
 
 #define SLAVE(hc)  (&SChn[(hc)->SCOffst])

@@ -2911,6 +2911,46 @@ static int handle_sample_altkey(int key)
     return 1;
 }
 
+/* I_ShowSamplePlay / I_ShowInstrumentPlay (IT_I.ASM 8443): refresh the
+ * live bits of a play table from the slave channels (1 = playing and not
+ * muted, 2 = just started), then draw a column of dots at x=1 for the
+ * 35 list rows: none, a dark small dot (173, attr 21h) for "has been
+ * played", a bright small dot (23h) while it plays, a large bright dot
+ * (183) when it has just been triggered. `first` is the table index of
+ * the top row. */
+static void draw_play_dots(uint8_t *table, int first, int instrument)
+{
+    int i;
+
+    for (i = 0; i < 100; i++)
+        table[i] &= (uint8_t)~3;
+    for (i = 0; i < MAXSLAVECHANNELS; i++) {
+        const slavechn_t *sc = &SChn[i];
+        int k = instrument ? sc->Ins : sc->Smp;
+        if (!(sc->Flags & SF_CHAN_ON) || (sc->Flags & SF_CHN_MUTED))
+            continue;
+        if (k >= 100)
+            continue;
+        table[k] |= 1;
+        if (sc->OldSampleOffset == 0)
+            table[k] |= 2;
+    }
+    for (i = 0; i < 35; i++) {
+        int k = first + i;
+        uint8_t d = k >= 0 && k < 128 ? table[k] : 0;
+        uint8_t ch = 0, a = 0x21;
+        if (d != 0) {
+            ch = 173;
+            if (d != 4) {
+                a = 0x23;
+                if (d & 2)
+                    ch = 183;
+            }
+        }
+        Screen_PutChar(1, 13 + i, ch, a);
+    }
+}
+
 static void draw_samples(void)
 {
     int i, n = 99;              /* IT lists all 99 slots */
@@ -2919,25 +2959,44 @@ static void draw_samples(void)
 
     if (ListSel < 0) ListSel = 0;
     if (ListSel >= n) ListSel = n - 1;
-    top = ListSel - rows / 2;
+    top = SmpListTop;                   /* TopSample: scroll only when */
+    if (ListSel < top) top = ListSel;   /* the selection leaves view   */
+    if (ListSel > top + rows - 1) top = ListSel - (rows - 1);
     if (top > n - rows) top = n - rows;
     if (top < 0) top = 0;
     SmpListTop = top;
 
     Screen_DrawBox(4, 12, 35, 48, 27);          /* SampleListBox */
+    /* I_DrawSampleList (IT_I.ASM 998): number at (2,y) attr 20h, the
+     * 25-char name at (5,y) attr 06h, divider 168 at x=30 attr 02h,
+     * "Play" at x=31 (attr 06h with a sample, 07h without); the current
+     * row's 30 cells take bg E. Focused (I_PreSampleList): the name
+     * cursor cell, or with the cursor on the Play column (SamplePos 25)
+     * its four cells, turn 30h (60h for an empty slot). */
     for (i = 0; i < rows; i++) {
-        int idx = top + i;
-        uint8_t a = (idx == ListSel) ? 0x30 : 0x06;
+        int idx = top + i, x;
+        uint8_t pa;
         if (idx < 0 || idx >= n)
             continue;
-        if (idx == ListSel && SamplePos < 25)
-            a = 0x06;           /* name editing: cursor cell only
-                                   (I_PreSampleList1) */
-        drawf(5, 13 + i, a, "%02d:", idx + 1);
-        draw_itname(8, 13 + i, Song.Smp[idx].SampleName, 26, a);
-        if (idx == ListSel && SamplePos < 25)
-            Screen_SetAttr(8 + SamplePos, 13 + i, 0x30);
+        drawf(2, 13 + i, 0x20, "%02d", (idx + 1) % 100);
+        draw_itname(5, 13 + i, Song.Smp[idx].SampleName, 25, 0x06);
+        Screen_PutChar(30, 13 + i, 168, 0x02);
+        pa = (Song.Smp[idx].Flags & 1) ? 0x06 : 0x07;
+        Screen_DrawString(31, 13 + i, "Play", pa);
+        if (idx != ListSel)
+            continue;
+        for (x = 5; x < 35; x++)
+            Screen_SetAttr(x, 13 + i,
+                           (uint8_t)((Screen_GetAttr(x, 13 + i) & 0x0F) | 0xE0));
+        if (FocusIdx[SCR_SAMPLES] == 0) {       /* the list widget */
+            if (SamplePos < 25)
+                Screen_SetAttr(5 + SamplePos, 13 + i, 0x30);
+            else
+                for (x = 31; x < 35; x++)
+                    Screen_SetAttr(x, 13 + i, pa == 0x06 ? 0x30 : 0x60);
+        }
     }
+    draw_play_dots(SamplePlayTable, top, 0);
 
     s = &Song.Smp[ListSel];
 
@@ -3991,6 +4050,8 @@ static void draw_instruments(void)
         if (idx == ListSel && InstrumentEdit)
             Screen_SetAttr(5 + InstrumentPos, 13 + i, 0x30);
     }
+    if (Song.Header.Flags & ITF_INSTRUMENTS)    /* I_ShowInstrumentPlay */
+        draw_play_dots(InstrumentPlayTable, top + 1, 1);
 
     /* tab buttons (G/V-InstrumentGeneral/Volume/Panning/PitchButton) */
     IdxTabBtn = NW + InsTab;
@@ -8993,7 +9054,7 @@ static void sample_list_lclick(int row, int mx, int mpx)
         ListSel = SmpListTop + row;
     /* I_SelectInstrument: click position places the name cursor
      * (left of the name = the note-play stop) */
-    SamplePos = (mx >= 8 && mx - 8 < 25) ? mx - 8 : 25;
+    SamplePos = (mx >= 5 && mx - 5 < 25) ? mx - 5 : 25;
 }
 
 static void instr_list_lclick(int row, int mx, int mpx)
@@ -12777,6 +12838,20 @@ int main(int argc, char **argv)
                 InsTab = (uint8_t)(atoi(getenv("ITED_SHOT_TAB")) & 3);
             if (getenv("ITED_SHOT_SAMPLE"))    /* F3 list selection */
                 ListSel = atoi(getenv("ITED_SHOT_SAMPLE")) - 1;
+            if (scr != SCR_INFO && getenv("ITED_SHOT_PLAY")) {
+                /* play + mix n seconds before capturing any other screen
+                 * (the F3/F4 play dots, for instance) */
+                static int16_t pbuf2[2048 * 2];
+                uint32_t left = (uint32_t)(atoi(getenv("ITED_SHOT_PLAY")) > 0
+                                           ? atoi(getenv("ITED_SHOT_PLAY")) : 1)
+                                * WAVDriver_GetMixSpeed();
+                Music_PlaySong(0);
+                while (left) {
+                    uint32_t n = left > 2048 ? 2048 : left;
+                    WAVDriver_Render(pbuf2, n);
+                    left -= n;
+                }
+            }
             if (scr == SCR_INFO) {         /* Glbl_F5 entry side effect */
                 Screen_DefineSmallNumbers();
                 /* capture aids: view method for window 0, play state */
@@ -14139,6 +14214,28 @@ int main(int argc, char **argv)
                 redraw();
                 if (Screen != SCR_DRIVER || NW < 12 || DrvNRates < 1)
                     hk_ok = 0;
+                Screen = SCR_PATTERN;
+            }
+            /* issue #12: F3 as I_DrawSampleList -- number at x=2, divider
+             * 168 at x=30, "Play" at x=31, the played dot at x=1 */
+            {
+                int keepsel = ListSel;
+                Screen = SCR_SAMPLES;
+                ListSel = 0;
+                SmpListTop = 0;
+                memset(SamplePlayTable, 0, sizeof(SamplePlayTable));
+                SamplePlayTable[1] = 4;             /* sample 02: played */
+                redraw();
+                if (Screen_GetCell(2, 13).ch != '0' ||
+                    Screen_GetCell(3, 13).ch != '1' ||
+                    Screen_GetCell(30, 13).ch != 168 ||
+                    Screen_GetCell(31, 13).ch != 'P' ||
+                    Screen_GetCell(34, 13).ch != 'y' ||
+                    Screen_GetCell(1, 14).ch != 173 ||
+                    Screen_GetCell(1, 13).ch == 173)
+                    hk_ok = 0;
+                memset(SamplePlayTable, 0, sizeof(SamplePlayTable));
+                ListSel = keepsel;
                 Screen = SCR_PATTERN;
             }
             /* Alt+M on F3/F4 is the Alt op, not the piano key M */
