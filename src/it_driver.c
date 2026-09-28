@@ -21,6 +21,19 @@
  *    bypassed by default: its parameters lived in the user's saved
  *    driver configuration, and the source-default volumes would mute
  *    the output entirely.
+ *
+ * Deliberate extensions (Shift-F5 "Miniaudio Driver" screen; all off /
+ * at the original's values by default, so default playback stays
+ * bit-identical):
+ *  - mix rates up to 192 kHz (the original stops at 64 kHz); above
+ *    64 kHz the volume ramp shift grows so ramps keep their length in
+ *    time;
+ *  - 24-bit and 32-bit float output next to the original 16-bit
+ *    error-feedback dithered conversion (the mix carries 14 more bits
+ *    than 16-bit output keeps);
+ *  - the Sound Blaster 16 driver's output filter (50% / 75% one-pole
+ *    low-pass) and feedback modes (previous tick at half volume,
+ *    separated or crossed), SB16DRV.ASM.
  */
 
 #include <math.h>
@@ -33,14 +46,24 @@
 #define VOLUMERAMP      1
 #define DOUBLEVOLUME    0
 #define DITHEROUTPUT    1
-#define RAMPSPEED       8
-#define RAMPCOMPENSATE  255
+#define RAMPSPEED       8     /* at <= 64 kHz; see RampShift */
+#define RAMPCOMPENSATE  255   /* 2^RAMPSPEED - 1 */
 
-#define MAXMIXFRAMES    8192    /* >= 2.5*64000/32 + 1 */
+#define MAXMIXFRAMES    16384   /* >= 2.5*192000/31 + 1 (original: 8192
+                                   for 64 kHz) */
 
 /* ---- Driver state (WAVDRV.ASM data area) ---------------------------- */
 
-static uint16_t MixSpeed = 44100;
+static uint32_t MixSpeed = 44100;
+/* volume ramp step: the original's shift 8 (compensation 255) up to
+ * 64 kHz; one more per doubling above, so a ramp lasts as long */
+static int      RampShift = RAMPSPEED;
+static int32_t  RampComp = RAMPCOMPENSATE;
+/* extensions (see header): output format 0 = 16-bit dithered, 1 = 24-bit
+ * in a 32-bit container, 2 = 32-bit float; SB16 filter 0/1/2 = none/
+ * 50%/75%; SB16 feedback 0/1/2 = none/separated/crossed */
+static int      OutFormat = 0, SBFilter = 0, SBFeedback = 0;
+static int64_t  SBFilterL, SBFilterR;
 static uint16_t MixVolume = 0;
 static uint8_t  Stereo = 0, StereoSet = 0;
 static uint16_t WBytesToMix = 0;
@@ -276,7 +299,7 @@ static int64_t MixInner(slavechn_t *sc, const void *smpdata, int is16,
             LastLeftValue = eax;
             si[1] = (int32_t)((uint32_t)si[1] + (uint32_t)eax);
 
-            LVC += (LVSet - LVC) >> RAMPSPEED;
+            LVC += (LVSet - LVC) >> RampShift;
         } else {
             eax = (int32_t)((uint32_t)smp * (uint32_t)LVC);
             si[0] = (int32_t)((uint32_t)si[0] - (uint32_t)eax);
@@ -286,8 +309,8 @@ static int64_t MixInner(slavechn_t *sc, const void *smpdata, int is16,
             si[1] = (int32_t)((uint32_t)si[1] - (uint32_t)eax);
             LastRightValue = eax;
 
-            LVC += (LVSet - LVC) >> RAMPSPEED;
-            RVC += (RVSet - RVC) >> RAMPSPEED;
+            LVC += (LVSet - LVC) >> RampShift;
+            RVC += (RVSet - RVC) >> RampShift;
         }
 
         si += 2;
@@ -321,11 +344,11 @@ static void PreMix(slavechn_t *sc, int surround)
         bx = newL;
         LVC = ax;
         if (bx >= ax)
-            bx += RAMPCOMPENSATE;
+            bx += RampComp;
         LVSet = bx;
 
         for (cx = RealBytesToMix; cx != 0; cx--)
-            ax += (bx - ax) >> RAMPSPEED;
+            ax += (bx - ax) >> RampShift;
 
         sc->RightVolume = (int32_t)((sc->RightVolume & 0xFFFF) |
                                     ((uint32_t)(uint16_t)ax << 16));
@@ -341,16 +364,16 @@ static void PreMix(slavechn_t *sc, int surround)
     LVC = bp;
 
     if (ax >= dx)
-        ax += RAMPCOMPENSATE;
+        ax += RampComp;
     if (bx >= bp)
-        bx += RAMPCOMPENSATE;
+        bx += RampComp;
 
     RVSet = ax;
     LVSet = bx;
 
     for (cx = RealBytesToMix; cx != 0; cx--) {
-        dx += (ax - dx) >> RAMPSPEED;
-        bp += (bx - bp) >> RAMPSPEED;
+        dx += (ax - dx) >> RampShift;
+        bp += (bx - bp) >> RampShift;
     }
 
     sc->RightVolume = (int32_t)((uint16_t)dx |
@@ -687,8 +710,15 @@ static void M32MixHandler(void)
             int32_t eax = edx >> 12;
             int32_t ebx = ebp >> 12;
 
-            si[0] = edx;
-            si[1] = ebp;
+            if (SBFeedback) {           /* SB16 MixSamples: the buffer is
+                                           halved, not cleared */
+                int32_t ol = si[0] >> 1, orr = si[1] >> 1;
+                si[0] = edx + (SBFeedback == 1 ? ol : orr);
+                si[1] = ebp + (SBFeedback == 1 ? orr : ol);
+            } else {
+                si[0] = edx;
+                si[1] = ebp;
+            }
 
             if (eax == 0)
                 eax = 1;
@@ -972,6 +1002,8 @@ static int WAV_InitSound(void)
 
     memset(FilterValues, 0, sizeof(FilterValues));
     memset(EQBand, 0, sizeof(EQBand));
+    memset(MixBuffer, 0, sizeof(MixBuffer));    /* no stale feedback */
+    SBFilterL = SBFilterR = 0;
     ResetFilters();
 
     FreqMultiplier = (float)MixSpeed * f32_from_bits(FREQMULTIPLIER_BASE_BITS);
@@ -997,15 +1029,19 @@ const sounddriver_t WAVDriver = {
 /* ---- render API ------------------------------------------------------ */
 
 static int16_t OutBuffer[MAXMIXFRAMES * 2];
+static int32_t OutWide[MAXMIXFRAMES * 2];      /* 24-bit / float bits */
 /* OutFilled / OutPos are declared and reset up in WAV_InitSound. */
 
 void WAVDriver_SetMixSpeed(uint32_t hz)
 {
     if (hz < 8000)
         hz = 8000;
-    if (hz > 64000)
-        hz = 64000;
-    MixSpeed = (uint16_t)hz;
+    if (hz > 192000)                    /* extension: original 64000 */
+        hz = 192000;
+    MixSpeed = hz;
+    RampShift = hz <= 64000 ? RAMPSPEED : hz <= 128000 ? RAMPSPEED + 1
+                                                       : RAMPSPEED + 2;
+    RampComp = (1 << RampShift) - 1;
 }
 
 uint32_t WAVDriver_GetMixSpeed(void)
@@ -1038,6 +1074,55 @@ static void DoTick(void)
     M32MixHandler();
     if (Engine_Unlock)
         Engine_Unlock();
+
+    /* SB16 output filter (SB16IRQHFilter / 3QFilter): one-pole low-pass
+     * on the finished mix, y = (y+x)/2 or y = 3/4 y + 1/4 x */
+    if (SBFilter) {
+        int32_t *p = MixBuffer;
+        int64_t l = SBFilterL, r = SBFilterR;
+        for (cx = RealBytesToMix; cx != 0; cx--, p += 2) {
+            if (SBFilter == 1) {
+                l = (l + p[0]) >> 1;
+                r = (r + p[1]) >> 1;
+            } else {
+                l = (l + ((l + p[0]) >> 1)) >> 1;
+                r = (r + ((r + p[1]) >> 1)) >> 1;
+            }
+            p[0] = (int32_t)l;
+            p[1] = (int32_t)r;
+        }
+        SBFilterL = l;
+        SBFilterR = r;
+    }
+
+    if (OutFormat != 0) {               /* 24-bit / float: no dither */
+        int32_t *w = OutWide;
+        si = MixBuffer;
+        di = OutBuffer;                 /* 16-bit copy for the Alt-F12 tap */
+        for (cx = RealBytesToMix; cx != 0; cx--, si += 2, w += 2, di += 2) {
+            int k;
+            for (k = 0; k < 2; k++) {
+                int32_t v = Stereo ? si[k] : si[0];
+                int32_t t = v >> 14;
+                if (t < -0x8000) t = -0x8000; else if (t > 0x7FFF) t = 0x7FFF;
+                di[k] = (int16_t)t;
+                if (OutFormat == 1) {   /* 24 significant bits */
+                    int32_t x = v >> 6;
+                    if (x < -0x800000) { x = -0x800000; NumClipped++; }
+                    else if (x > 0x7FFFFF) { x = 0x7FFFFF; NumClipped++; }
+                    w[k] = x * 256;
+                } else {                /* full scale = 2^29 */
+                    float f = (float)v * (1.0f / 536870912.0f);
+                    if (f < -1.0f) { f = -1.0f; NumClipped++; }
+                    else if (f > 1.0f) { f = 1.0f; NumClipped++; }
+                    memcpy(&w[k], &f, 4);
+                }
+            }
+        }
+        OutFilled = RealBytesToMix;
+        OutPos = 0;
+        return;
+    }
 
     /* convert (DITHEROUTPUT path: error-feedback) */
     si = MixBuffer;
@@ -1109,6 +1194,44 @@ void WAVDriver_GetWaveForm(int16_t *out2048)
 
     for (i = 0; i < 2048; i++)
         out2048[i] = WaveTap[(p + i) & 2047];
+}
+
+void WAVDriver_Render(int16_t *dst, uint32_t frames);
+
+void WAVDriver_SetOutputFormat(int fmt)    { OutFormat = fmt >= 0 && fmt <= 2 ? fmt : 0; }
+int  WAVDriver_GetOutputFormat(void)       { return OutFormat; }
+void WAVDriver_SetSBFilter(int mode)       { SBFilter = mode >= 0 && mode <= 2 ? mode : 0; }
+void WAVDriver_SetSBFeedback(int mode)     { SBFeedback = mode >= 0 && mode <= 2 ? mode : 0; }
+void WAVDriver_SetStartRamp(int on)        { StartNoRamp = on ? 0 : 1; }
+
+/* any output format: 16-bit frames are int16 pairs, 24-bit ones int32
+ * pairs (24 significant bits), float ones float pairs */
+void WAVDriver_RenderAny(void *dst, uint32_t frames)
+{
+    uint8_t *d = (uint8_t *)dst;
+
+    if (OutFormat == 0) {
+        WAVDriver_Render((int16_t *)dst, frames);
+        return;
+    }
+    while (frames != 0) {
+        uint32_t n, i;
+
+        if (OutPos >= OutFilled)
+            DoTick();
+        n = OutFilled - OutPos;
+        if (n > frames)
+            n = frames;
+        memcpy(d, &OutWide[OutPos * 2], n * 8);
+        for (i = 0; i < n; i++) {
+            const int16_t *t = &OutBuffer[(OutPos + i) * 2];
+            WaveTap[WaveTapPos] = (int16_t)((t[0] + t[1]) >> 1);
+            WaveTapPos = (WaveTapPos + 1) & 2047;
+        }
+        d += n * 8;
+        OutPos += n;
+        frames -= n;
+    }
 }
 
 void WAVDriver_Render(int16_t *dst, uint32_t frames)

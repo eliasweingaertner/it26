@@ -293,6 +293,21 @@ the 2*Alt-N Multichannel Selection dialog and the F3/F4 `` ` `` solo and
 
 ## Fidelity notes (deviations from the DOS binary)
 
+- Deviation: **Shift-F5 opens a "Miniaudio Driver" screen** instead of a
+  sound card driver's screen, because the port plays through miniaudio
+  with IT's WAV writer mixer. It picks the output device, the sample rate
+  (only the rates the device reports natively; up to 192 kHz, the
+  original stops at 64 kHz), the buffer size and the output format
+  (16-bit dithered as in the original, 24-bit, or 32-bit float), and on
+  Windows shared or **exclusive** device access. Exclusive mode lists the
+  rates the device accepts exclusively and opens it at the chosen rate
+  (the vendored miniaudio carries a small, marked patch for that). It also
+  offers the Sound Blaster 16 driver's output filter (50%/75% low-pass)
+  and feedback modes, and the WAV driver's "ramp volume at start of
+  sample". The defaults are the original's (44.1 kHz, 16-bit, no filter),
+  and with them playback is bit-identical. Settings are saved to
+  `ited.cfg` (`audio_*`) with Save Prefs.
+
 Load Sample screen (feature 015):
 - F3 Enter and Ctrl-F3 open a transliteration of the original's Load
   Sample / Sample Library screen (`O1_LoadSampleList`,

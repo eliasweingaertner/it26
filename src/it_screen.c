@@ -823,6 +823,7 @@ static void Term_CsiFinal(uint8_t f)
         case 15:
             if (mod == 3)      Term_PushKey(ITK_ALT_F1 + 4);
             else if (mod == 5) Term_PushKey(ITK_CTRL_F5);
+            else if (mod == 2) Term_PushKey(ITK_SHIFT_F5);
             else if (mod <= 1) Term_PushKey(ITK_F5);
             return;
         case 17: case 18: case 19: case 20: case 21: {

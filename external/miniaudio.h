@@ -23707,6 +23707,22 @@ static ma_result ma_device_init_internal__wasapi(ma_context* pContext, ma_device
                     MA_COPY_MEMORY(&wf, pActualFormat, sizeof(MA_WAVEFORMATEXTENSIBLE));
                 }
 
+                /*
+                ittrack patch: prefer the requested sample rate when the device accepts it exclusively in its native
+                bit depth and channel layout, instead of always opening at the native rate and resampling. Falls
+                back to the native format above when the device refuses.
+                */
+                if (pData->sampleRateIn != 0 && pData->sampleRateIn != pActualFormat->nSamplesPerSec) {
+                    MA_WAVEFORMATEXTENSIBLE want;
+                    MA_COPY_MEMORY(&want, pActualFormat, sizeof(MA_WAVEFORMATEXTENSIBLE));
+                    want.nSamplesPerSec  = pData->sampleRateIn;
+                    want.nAvgBytesPerSec = want.nSamplesPerSec * want.nBlockAlign;
+                    if (SUCCEEDED(ma_IAudioClient_IsFormatSupported((ma_IAudioClient*)pData->pAudioClient, MA_AUDCLNT_SHAREMODE_EXCLUSIVE, (MA_WAVEFORMATEX*)&want, NULL))) {
+                        MA_COPY_MEMORY(&wf, &want, sizeof(MA_WAVEFORMATEXTENSIBLE));
+                        hr = S_OK;
+                    }
+                }
+
                 ma_PropVariantClear(pContext, &prop);
             }
 

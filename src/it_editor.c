@@ -64,12 +64,19 @@ void WAVDriver_Render(int16_t *dst, uint32_t frames);
 void WAVDriver_SetMixSpeed(uint32_t hz);
 uint32_t WAVDriver_GetMixSpeed(void);
 void WAVDriver_GetWaveForm(int16_t *out2048);   /* feature 013 tap */
+/* Shift-F5 extensions (it_driver.c) */
+void WAVDriver_RenderAny(void *dst, uint32_t frames);
+void WAVDriver_SetOutputFormat(int fmt);
+int  WAVDriver_GetOutputFormat(void);
+void WAVDriver_SetSBFilter(int mode);
+void WAVDriver_SetSBFeedback(int mode);
+void WAVDriver_SetStartRamp(int on);
 int  Music_LoadIT(const char *path);
 void Music_FreeIT(void);
 
 enum { SCR_HELP, SCR_PATTERN, SCR_SAMPLES, SCR_INSTRUMENTS,
        SCR_ORDER, SCR_VARS, SCR_INFO, SCR_MESSAGE, SCR_KEYS,
-       SCR_COUNT };
+       SCR_DRIVER, SCR_COUNT };
 
 /* ---- editor state ---- */
 static int      Screen = SCR_PATTERN;
@@ -4406,6 +4413,7 @@ static int help_context_of(int scr)
     case SCR_VARS:        return 5;
     case SCR_INSTRUMENTS: return 7;
     case SCR_KEYS:        return 8;
+    case SCR_DRIVER:      return 5;
     case SCR_INFO:        return 9;
     case SCR_MESSAGE:     return 12;
     default:              return 1;
@@ -6153,6 +6161,8 @@ static void handle_message_key(int key)
  * Modal overlays (menus) call draw_screen, draw on top, then present
  * once -- presenting twice per frame is what flickered.
  * =================================================================== */
+static void draw_driver(void);              /* Shift-F5 */
+
 static void draw_screen(void)
 {
     static const char *titles[] = {
@@ -6161,6 +6171,7 @@ static void draw_screen(void)
         "Song Variables & Directory Configuration (F12)",
         "Info Page (F5)", "Message Editor (Shift-F9)",   /* DisplayHeader,
                                                         IT_OBJ1.ASM 6580 */
+        "Keyboard (Ctrl-F1)", "Miniaudio Driver (Shift-F5)",
     };
 
     Screen_Clear(0x20);
@@ -6180,6 +6191,7 @@ static void draw_screen(void)
     case SCR_VARS:        draw_vars(); break;
     case SCR_HELP:        draw_help(); break;
     case SCR_KEYS:        NW = 0; draw_keys(); break;
+    case SCR_DRIVER:      draw_driver(); break;
     case SCR_INFO:        NW = 0; draw_info(); break;
     case SCR_MESSAGE:     NW = 0; draw_message(); break;
     }
@@ -9375,6 +9387,8 @@ static void act_help_done(void)             /* H_HelpESC */
     Screen = HelpReturnScreen;
 }
 
+static void audio_pref_save(FILE *fp);
+
 static void act_save_prefs(void)
 {
     FILE *fp = fopen("ited.cfg", "w");
@@ -9382,6 +9396,7 @@ static void act_save_prefs(void)
         status("Can't write ited.cfg here.");
         return;
     }
+    audio_pref_save(fp);
     fprintf(fp, "moduledir=%s\nsampledir=%s\ninstrdir=%s\n"
             "octave=%d\nstep=%d\n"
             "peconfig=%d\nviewdivision=%d\nviewtracking=%d\n"
@@ -10078,6 +10093,7 @@ static int modal_global_key(int key, int help_context)
     case ITK_F2: case ITK_F3: case ITK_F4: case ITK_F5:
     case ITK_F9: case ITK_F10: case ITK_F11: case ITK_F12:
     case ITK_CTRL_F1: case ITK_CTRL_F3: case ITK_CTRL_F4: case ITK_SHIFT_F9:
+    case ITK_SHIFT_F5:
         PendingGlobalKey = key;
         return 2;
     default:
@@ -11439,6 +11455,8 @@ static void new_song(void)
 
 /* ited.cfg: directories + octave/edit step, written by the F12 "Save
  * all Preferences" button */
+static void audio_pref_line(const char *line);
+
 static void load_prefs(void)
 {
     FILE *fp = fopen("ited.cfg", "r");
@@ -11472,6 +11490,8 @@ static void load_prefs(void)
         else if (!strncmp(line, "keyboard_cfg=", 13))
             snprintf(KeyboardCfg, sizeof(KeyboardCfg),
                      "%.*s", (int)sizeof(KeyboardCfg) - 1, line + 13);
+        else
+            audio_pref_line(line);          /* audio_* (Shift-F5) */
     }
     fclose(fp);
     if (BaseOctave < 0) BaseOctave = 0;
@@ -11628,8 +11648,9 @@ static int act_pb_reinit(void)
     status("Sound driver reinitialised.");
     return 1;
 }
+static void drv_open(void);
 static int act_pb_driver(void)
-{ status("Driver screen not ported yet."); return 1; }
+{ drv_open(); return 1; }
 static int act_pb_length(void)
 { status("Calculate Length not ported yet."); return 1; }
 
@@ -11887,6 +11908,7 @@ static void handle_global(int key)
     case 0x0E:    act_file_new(); return;   /* Ctrl-N: F_NewSong */
     case 0x10:    act_pb_length(); return;  /* Ctrl-P: Music_TimeSong */
     case ITK_CTRL_F4: act_ins_lib(); return;    /* Glbl_Ctrl_F4 */
+    case ITK_SHIFT_F5: drv_open(); return;      /* Glbl_DriverScreen */
     case ITK_CTRL_F5:                       /* Glbl_Ctrl_F5: from order 0 */
         commit_current_pattern(); pe_store_point(); play_song(); return;
     case ITK_SHIFT_F6:                      /* Glbl_Shift_F6: from the
@@ -11974,7 +11996,546 @@ static void handle_global(int key)
 static void audio_cb(ma_device *d, void *out, const void *in, ma_uint32 fr)
 {
     (void)d; (void)in;
-    WAVDriver_Render((int16_t *)out, fr);
+    WAVDriver_RenderAny(out, fr);
+}
+
+/* ===================================================================
+ * Shift-F5: Miniaudio Driver screen (deliberate extension)
+ *
+ * The original's Shift-F5 shows the loaded sound card driver's own
+ * screen (Glbl_DriverScreen). The port plays through miniaudio with the
+ * WAV writer's mixer, so this screen configures that path instead:
+ * output device, sample rate (only the rates the selected device reports
+ * natively), buffer size and output format -- applied with Apply, as
+ * they reopen the device -- plus live mixer options: the Sound Blaster 16
+ * driver's output filter and feedback modes (SB16DRV.ASM) and the WAV
+ * driver's "Ramp volume at start of sample". Saved to ited.cfg (audio_*)
+ * with Save Prefs. Defaults are the original's: system device, 44.1 kHz,
+ * 16-bit dithered, no filter/feedback, ramp on.
+ * =================================================================== */
+static ma_context      AudioCtx;
+static int             AudioCtxUp = 0;
+static ma_device_info *AudDevs = NULL;
+static ma_uint32       AudNDev = 0;
+
+static char     AudDevName[256] = "";       /* "" = system default */
+static uint32_t AudRate = 44100;
+static int      AudFormat = 0;              /* 0 16-bit, 1 24-bit, 2 float */
+static uint32_t AudBuffer = 0;              /* frames, 0 = backend's */
+static int      AudFilter = 0, AudFeedback = 0, AudRamp = 1;
+static int      AudExclusive = 0;           /* WASAPI exclusive mode */
+static int      AudRateFromCmdline = 0;
+
+static char     AudStatus[4][48];           /* the running device */
+
+#define DRV_MAXRATE 10
+static uint8_t  DrvSelDev, DrvSelRate, DrvSelFmt, DrvSelBuf;
+static uint8_t  DrvSelFilter, DrvSelFeedback, DrvSelRamp, DrvSelExcl;
+static int      DrvDevTop;
+static uint8_t  DrvOpenDev, DrvOpenRate, DrvOpenFmt, DrvOpenBuf,
+                DrvOpenExcl;                /* as opened: Apply pending? */
+static uint32_t DrvRates[DRV_MAXRATE];
+static int      DrvNRates;
+static char     DrvRateLbl[DRV_MAXRATE][14];
+static const uint32_t DrvBuffers[6] = { 0, 256, 512, 1024, 2048, 4096 };
+static const char *const DrvBufLbl[6] = {
+    " Default", "     256", "     512", "    1024", "    2048", "    4096"
+};
+static const char *const DrvFmtLbl[3] = {
+    "  16 Bit, Dithered (original)", "  24 Bit", "  32 Bit Float"
+};
+
+static void audio_pref_line(const char *line)
+{
+    if (!strncmp(line, "audio_device=", 13))
+        snprintf(AudDevName, sizeof(AudDevName), "%s", line + 13);
+    else if (!strncmp(line, "audio_rate=", 11))
+        AudRate = (uint32_t)strtoul(line + 11, NULL, 10);
+    else if (!strncmp(line, "audio_format=", 13))
+        AudFormat = atoi(line + 13) % 3;
+    else if (!strncmp(line, "audio_buffer=", 13))
+        AudBuffer = (uint32_t)strtoul(line + 13, NULL, 10);
+    else if (!strncmp(line, "audio_filter=", 13))
+        AudFilter = atoi(line + 13) % 3;
+    else if (!strncmp(line, "audio_feedback=", 15))
+        AudFeedback = atoi(line + 15) % 3;
+    else if (!strncmp(line, "audio_ramp=", 11))
+        AudRamp = atoi(line + 11) ? 1 : 0;
+    else if (!strncmp(line, "audio_exclusive=", 16))
+        AudExclusive = atoi(line + 16) ? 1 : 0;
+}
+
+static void audio_pref_save(FILE *fp)
+{
+    fprintf(fp, "audio_device=%s\naudio_rate=%u\naudio_format=%d\n"
+            "audio_buffer=%u\naudio_filter=%d\naudio_feedback=%d\n"
+            "audio_ramp=%d\naudio_exclusive=%d\n", AudDevName,
+            (unsigned)AudRate, AudFormat, (unsigned)AudBuffer, AudFilter,
+            AudFeedback, AudRamp, AudExclusive);
+}
+
+static void audio_context(void)
+{
+    if (!AudioCtxUp && ma_context_init(NULL, 0, NULL, &AudioCtx) == MA_SUCCESS)
+        AudioCtxUp = 1;
+    if (AudioCtxUp &&
+        ma_context_get_devices(&AudioCtx, &AudDevs, &AudNDev, NULL, NULL)
+            != MA_SUCCESS) {
+        AudDevs = NULL;
+        AudNDev = 0;
+    }
+}
+
+/* exclusive mode exists on Windows' WASAPI only (miniaudio refuses it
+ * elsewhere) */
+static int audio_has_exclusive(void)
+{
+#if defined(MA_HAS_WASAPI)
+    return AudioCtxUp && AudioCtx.backend == ma_backend_wasapi;
+#else
+    return 0;
+#endif
+}
+
+#if defined(MA_HAS_WASAPI)
+/* The rates the device accepts in exclusive mode. miniaudio's device info
+ * carries a single exclusive format, so each standard rate is asked for
+ * directly with IAudioClient::IsFormatSupported(EXCLUSIVE), stereo, in
+ * float/32/24/16-bit. This only queries the driver -- the device is not
+ * opened and other programs keep playing. Returns the count. */
+static int wasapi_exclusive_rates(int devsel, const uint32_t *std, int nstd,
+                                  uint32_t *out)
+{
+    ma_IMMDeviceEnumerator *en = NULL;
+    ma_IMMDevice *dev = NULL;
+    ma_IAudioClient *ac = NULL;
+    HRESULT hr;
+    int n = 0, i, f;
+    static const struct { int bits, valid, flt; } fm[4] = {
+        { 32, 32, 1 }, { 32, 32, 0 }, { 24, 24, 0 }, { 16, 16, 0 }
+    };
+
+    hr = ma_CoCreateInstance((&AudioCtx), &MA_CLSID_MMDeviceEnumerator, NULL,
+                             CLSCTX_ALL, &MA_IID_IMMDeviceEnumerator,
+                             (void **)&en);
+    if (FAILED(hr))
+        return 0;
+    if (devsel > 0 && devsel <= (int)AudNDev)
+        hr = ma_IMMDeviceEnumerator_GetDevice(en, AudDevs[devsel - 1].id.wasapi,
+                                              &dev);
+    else
+        hr = ma_IMMDeviceEnumerator_GetDefaultAudioEndpoint(en, ma_eRender,
+                                                            ma_eConsole, &dev);
+    if (SUCCEEDED(hr))
+        hr = ma_IMMDevice_Activate(dev, &MA_IID_IAudioClient, CLSCTX_ALL,
+                                   NULL, (void **)&ac);
+    if (SUCCEEDED(hr)) {
+        for (i = 0; i < nstd; i++)
+            for (f = 0; f < 4; f++) {
+                MA_WAVEFORMATEXTENSIBLE wf;
+                memset(&wf, 0, sizeof(wf));
+                wf.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+                wf.nChannels = 2;
+                wf.nSamplesPerSec = std[i];
+                wf.wBitsPerSample = (WORD)fm[f].bits;
+                wf.nBlockAlign = (WORD)(2 * fm[f].bits / 8);
+                wf.nAvgBytesPerSec = wf.nBlockAlign * std[i];
+                wf.cbSize = 22;
+                wf.Samples.wValidBitsPerSample = (WORD)fm[f].valid;
+                wf.dwChannelMask = 0x3;         /* front left + right */
+                wf.SubFormat = fm[f].flt ? MA_GUID_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
+                                         : MA_GUID_KSDATAFORMAT_SUBTYPE_PCM;
+                if (SUCCEEDED(ma_IAudioClient_IsFormatSupported(ac,
+                        MA_AUDCLNT_SHAREMODE_EXCLUSIVE,
+                        (MA_WAVEFORMATEX *)&wf, NULL))) {
+                    out[n++] = std[i];
+                    break;
+                }
+            }
+        ma_IAudioClient_Release(ac);
+    }
+    if (dev)
+        ma_IMMDevice_Release(dev);
+    ma_IMMDeviceEnumerator_Release(en);
+    return n;
+}
+#endif
+
+/* the rates a device reports natively; a device that takes any rate
+ * (nativeDataFormats sampleRate 0) gets the standard list; in exclusive
+ * mode, the rates it accepts exclusively */
+static void drv_fill_rates(int devsel)
+{
+    static const uint32_t std[] = { 22050, 32000, 44100, 48000,
+                                    88200, 96000, 176400, 192000 };
+    ma_device_info info;
+    uint32_t got[64];
+    int any = 0, ng = 0, n = 0, i, j;
+
+#if defined(MA_HAS_WASAPI)
+    if (DrvSelExcl && audio_has_exclusive()) {
+        n = wasapi_exclusive_rates(devsel, std, 8, DrvRates);
+        for (i = 0; i < n; i++)
+            snprintf(DrvRateLbl[i], sizeof(DrvRateLbl[i]), "%6u Hz",
+                     (unsigned)DrvRates[i]);
+        DrvNRates = n;
+        return;
+    }
+#endif
+    memset(&info, 0, sizeof(info));
+    if (AudioCtxUp &&
+        ma_context_get_device_info(&AudioCtx, ma_device_type_playback,
+                                   devsel > 0 && devsel <= (int)AudNDev
+                                       ? &AudDevs[devsel - 1].id : NULL,
+                                   &info) == MA_SUCCESS) {
+        for (i = 0; i < (int)info.nativeDataFormatCount; i++) {
+            uint32_t r = info.nativeDataFormats[i].sampleRate;
+            if (r == 0)
+                any = 1;
+            else if (r >= 8000 && r <= 192000 && ng < 64)
+                got[ng++] = r;
+        }
+    } else
+        any = 1;
+    if (ng == 0)
+        any = 1;
+    for (i = 0; i < 8 && n < DRV_MAXRATE; i++) {
+        int ok = any;
+        for (j = 0; j < ng; j++)
+            if (got[j] == std[i]) ok = 1;
+        if (ok)
+            DrvRates[n++] = std[i];
+    }
+    for (j = 0; j < ng && n < DRV_MAXRATE; j++) {   /* odd native rates */
+        int dup = 0;
+        for (i = 0; i < n; i++)
+            if (DrvRates[i] == got[j]) dup = 1;
+        if (!dup)
+            DrvRates[n++] = got[j];
+    }
+    for (i = 1; i < n; i++)                         /* ascending */
+        for (j = i; j > 0 && DrvRates[j - 1] > DrvRates[j]; j--) {
+            uint32_t t = DrvRates[j];
+            DrvRates[j] = DrvRates[j - 1];
+            DrvRates[j - 1] = t;
+        }
+    for (i = 0; i < n; i++)
+        snprintf(DrvRateLbl[i], sizeof(DrvRateLbl[i]), "%6u Hz",
+                 (unsigned)DrvRates[i]);
+    DrvNRates = n;
+}
+
+static int drv_pick_rate(uint32_t want)
+{
+    static const uint32_t pref[] = { 0, 48000, 44100 };
+    int i, k;
+
+    for (k = 0; k < 3; k++)
+        for (i = 0; i < DrvNRates; i++)
+            if (DrvRates[i] == (k ? pref[k] : want))
+                return i;
+    return 0;
+}
+
+static int drv_dev_index(const char *name)
+{
+    ma_uint32 i;
+
+    if (name[0])
+        for (i = 0; i < AudNDev; i++)
+            if (!strcmp(AudDevs[i].name, name))
+                return (int)i + 1;
+    return 0;
+}
+
+/* the screen shows the current settings each time it is opened */
+static void drv_open(void)
+{
+    int i;
+
+    audio_context();
+    DrvSelDev = (uint8_t)drv_dev_index(AudDevName);
+    DrvSelExcl = (uint8_t)(AudExclusive && audio_has_exclusive());
+    drv_fill_rates(DrvSelDev);
+    DrvSelRate = (uint8_t)drv_pick_rate(AudRate);
+    DrvSelFmt = (uint8_t)AudFormat;
+    DrvSelBuf = 0;
+    for (i = 0; i < 6; i++)
+        if (DrvBuffers[i] == AudBuffer)
+            DrvSelBuf = (uint8_t)i;
+    DrvSelFilter = (uint8_t)AudFilter;
+    DrvSelFeedback = (uint8_t)AudFeedback;
+    DrvSelRamp = (uint8_t)(AudRamp ? 0 : 1);
+    DrvDevTop = DrvSelDev > 7 ? DrvSelDev - 7 : 0;
+    DrvOpenDev = DrvSelDev; DrvOpenRate = DrvSelRate;
+    DrvOpenFmt = DrvSelFmt; DrvOpenBuf = DrvSelBuf;
+    DrvOpenExcl = DrvSelExcl;
+    Screen = SCR_DRIVER;
+}
+
+static void audio_live_apply(void)
+{
+    ed_lock();
+    WAVDriver_SetSBFilter(AudFilter);
+    WAVDriver_SetSBFeedback(AudFeedback);
+    WAVDriver_SetStartRamp(AudRamp);
+    ed_unlock();
+}
+
+/* open the output with the audio_* settings; 1 on success */
+static int audio_open(void)
+{
+    static const ma_format fmts[3] = { ma_format_s16, ma_format_s32,
+                                       ma_format_f32 };
+    ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
+    int d = drv_dev_index(AudDevName);
+
+    cfg.playback.pDeviceID = d ? &AudDevs[d - 1].id : NULL;
+    cfg.playback.format = fmts[AudFormat];
+    cfg.playback.channels = 2;
+    cfg.sampleRate = AudRate;
+    cfg.periodSizeInFrames = AudBuffer;
+    cfg.playback.shareMode = AudExclusive && audio_has_exclusive()
+                           ? ma_share_mode_exclusive : ma_share_mode_shared;
+    cfg.dataCallback = audio_cb;
+    if (ma_device_init(AudioCtxUp ? &AudioCtx : NULL, &cfg, &Device)
+            != MA_SUCCESS)
+        return 0;
+    if (ma_device_start(&Device) != MA_SUCCESS) {
+        ma_device_uninit(&Device);
+        return 0;
+    }
+    DeviceUp = 1;
+    {
+        uint32_t per = Device.playback.internalPeriodSizeInFrames;
+        uint32_t irate = Device.playback.internalSampleRate;
+        snprintf(AudStatus[0], sizeof(AudStatus[0]), "%u Hz, %s%s",
+                 (unsigned)AudRate,
+                 AudFormat == 0 ? "16 Bit" : AudFormat == 1 ? "24 Bit"
+                                                            : "32 Bit Float",
+                 irate && irate != AudRate ? ", resampled" : "");
+        snprintf(AudStatus[1], sizeof(AudStatus[1]),
+                 "Buffer %u frames (%.1f ms)", (unsigned)per,
+                 irate ? per * 1000.0 / irate : 0.0);
+        snprintf(AudStatus[2], sizeof(AudStatus[2]), "%.37s",
+                 Device.playback.name[0] ? Device.playback.name : "Default");
+        snprintf(AudStatus[3], sizeof(AudStatus[3]), "via %s, %s",
+                 AudioCtxUp ? ma_get_backend_name(AudioCtx.backend) : "?",
+                 Device.playback.shareMode == ma_share_mode_exclusive
+                     ? "exclusive" : "shared");
+    }
+    return 1;
+}
+
+/* (re)configure the mixer for AudRate/AudFormat and reopen the device;
+ * falls back to the defaults when the choice cannot be opened */
+static int audio_restart(void)
+{
+    int ok;
+
+    if (DeviceUp) {                         /* no engine lock held here:
+                                               uninit waits for the
+                                               callback, which takes it */
+        ma_device_uninit(&Device);
+        DeviceUp = 0;
+    }
+    ed_lock();
+    Music_Stop();
+    WAVDriver_SetMixSpeed(AudRate);
+    AudRate = WAVDriver_GetMixSpeed();
+    WAVDriver_SetOutputFormat(AudFormat);
+    Driver->InitSound();
+    Music_InitTempo();
+    ed_unlock();
+    audio_live_apply();
+    ok = audio_open();
+    if (!ok) {
+        AudDevName[0] = 0;
+        AudRate = 44100;
+        AudFormat = 0;
+        AudBuffer = 0;
+        AudExclusive = 0;
+        ed_lock();
+        WAVDriver_SetMixSpeed(AudRate);
+        WAVDriver_SetOutputFormat(0);
+        Driver->InitSound();
+        Music_InitTempo();
+        ed_unlock();
+        if (!audio_open())
+            snprintf(AudStatus[0], sizeof(AudStatus[0]), "No audio output");
+    }
+    return ok;
+}
+
+static void act_drv_excl(void);
+
+static void act_drv_device(void)            /* device picked: its rates */
+{
+    uint32_t keep = DrvNRates ? DrvRates[DrvSelRate] : AudRate;
+    drv_fill_rates(DrvSelDev);
+    DrvSelRate = (uint8_t)drv_pick_rate(keep);
+}
+
+static void act_drv_excl(void)              /* shared/exclusive: rates */
+{
+    act_drv_device();
+}
+
+static void act_drv_live(void)              /* filter/feedback/ramp */
+{
+    AudFilter = DrvSelFilter;
+    AudFeedback = DrvSelFeedback;
+    AudRamp = DrvSelRamp == 0;
+    audio_live_apply();
+}
+
+static void act_drv_apply(void)
+{
+    if (DrvSelDev > 0 && DrvSelDev <= AudNDev)
+        snprintf(AudDevName, sizeof(AudDevName), "%s",
+                 AudDevs[DrvSelDev - 1].name);
+    else
+        AudDevName[0] = 0;
+    AudRate = DrvNRates ? DrvRates[DrvSelRate] : 44100;
+    AudFormat = DrvSelFmt;
+    AudBuffer = DrvBuffers[DrvSelBuf];
+    AudExclusive = DrvSelExcl;
+    if (audio_restart())
+        status("Audio output reopened.");
+    else
+        status("That output could not be opened; back to the defaults.");
+    drv_open();                             /* show what is running */
+}
+
+static void act_drv_save(void) { act_save_prefs(); }
+
+static int drv_pending(void)
+{
+    return DrvSelDev != DrvOpenDev || DrvSelRate != DrvOpenRate ||
+           DrvSelFmt != DrvOpenFmt || DrvSelBuf != DrvOpenBuf ||
+           DrvSelExcl != DrvOpenExcl;
+}
+
+/* the device list: box (2,14)-(38,23), eight rows, "System Default"
+ * first; Up/Down/PgUp/PgDn/Home/End pick, the mouse too */
+static void drv_list_draw(int focused)
+{
+    int i, n = (int)AudNDev + 1;
+
+    Screen_DrawBox(2, 14, 38, 23, 27);
+    for (i = 0; i < 8 && DrvDevTop + i < n; i++) {
+        int e = DrvDevTop + i;
+        const char *nm = e == 0 ? "System Default" : AudDevs[e - 1].name;
+        uint8_t a = e == DrvSelDev ? (focused ? 0x30 : 0x23) : 0x06;
+        int k;
+        for (k = 3; k <= 37; k++)
+            Screen_PutChar(k, 15 + i, ' ', a);
+        drawf(3, 15 + i, a, "%.35s", nm);
+    }
+}
+
+static void drv_list_sel(int e)
+{
+    int n = (int)AudNDev + 1;
+
+    if (e < 0) e = 0;
+    if (e > n - 1) e = n - 1;
+    if (e == DrvSelDev)
+        return;
+    DrvSelDev = (uint8_t)e;
+    if (DrvSelDev < DrvDevTop) DrvDevTop = DrvSelDev;
+    if (DrvSelDev > DrvDevTop + 7) DrvDevTop = DrvSelDev - 7;
+    act_drv_device();
+}
+
+static int drv_list_key(int key)
+{
+    switch (key) {
+    case ITK_UP:   if (DrvSelDev == 0) return 0;
+                   drv_list_sel(DrvSelDev - 1); return 1;
+    case ITK_DOWN: if (DrvSelDev >= AudNDev) return 0;
+                   drv_list_sel(DrvSelDev + 1); return 1;
+    case ITK_PGUP: drv_list_sel(DrvSelDev - 8); return 1;
+    case ITK_PGDN: drv_list_sel(DrvSelDev + 8); return 1;
+    case ITK_HOME: drv_list_sel(0); return 1;
+    case ITK_END:  drv_list_sel((int)AudNDev); return 1;
+    default: return 0;
+    }
+}
+
+static void drv_list_click(const it_mouse_t *m)
+{
+    if (m->y >= 15 && m->y <= 22)
+        drv_list_sel(DrvDevTop + (m->y - 15));
+}
+
+static void draw_driver(void)
+{
+    int i;
+
+    NW = 0;
+    Screen_DrawString(2, 13, "Output Device", 0x20);
+    wcustom(2, 14, 38, 23, drv_list_draw, drv_list_key, drv_list_click);
+
+    Screen_DrawString(2, 25, "Sample Rate", 0x20);
+    if (DrvNRates == 0)
+        Screen_DrawString(3, 27, "(none in this mode)", 0x23);
+    for (i = 0; i < DrvNRates; i++) {
+        int c = i % 3, r = i / 3;
+        wradio8(3 + 12 * c, 26 + 3 * r, 13 + 12 * c, 28 + 3 * r,
+                DrvRateLbl[i], &DrvSelRate, 0xFF, (uint8_t)i);
+    }
+
+    if (audio_has_exclusive()) {
+        Screen_DrawString(2, 38, "Device Access", 0x20);
+        wradio8(3, 39, 19, 41, "     Shared", &DrvSelExcl, 0xFF, 0)
+            ->action = act_drv_excl;
+        wradio8(21, 39, 37, 41, "   Exclusive", &DrvSelExcl, 0xFF, 1)
+            ->action = act_drv_excl;
+    }
+
+    Screen_DrawString(2, 42, "Buffer Size (frames)", 0x20);
+    for (i = 0; i < 6; i++) {
+        int c = i % 3, r = i / 3;
+        wradio8(3 + 12 * c, 43 + 3 * r, 13 + 12 * c, 45 + 3 * r,
+                DrvBufLbl[i], &DrvSelBuf, 0xFF, (uint8_t)i);
+    }
+
+    Screen_DrawString(41, 13, "Output Format", 0x20);
+    for (i = 0; i < 3; i++)
+        wradio8(42, 14 + 3 * i, 76, 16 + 3 * i, DrvFmtLbl[i],
+                &DrvSelFmt, 0xFF, (uint8_t)i);
+
+    Screen_DrawString(41, 24, "Filter mode", 0x20);
+    Screen_DrawString(60, 24, "Feedback mode", 0x20);
+    {
+        static const char *const fl[3] = { "  No Filter", "  50% Filter",
+                                           "  75% Filter" };
+        static const char *const fb[3] = { "  None", "  50% Separated",
+                                           "  50% Crossed" };
+        for (i = 0; i < 3; i++) {
+            wradio8(42, 25 + 3 * i, 58, 27 + 3 * i, fl[i], &DrvSelFilter,
+                    0xFF, (uint8_t)i)->action = act_drv_live;
+            wradio8(61, 25 + 3 * i, 77, 27 + 3 * i, fb[i], &DrvSelFeedback,
+                    0xFF, (uint8_t)i)->action = act_drv_live;
+        }
+    }
+
+    Screen_DrawString(41, 35, "Ramp volume at start of sample", 0x20);
+    wradio8(42, 36, 58, 38, "   Enabled", &DrvSelRamp, 0xFF, 0)->action =
+        act_drv_live;
+    wradio8(61, 36, 77, 38, "  Disabled", &DrvSelRamp, 0xFF, 1)->action =
+        act_drv_live;
+
+    wbutton(42, 40, 58, 42, "     Apply", act_drv_apply);
+    wbutton(61, 40, 77, 42, "  Save Prefs", act_drv_save);
+    if (drv_pending())
+        Screen_DrawString(42, 43, "Press Apply to use these settings",
+                          0x23);
+
+    for (i = 0; i < 4; i++)                         /* what is running */
+        Screen_DrawString(41, 45 + i, AudStatus[i], 0x21);
+    widgets_draw();
 }
 
 static volatile int g_sig = 0;
@@ -11987,8 +12548,10 @@ int main(int argc, char **argv)
     int i;
 
     for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-r") && i + 1 < argc)
+        if (!strcmp(argv[i], "-r") && i + 1 < argc) {
             mixspeed = (uint32_t)atoi(argv[++i]);
+            AudRateFromCmdline = 1;
+        }
         else if (argv[i][0] != '-')
             startmod = argv[i];
     }
@@ -12083,6 +12646,8 @@ int main(int argc, char **argv)
                 Screen = SCR_MESSAGE;
             else if (scr == 12)             /* keypress table (Ctrl-F1) */
                 Screen = SCR_KEYS;
+            else if (scr == 17)             /* Miniaudio Driver (Shift-F5) */
+                drv_open();
             if (getenv("ITED_SHOT_HELP"))  /* F1 help context 0..14 */
                 HelpContext = atoi(getenv("ITED_SHOT_HELP")) % 15;
             if (getenv("ITED_SHOT_TAB"))   /* F4 tab 0..3 for captures */
@@ -13376,6 +13941,54 @@ int main(int argc, char **argv)
                 handle_global(ITK_F2);
                 if (Screen != SCR_PATTERN) hk_ok = 0;
             }
+            /* Shift-F5 extensions: 96 kHz, 24-bit and float output, the
+             * SB16 filter and feedback render sane audio; the screen
+             * builds; everything goes back to 44.1 kHz / 16-bit after */
+            {
+                static int32_t wide[4096 * 2];
+                int fmt, nz = 0, bad = 0;
+                ed_lock();
+                WAVDriver_SetMixSpeed(96000);
+                Driver->InitSound();
+                Music_InitTempo();
+                Music_PlaySong(0);
+                ed_unlock();
+                for (fmt = 1; fmt <= 2; fmt++) {
+                    int k2;
+                    WAVDriver_SetOutputFormat(fmt);
+                    WAVDriver_SetSBFilter(fmt);
+                    WAVDriver_SetSBFeedback(fmt);
+                    for (k2 = 0; k2 < 8; k2++)
+                        WAVDriver_RenderAny(wide, 4096);
+                    for (k2 = 0; k2 < 4096 * 2; k2++) {
+                        if (fmt == 2) {
+                            float f;
+                            memcpy(&f, &wide[k2], 4);
+                            if (!(f >= -1.0f && f <= 1.0f)) bad = 1;
+                            if (f != 0.0f) nz = 1;
+                        } else {
+                            if (wide[k2] & 0xFF) bad = 1;   /* 24 bits */
+                            if (wide[k2]) nz = 1;
+                        }
+                    }
+                }
+                if (bad || !nz || WAVDriver_GetMixSpeed() != 96000)
+                    hk_ok = 0;
+                ed_lock();
+                Music_Stop();
+                WAVDriver_SetOutputFormat(0);
+                WAVDriver_SetSBFilter(0);
+                WAVDriver_SetSBFeedback(0);
+                WAVDriver_SetMixSpeed(44100);
+                Driver->InitSound();
+                Music_InitTempo();
+                ed_unlock();
+                drv_open();
+                redraw();
+                if (Screen != SCR_DRIVER || NW < 12 || DrvNRates < 1)
+                    hk_ok = 0;
+                Screen = SCR_PATTERN;
+            }
             /* Alt+M on F3/F4 is the Alt op, not the piano key M */
             memset(&CurKey, 0, sizeof(CurKey));
             CurKey.flags = ITKF_PRESSED | ITKF_LALT;
@@ -14594,18 +15207,12 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* audio device */
-    {
-        ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
-        cfg.playback.format = ma_format_s16;
-        cfg.playback.channels = 2;
-        cfg.sampleRate = mixspeed;
-        cfg.dataCallback = audio_cb;
-        if (ma_device_init(NULL, &cfg, &Device) == MA_SUCCESS) {
-            ma_device_start(&Device);
-            DeviceUp = 1;
-        }
-    }
+    /* audio device: the Shift-F5 settings from ited.cfg (a -r on the
+     * command line wins over the saved rate) */
+    audio_context();
+    if (AudRateFromCmdline)
+        AudRate = mixspeed;
+    audio_restart();
 
     if (!Screen_Init()) {
         fprintf(stderr, "screen init failed\n");

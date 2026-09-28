@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Shift-F5: Miniaudio Driver screen** (a deliberate extension): output
+  device, the sample rates that device supports (up to 192 kHz), buffer
+  size, 16-bit dithered / 24-bit / 32-bit float output, and on Windows
+  exclusive device access, which opens the device at the chosen rate
+  (for example 96 or 192 kHz) without resampling. It also has
+  the Sound Blaster 16 driver's 50%/75% filter and feedback (echo) modes,
+  and "ramp volume at start of sample". Defaults keep playback
+  bit-identical to before (#16).
+
 ## v0.5.0 — 2026-09-28
 
 A big fidelity release. Most of it came from side-by-side testing against

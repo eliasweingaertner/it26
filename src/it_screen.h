@@ -180,6 +180,8 @@ enum {
     ITK_CTRL_F6, ITK_ALT_LEFT, ITK_ALT_RIGHT, ITK_ALT_HOME, ITK_ALT_END,
     ITK_ALT_ENTER, ITK_ALT_BACKSPACE, ITK_KP_MULTIPLY, ITK_SHIFT_PLUS,
     ITK_SHIFT_MINUS, ITK_RCTRL_ENTER,
+    ITK_SHIFT_F5,           /* Glbl_DriverScreen: the Miniaudio Driver
+                               screen (extension) */
     ITK_QUIT = 0x300,       /* window closed (pixel backend) */
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };

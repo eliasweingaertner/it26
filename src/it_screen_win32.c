@@ -249,6 +249,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             PushKey(ITK_SHIFT_F6);      /* Glbl_Shift_F6 */
             return 0;
         }
+        if (wp == VK_F5 && (GetKeyState(VK_SHIFT) & 0x8000)) {
+            PushKey(ITK_SHIFT_F5);      /* Glbl_DriverScreen */
+            return 0;
+        }
         if (wp == VK_SCROLL) {
             PushKey(ITK_SCROLL_LOCK);
             return 0;

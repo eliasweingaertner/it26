@@ -835,6 +835,33 @@ ittrack/
 
 ---
 
+## 5b. Shift-F5 Miniaudio Driver screen (2026-09-28, uncommitted/experimental)
+
+A deliberate extension (GitHub #16). `it_driver.c`: rates up to 192 kHz
+(`MixSpeed` is 32-bit, `MAXMIXFRAMES` 16384, ramp shift 9/10 above
+64/128 kHz), output formats 16-bit dithered / 24-bit in s32 / float
+(`WAVDriver_RenderAny`), and the SB16 filter (one-pole low-pass,
+SB16DRV.ASM SB16IRQHFilter/3QFilter) and feedback (mix buffer halved,
+not cleared; separated or crossed). `it_editor.c`: `SCR_DRIVER`, device
+list via `ma_context_get_devices`, the rates from `nativeDataFormats`
+(sampleRate 0 = any = standard list), Apply reopens the device
+(`audio_restart`; it never holds the engine lock across
+`ma_device_uninit`), and `audio_*` keys in `ited.cfg`. Defaults
+reproduce the original bit-exactly (checked against a build of the
+unchanged driver on all four test modules). Windows WASAPI in shared
+mode reports only the mix format's rate (usually 48 kHz). Hence the
+**exclusive** option (WASAPI only, `audio_exclusive=`): its rate list
+comes from `wasapi_exclusive_rates()`, which asks
+`IAudioClient::IsFormatSupported(EXCLUSIVE)` for each standard rate
+(it only queries the device and never opens it; it reuses miniaudio's
+COM helpers, so it is in the same translation unit). miniaudio itself
+always opened exclusive devices at their native rate and resampled, so
+`external/miniaudio.h` carries a marked **ittrack patch** in
+`ma_device_init_internal__wasapi`: it tries the requested rate with the
+native bit depth and channels first. Verified 192 kHz float, exclusive,
+10 ms, on a VB-Audio virtual cable. Re-apply the patch when updating
+miniaudio.
+
 ## 6. Next phase
 
 Stage-4 status: the "make it the real IT UI" milestone landed

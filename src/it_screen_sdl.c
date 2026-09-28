@@ -207,6 +207,10 @@ static void PumpEvents(void)
                 PushKey(ITK_SHIFT_F6);      /* Glbl_Shift_F6 */
                 break;
             }
+            if (kc == SDLK_F5 && (mod & KMOD_SHIFT)) {
+                PushKey(ITK_SHIFT_F5);      /* Glbl_DriverScreen */
+                break;
+            }
             if (kc == SDLK_SCROLLLOCK) {
                 PushKey(ITK_SCROLL_LOCK);
                 break;
