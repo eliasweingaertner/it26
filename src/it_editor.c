@@ -6200,7 +6200,7 @@ static void handle_message_key(int key)
         MsgPos = si;
         break;
     }
-    case 0x0C:                          /* Ctrl-L: clear (Alt-C stand-in) */
+    case ITK_ALT_A + ('C' - 'A'):       /* Msg_ClearMessage (EditMsgKeys) */
         msg_reset();
         MsgEdit = 1;
         status("Message cleared");
