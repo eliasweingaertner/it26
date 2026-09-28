@@ -858,7 +858,13 @@ COM helpers, so it is in the same translation unit). miniaudio itself
 always opened exclusive devices at their native rate and resampled, so
 `external/miniaudio.h` carries a marked **ittrack patch** in
 `ma_device_init_internal__wasapi`: it tries the requested rate with the
-native bit depth and channels first. Lo-fi: output formats 3/4 = 8-bit unsigned truncated
+native bit depth and channels first. macOS: CoreAudio has no exclusive mode (miniaudio refuses it), and
+miniaudio keeps the device's nominal rate (Audio MIDI Setup) and
+resamples unless `coreaudio.allowNominalSampleRateChange` is set. That
+is the "Device Rate: Keep / Switch" choice (`audio_rateswitch=`), shown
+only with the Core Audio backend. Switching changes the rate system-wide,
+and macOS keeps it. Untested on a Mac as of 2026-09-28 (asked on #16).
+Lo-fi: output formats 3/4 = 8-bit unsigned truncated
 (`>> 22`) / error-feedback dithered; `audio_mono=` forces the mixer's
 mono path (`WAVDriver_SetForceMono`, applied when idle like the stereo
 flag) and opens a 1-channel device; the rates 8000/11025/16000/22050

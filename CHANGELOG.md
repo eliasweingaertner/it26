@@ -8,7 +8,9 @@
   exclusive device access, which opens the device at the chosen rate
   (for example 96 or 192 kHz) without resampling. For the lo-fi end:
   8-bit output (truncated like an 8-bit Sound Blaster, or dithered), true
-  mono output, and 8 / 11.025 / 16 / 22.05 kHz mixing. It also has
+  mono output, and 8 / 11.025 / 16 / 22.05 kHz mixing. On macOS, which has
+  no exclusive mode, "Device Rate: Switch" sets the output device to the
+  chosen rate (as Audio MIDI Setup would) instead of resampling. It also has
   the Sound Blaster 16 driver's 50%/75% filter and feedback (echo) modes,
   and "ramp volume at start of sample". Defaults keep playback
   bit-identical to before (#16).

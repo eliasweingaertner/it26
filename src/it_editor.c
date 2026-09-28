@@ -12028,6 +12028,8 @@ static int      AudFilter = 0, AudFeedback = 0, AudRamp = 1;
 static int      AudExclusive = 0;           /* WASAPI exclusive mode */
 static int      AudMono = 0;                /* one output channel, mixer
                                                forced to mono */
+static int      AudRateSwitch = 0;          /* macOS: set the device's
+                                               nominal rate */
 static int      AudRateFromCmdline = 0;
 
 static char     AudStatus[4][48];           /* the running device */
@@ -12035,10 +12037,11 @@ static char     AudStatus[4][48];           /* the running device */
 #define DRV_MAXRATE 12
 static uint8_t  DrvSelDev, DrvSelRate, DrvSelFmt, DrvSelBuf;
 static uint8_t  DrvSelFilter, DrvSelFeedback, DrvSelRamp, DrvSelExcl;
-static uint8_t  DrvSelMono;
+static uint8_t  DrvSelMono, DrvSelRateSw;
 static int      DrvDevTop;
 static uint8_t  DrvOpenDev, DrvOpenRate, DrvOpenFmt, DrvOpenBuf,
-                DrvOpenExcl, DrvOpenMono;   /* as opened: Apply pending? */
+                DrvOpenExcl, DrvOpenMono,   /* as opened: Apply pending? */
+                DrvOpenRateSw;
 static uint32_t DrvRates[DRV_MAXRATE];
 static int      DrvNRates;
 static char     DrvRateLbl[DRV_MAXRATE][14];
@@ -12071,15 +12074,19 @@ static void audio_pref_line(const char *line)
         AudExclusive = atoi(line + 16) ? 1 : 0;
     else if (!strncmp(line, "audio_mono=", 11))
         AudMono = atoi(line + 11) ? 1 : 0;
+    else if (!strncmp(line, "audio_rateswitch=", 17))
+        AudRateSwitch = atoi(line + 17) ? 1 : 0;
 }
 
 static void audio_pref_save(FILE *fp)
 {
     fprintf(fp, "audio_device=%s\naudio_rate=%u\naudio_format=%d\n"
             "audio_buffer=%u\naudio_filter=%d\naudio_feedback=%d\n"
-            "audio_ramp=%d\naudio_exclusive=%d\naudio_mono=%d\n",
+            "audio_ramp=%d\naudio_exclusive=%d\naudio_mono=%d\n"
+            "audio_rateswitch=%d\n",
             AudDevName, (unsigned)AudRate, AudFormat, (unsigned)AudBuffer,
-            AudFilter, AudFeedback, AudRamp, AudExclusive, AudMono);
+            AudFilter, AudFeedback, AudRamp, AudExclusive, AudMono,
+            AudRateSwitch);
 }
 
 static void audio_context(void)
@@ -12103,6 +12110,16 @@ static int audio_has_exclusive(void)
 #else
     return 0;
 #endif
+}
+
+/* macOS has no exclusive mode (miniaudio's CoreAudio backend refuses
+ * it); its counterpart is the device's nominal sample rate, the one set
+ * in Audio MIDI Setup. miniaudio keeps it and resamples unless
+ * coreaudio.allowNominalSampleRateChange is set -- then it switches the
+ * device, for every app on it, and macOS keeps that rate afterwards. */
+static int audio_has_rateswitch(void)
+{
+    return AudioCtxUp && AudioCtx.backend == ma_backend_coreaudio;
 }
 
 #if defined(MA_HAS_WASAPI)
@@ -12308,10 +12325,12 @@ static void drv_open(void)
     DrvSelFeedback = (uint8_t)AudFeedback;
     DrvSelRamp = (uint8_t)(AudRamp ? 0 : 1);
     DrvSelMono = (uint8_t)AudMono;
+    DrvSelRateSw = (uint8_t)(AudRateSwitch && audio_has_rateswitch());
     DrvDevTop = DrvSelDev > 7 ? DrvSelDev - 7 : 0;
     DrvOpenDev = DrvSelDev; DrvOpenRate = DrvSelRate;
     DrvOpenFmt = DrvSelFmt; DrvOpenBuf = DrvSelBuf;
     DrvOpenExcl = DrvSelExcl; DrvOpenMono = DrvSelMono;
+    DrvOpenRateSw = DrvSelRateSw;
     Screen = SCR_DRIVER;
 }
 
@@ -12340,6 +12359,8 @@ static int audio_open(void)
     cfg.periodSizeInFrames = AudBuffer;
     cfg.playback.shareMode = AudExclusive && audio_has_exclusive()
                            ? ma_share_mode_exclusive : ma_share_mode_shared;
+    cfg.coreaudio.allowNominalSampleRateChange =
+        (ma_bool32)(AudRateSwitch && audio_has_rateswitch());
     cfg.dataCallback = audio_cb;
     if (ma_device_init(AudioCtxUp ? &AudioCtx : NULL, &cfg, &Device)
             != MA_SUCCESS)
@@ -12365,7 +12386,11 @@ static int audio_open(void)
         snprintf(AudStatus[3], sizeof(AudStatus[3]), "via %s, %s",
                  AudioCtxUp ? ma_get_backend_name(AudioCtx.backend) : "?",
                  Device.playback.shareMode == ma_share_mode_exclusive
-                     ? "exclusive" : "shared");
+                     ? "exclusive"
+                     : audio_has_rateswitch()
+                         ? (AudRateSwitch ? "device rate switched"
+                                          : "device rate kept")
+                         : "shared");
     }
     return 1;
 }
@@ -12401,6 +12426,7 @@ static int audio_restart(void)
         AudBuffer = 0;
         AudExclusive = 0;
         AudMono = 0;
+        AudRateSwitch = 0;
         ed_lock();
         WAVDriver_SetMixSpeed(AudRate);
         WAVDriver_SetOutputFormat(0);
@@ -12449,6 +12475,7 @@ static void act_drv_apply(void)
     AudBuffer = DrvBuffers[DrvSelBuf];
     AudExclusive = DrvSelExcl;
     AudMono = DrvSelMono;
+    AudRateSwitch = DrvSelRateSw;
     if (audio_restart())
         status("Audio output reopened.");
     else
@@ -12462,7 +12489,8 @@ static int drv_pending(void)
 {
     return DrvSelDev != DrvOpenDev || DrvSelRate != DrvOpenRate ||
            DrvSelFmt != DrvOpenFmt || DrvSelBuf != DrvOpenBuf ||
-           DrvSelExcl != DrvOpenExcl || DrvSelMono != DrvOpenMono;
+           DrvSelExcl != DrvOpenExcl || DrvSelMono != DrvOpenMono ||
+           DrvSelRateSw != DrvOpenRateSw;
 }
 
 /* device names come as UTF-8; shown as ASCII (accents folded, anything
@@ -12570,6 +12598,11 @@ static void draw_driver(void)
                 DrvRateLbl[i], &DrvSelRate, 0xFF, (uint8_t)i);
     }
 
+    if (audio_has_rateswitch()) {
+        Screen_DrawString(2, 38, "Device Rate", 0x20);
+        wradio8(3, 39, 19, 41, "      Keep", &DrvSelRateSw, 0xFF, 0);
+        wradio8(21, 39, 37, 41, "     Switch", &DrvSelRateSw, 0xFF, 1);
+    }
     if (audio_has_exclusive()) {
         Screen_DrawString(2, 38, "Device Access", 0x20);
         wradio8(3, 39, 19, 41, "     Shared", &DrvSelExcl, 0xFF, 0)

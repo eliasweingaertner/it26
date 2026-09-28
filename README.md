@@ -302,7 +302,9 @@ the 2*Alt-N Multichannel Selection dialog and the F3/F4 `` ` `` solo and
   truncated / dithered), stereo or true mono (the mixer renders one
   channel, as with F12 "Mono", without changing the song), lo-fi rates
   (8 / 11.025 / 16 / 22.05 kHz, always listed and marked `*` when the
-  system resamples them), and on
+  system resamples them), on macOS whether to keep the device's rate
+  (Audio MIDI Setup; the system resamples) or switch the device to the
+  chosen rate, and on
   Windows shared or **exclusive** device access. Exclusive mode lists the
   rates the device accepts exclusively and opens it at the chosen rate
   (the vendored miniaudio carries a small, marked patch for that). It also
