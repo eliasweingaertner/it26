@@ -15480,6 +15480,7 @@ int main(int argc, char **argv)
         /* Alt-Enter: store pattern in the pattern editor, else the
          * backend's fullscreen toggle */
         Screen_AltEnterIsKey = (Screen == SCR_PATTERN);
+        Screen_RightOptPreview = (Screen == SCR_PATTERN);   /* macOS */
         key = ed_get_key();
         if (key != ITK_NONE) {
             if (key == 0x11) {              /* Ctrl-Q -> Quit */

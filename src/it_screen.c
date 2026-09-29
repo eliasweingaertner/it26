@@ -1392,6 +1392,7 @@ int Key_GetEvent(it_key_t *k)
 }
 
 int Screen_AltEnterIsKey = 0;
+int Screen_RightOptPreview = 0;
 
 int Key_Get(void)
 {

@@ -305,6 +305,10 @@ places where it deliberately or unavoidably differs.
 - **Windows:** while ittrack is in front, it keeps left-Alt shortcuts
   away from other programs' global hotkeys (the NVIDIA overlay, for
   example, takes Alt-F1…F3).
+- **macOS:** Caps Lock can't be held as a key there (macOS latches it
+  and shows its own indicator), so in the pattern editor **Right Option**
+  held down plays notes as you type, like IT's held Caps Lock. Left
+  Option stays Alt.
 - The "2026 AI PORT" corner badge is drawn at the final pixel stage, so
   screen dumps and the text cells are untouched.
 

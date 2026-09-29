@@ -193,6 +193,11 @@ int Key_Get(void);          /* non-blocking, K_GetKey-style             */
  * backends then deliver ITK_ALT_ENTER instead of toggling fullscreen. */
 extern int Screen_AltEnterIsKey;
 
+/* macOS: set by the editor while the pattern editor is shown; the SDL
+ * backend then treats Right Option (alone) as the held note-preview key
+ * (IT's Caps Lock) instead of Alt. Ignored on other platforms. */
+extern int Screen_RightOptPreview;
+
 /* ---- the two-layer key event (feature 014) ----
  * K_GetKey returns CX/DX = input/translated (IT_K.ASM:1108): the raw
  * physical key in CX, the layout-translated character in DX. Consumers

@@ -96,6 +96,21 @@ static uint8_t SDLScanToSet1(SDL_Scancode s)
     }
 }
 
+/* macOS: Right Option alone, held in the pattern editor, is the note
+ * preview key -- IT's held Caps Lock (PE_PatternCursorPreview), since on
+ * a Mac Caps Lock is a toggle and macOS pops up its indicator for it
+ * (issue #20). Left Option stays Alt for all of IT's shortcuts. */
+#if defined(__APPLE__) && !defined(ITED_RIGHTOPT_PREVIEW)
+#define ITED_RIGHTOPT_PREVIEW 1
+#endif
+#ifdef ITED_RIGHTOPT_PREVIEW
+static int RightOptPreview(SDL_Keymod m)
+{
+    return Screen_RightOptPreview && (m & KMOD_RALT) && !(m & KMOD_LALT) &&
+           !(m & (KMOD_CTRL | KMOD_GUI));
+}
+#endif
+
 /* the original's CH (IT_K.ASM:1216) from SDL's live modifier state */
 static uint8_t ModFlags(void)
 {
@@ -105,6 +120,10 @@ static uint8_t ModFlags(void)
     if (m & KMOD_RSHIFT) f |= ITKF_RSHIFT;
     if (m & KMOD_LCTRL)  f |= ITKF_LCTRL;
     if (m & KMOD_RCTRL)  f |= ITKF_RCTRL;
+#ifdef ITED_RIGHTOPT_PREVIEW
+    if (RightOptPreview(m))             /* preview held, not Alt */
+        return (uint8_t)(f | ITKF_CAPSDOWN);
+#endif
     if (m & KMOD_LALT)   f |= ITKF_LALT;
     if (m & KMOD_RALT)   f |= ITKF_RALT;
     if (SDL_GetKeyboardState(NULL)[SDL_SCANCODE_CAPSLOCK])
@@ -215,6 +234,21 @@ static void PumpEvents(void)
                 PushKey(ITK_SCROLL_LOCK);
                 break;
             }
+#ifdef ITED_RIGHTOPT_PREVIEW
+            if (RightOptPreview(mod)) {
+                /* the plain key, flagged "preview held" by ModFlags; the
+                 * Option character (often outside CP437, e.g. oe) is
+                 * dropped so the note key always arrives */
+                if ((kc >= SDLK_a && kc <= SDLK_z) ||
+                    (kc >= SDLK_0 && kc <= SDLK_9)) {
+                    PushKeyCh((int)kc, 0);
+                    SkipText = 1;
+                    break;
+                }
+                mod = (SDL_Keymod)(mod & ~KMOD_RALT);   /* other keys:
+                                                           as without it */
+            }
+#endif
             if (mod & KMOD_ALT) {           /* Alt combos (parity with
                                              * the Win32 backend) */
                 if (kc == SDLK_RETURN || kc == SDLK_KP_ENTER) {
