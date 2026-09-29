@@ -448,8 +448,46 @@ static void PumpEvents(void)
     }
 }
 
+#ifdef __APPLE__
+/* Issue #15: macOS answers a held letter key with the press-and-hold
+ * accent popup instead of key repeat, so a held note key entered one
+ * note. Register ApplePressAndHoldEnabled = NO for this process (the
+ * registration domain: nothing is written to the user's preferences)
+ * before AppKit's text input starts, which restores normal repeat at
+ * the system rate and delay -- like IT under DOS typematic repeat. */
+#include <CoreFoundation/CoreFoundation.h>
+#include <objc/runtime.h>
+#include <objc/message.h>
+
+static void DisablePressAndHold(void)
+{
+    const void *k = CFSTR("ApplePressAndHoldEnabled");
+    const void *v = kCFBooleanFalse;
+    CFDictionaryRef d;
+    id defs;
+    Class ud = objc_getClass("NSUserDefaults");
+
+    if (!ud)
+        return;
+    defs = ((id (*)(id, SEL))objc_msgSend)((id)ud,
+                                           sel_registerName("standardUserDefaults"));
+    if (!defs)
+        return;
+    d = CFDictionaryCreate(NULL, &k, &v, 1, &kCFTypeDictionaryKeyCallBacks,
+                           &kCFTypeDictionaryValueCallBacks);
+    if (!d)
+        return;
+    ((void (*)(id, SEL, id))objc_msgSend)(defs, sel_registerName("registerDefaults:"),
+                                          (id)d);   /* toll-free NSDictionary */
+    CFRelease(d);
+}
+#endif
+
 static int SDL_BInit(void)
 {
+#ifdef __APPLE__
+    DisablePressAndHold();
+#endif
     if (SDL_Init(SDL_INIT_VIDEO) < 0)
         return 0;                           /* no display -> caller falls back */
 
