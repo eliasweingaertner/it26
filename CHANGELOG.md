@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 — 2026-09-30
+
+Thanks again to **Esa Juhani Ruoho (@esaruoho)** for the reports behind
+most of these.
+
+### macOS
+
+- **Held keys repeat** (#15). Holding a note key in the pattern editor
+  now keeps entering notes, advancing by the cursor step, as in IT. With
+  step 4, holding Q fills every 4th row. macOS had opened its accent
+  menu instead of repeating: Homebrew's SDL2 runs on SDL3, and SDL3 turns
+  "press and hold" on by default. ittrack now switches it off for itself.
+  Your macOS settings are not changed.
+- **Right Option = note preview** (#20). IT plays notes while Caps Lock
+  is held. macOS treats Caps Lock as a toggle and shows its own
+  indicator, so in the pattern editor holding **Right Option** now does
+  the same job. Left Option stays Alt.
+
+### Everywhere
 
 - **F3 sample list as in IT 2.14** (#12): the numbers sit left of the list,
   followed by a divider and the **Play** column (bright for slots with a
@@ -21,6 +39,8 @@
   the Sound Blaster 16 driver's 50%/75% filter and feedback (echo) modes,
   and "ramp volume at start of sample". Defaults keep playback
   bit-identical to before (#16).
+- **Message editor:** Alt-C clears the message, as in IT (the old
+  stand-in key had stopped working after the hotkey audit).
 
 ## v0.5.0 — 2026-09-28
 
