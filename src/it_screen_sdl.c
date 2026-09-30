@@ -451,10 +451,14 @@ static void PumpEvents(void)
 #ifdef __APPLE__
 /* Issue #15: macOS answers a held letter key with the press-and-hold
  * accent popup instead of key repeat, so a held note key entered one
- * note. Register ApplePressAndHoldEnabled = NO for this process (the
- * registration domain: nothing is written to the user's preferences)
- * before AppKit's text input starts, which restores normal repeat at
- * the system rate and delay -- like IT under DOS typematic repeat. */
+ * note. The switch is ApplePressAndHoldEnabled. Classic SDL2 registers
+ * it NO itself, but SDL3 (>= 3.2) registers YES -- and Homebrew's "sdl2"
+ * is sdl2-compat running on SDL3. SDL 3.4 takes the choice from the
+ * SDL_MAC_PRESS_AND_HOLD hint (set before SDL_Init, below); for SDL 3.2
+ * we register NO again after SDL_Init, since the last registration wins.
+ * The registration domain lives in this process only -- nothing is
+ * written to the user's preferences. Held keys then repeat at the
+ * system rate and delay, as under DOS typematic repeat. */
 #include <CoreFoundation/CoreFoundation.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
@@ -486,10 +490,13 @@ static void DisablePressAndHold(void)
 static int SDL_BInit(void)
 {
 #ifdef __APPLE__
-    DisablePressAndHold();
+    SDL_SetHint("SDL_MAC_PRESS_AND_HOLD", "0");     /* SDL 3.4+ (via compat) */
 #endif
     if (SDL_Init(SDL_INIT_VIDEO) < 0)
         return 0;                           /* no display -> caller falls back */
+#ifdef __APPLE__
+    DisablePressAndHold();                  /* after SDL's own registration */
+#endif
 
     /* SDL can fall back to a headless "offscreen"/"dummy" video driver when
      * no real display is reachable (e.g. bare SSH). That makes SDL_Init
