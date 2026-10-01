@@ -2,7 +2,8 @@
 
 TL;DR AI-vibed 1:1 conversion of Jeffrey Lim's fantastic Impulse Tracker to modern operating systems. Originally written in pure (!) 486 x86 assembly code, this aims to be the first near-complete 1:1 translation of both the playback engine and the editor to C/SDL. The conversion was carried out fully with Anthropic's Claude models (Fable 5, Opus 4.8, Opus 5 and Opus 5.5). Everything I tested works - but bugs might still exist!
 
-![ited on Windows, directly after launch ](docs/ited-launch.png)
+<img src="docs/ited-launch.png" alt="ited on Windows, directly after launch" width="100%">
+
 (The AI port banner disappears after 10 secs)
 
 ## Background
