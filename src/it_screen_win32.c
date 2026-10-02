@@ -241,6 +241,14 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                                                      : ITK_TAB);
             return 0;
         }
+        if ((wp == VK_F9 || wp == VK_F10) &&
+            (GetKeyState(VK_SHIFT) & 0x8000) &&
+            (GetKeyState(VK_CONTROL) & 0x8000) &&
+            !(GetKeyState(VK_MENU) & 0x8000)) {
+            /* feature 016: system dialogs; ahead of Shift-F9 */
+            PushKey(wp == VK_F9 ? ITK_CTRL_SHIFT_F9 : ITK_CTRL_SHIFT_F10);
+            return 0;
+        }
         if (wp == VK_F9 && (GetKeyState(VK_SHIFT) & 0x8000)) {
             PushKey(ITK_SHIFT_F9);      /* message editor */
             return 0;
@@ -620,8 +628,32 @@ static void W32_Mouse(it_mouse_t *m)
     m->b = MouseB;
 }
 
+/* feature 016: the system file dialog (it_dialog_win32.c). Afterwards
+ * nothing typed into the dialog may reach the tracker and no modifier
+ * may count as held: drop queued keys and pending key messages, and
+ * close any Shift chord/marking with a release event. */
+int Dialog_Win32(HWND owner, const it_dialog_req_t *req, it_dialog_res_t *res);
+
+static int W32_FileDialog(const it_dialog_req_t *req, it_dialog_res_t *res)
+{
+    MSG msg;
+    int r = Dialog_Win32(Wnd, req, res);
+
+    while (PeekMessage(&msg, Wnd, WM_KEYFIRST, WM_KEYLAST, PM_REMOVE))
+        ;
+    KeyHead = KeyTail = 0;
+    SkipChar = 0;
+    CurScan = 0;
+    CurFlags = ITKF_PRESSED;
+    PushKey(ITK_SHIFT_RELEASE);
+    if (Wnd)
+        SetForegroundWindow(Wnd);
+    return r;
+}
+
 const screen_backend_t Screen_BackendWin32 = {
-    W32_Init, W32_UnInit, W32_Present, W32_Key, W32_Mouse, W32_KeyEvent
+    W32_Init, W32_UnInit, W32_Present, W32_Key, W32_Mouse, W32_KeyEvent,
+    W32_FileDialog, NULL
 };
 
 #endif /* _WIN32 */

@@ -308,7 +308,18 @@ places where it deliberately or unavoidably differs.
 - **macOS:** Caps Lock can't be held as a key there (macOS latches it
   and shows its own indicator), so in the pattern editor **Right Option**
   held down plays notes as you type, like IT's held Caps Lock. Left
-  Option stays Alt.
+  Option stays Alt. The F1 help says so on the Mac.
+- **System file dialogs** (#26), keys IT 2.14 doesn't use:
+  **Ctrl-Shift-F9** opens a module and **Ctrl-Shift-F10** saves it under
+  a new name, from any screen; **Ctrl-O** loads a sample or instrument
+  into the current slot on F3/F4, or picks the folder for a focused F12
+  path field. The result goes through the same code as IT's own file
+  screens. Save As picks IT or S3M from the file type or extension.
+  Windows and macOS use their own dialogs; Linux needs `zenity` or
+  `kdialog`; the terminal mode has none. Names with characters the
+  tracker's character set lacks still load and save; on screen those
+  characters show as `?`. The F1 help lists these keys below IT's own
+  text, marked "ittrack additions".
 - The "2026 AI PORT" corner badge is drawn at the final pixel stage, so
   screen dumps and the text cells are untouched.
 

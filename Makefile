@@ -61,7 +61,7 @@ IS_WINDOWS := $(if $(filter MINGW% MSYS% CYGWIN%,$(UNAME_S)),1,)
 ifeq ($(IS_WINDOWS),1)
   # Win32 pixel backend (GDI window), no pthread/dl.
   PLATFORM_OBJS := $(OBJDIR)/src/it_screen_win32.o
-  LDLIBS        += -luser32 -lgdi32
+  LDLIBS        += -luser32 -lgdi32 -lole32 -lshell32 -luuid   # + COM dialogs (016)
   EXE           := .exe
 else
   PLATFORM_OBJS :=
@@ -83,6 +83,11 @@ ifneq ($(ITED_SDL),0)
   ifneq ($(SDL_LIBS),)
     SDL_CFLAGS := $(shell pkg-config --cflags sdl2 2>/dev/null || sdl2-config --cflags 2>/dev/null) -DHAVE_SDL
     PLATFORM_OBJS += $(OBJDIR)/src/it_screen_sdl.o
+    ifeq ($(UNAME_S),Darwin)
+      # press-and-hold off (#15) + NSOpenPanel/NSSavePanel (016), both via
+      # the Objective-C runtime from C
+      SDL_LIBS += -framework CoreFoundation -lobjc
+    endif
   endif
 endif
 endif
@@ -93,7 +98,8 @@ endif
 ENGINE_SRCS := src/it_music.c src/it_effects.c src/it_tables.c src/it_driver.c \
                src/it_load.c src/it_pattern.c src/it_save.c
 EDITOR_SRCS := src/it_import.c src/it_ris.c src/it_screen.c src/it_vgadata.c \
-               src/it_cornerart.c src/it_editor.c
+               src/it_cornerart.c src/it_editor.c \
+               src/it_dialog_win32.c src/it_dialog_mac.c src/it_dialog_posix.c
 
 ENGINE_OBJS := $(ENGINE_SRCS:%.c=$(OBJDIR)/%.o)
 EDITOR_OBJS := $(EDITOR_SRCS:%.c=$(OBJDIR)/%.o) $(PLATFORM_OBJS)

@@ -218,6 +218,12 @@ static void PumpEvents(void)
                 PushKey((mod & KMOD_SHIFT) ? ITK_SHIFT_TAB : ITK_TAB);
                 break;
             }
+            if ((kc == SDLK_F9 || kc == SDLK_F10) && (mod & KMOD_SHIFT) &&
+                (mod & KMOD_CTRL) && !(mod & KMOD_ALT)) {
+                /* feature 016: system dialogs; ahead of Shift-F9 */
+                PushKey(kc == SDLK_F9 ? ITK_CTRL_SHIFT_F9 : ITK_CTRL_SHIFT_F10);
+                break;
+            }
             if (kc == SDLK_F9 && (mod & KMOD_SHIFT)) {
                 PushKey(ITK_SHIFT_F9);
                 break;
@@ -609,9 +615,71 @@ static void SDL_BMouse(it_mouse_t *m)
     m->b = MouseB;
 }
 
+/* ---- feature 016: system file dialogs (it_dialog_mac.c /
+ * it_dialog_posix.c) ---- */
+#ifdef __APPLE__
+int Dialog_Mac(const it_dialog_req_t *req, it_dialog_res_t *res);
+#else
+int Dialog_Posix(const it_dialog_req_t *req, it_dialog_res_t *res,
+                 void (*idle)(void));
+
+/* while the helper process runs: keep the window responsive (the
+ * window manager would flag it as hung) by pumping events and showing
+ * the last frame again; input is dropped afterwards */
+static void DialogIdle(void)
+{
+    SDL_PumpEvents();
+    if (Ren && Tex) {
+        SDL_RenderClear(Ren);
+        SDL_RenderCopy(Ren, Tex, NULL, NULL);
+        SDL_RenderPresent(Ren);
+    }
+}
+#endif
+
+static int SDL_BFileDialog(const it_dialog_req_t *req, it_dialog_res_t *res)
+{
+    int r;
+#ifdef __APPLE__
+    r = Dialog_Mac(req, res);
+#else
+    /* the helper is a separate top-level window a fullscreen window
+     * would cover: leave fullscreen for the dialog, return afterwards */
+    Uint32 fs = Wnd ? (SDL_GetWindowFlags(Wnd) & SDL_WINDOW_FULLSCREEN_DESKTOP)
+                    : 0;
+    if (fs)
+        SDL_SetWindowFullscreen(Wnd, 0);
+    r = Dialog_Posix(req, res, DialogIdle);
+    if (fs)
+        SDL_SetWindowFullscreen(Wnd, SDL_WINDOW_FULLSCREEN_DESKTOP);
+#endif
+    /* nothing typed into the dialog reaches the tracker, no modifier
+     * stays held (key-up events went to the dialog), and a Shift chord /
+     * marking in the pattern editor is closed */
+    SDL_PumpEvents();
+    SDL_FlushEvents(SDL_KEYDOWN, SDL_TEXTINPUT);
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    SDL_ResetKeyboard();
+#endif
+    SDL_SetModState(KMOD_NONE);
+    KeyHead = KeyTail = 0;
+    SkipText = 0;
+    CurScan = 0;
+    CurFlags = ITKF_PRESSED;
+    PushKey(ITK_SHIFT_RELEASE);
+    if (Wnd)
+        SDL_RaiseWindow(Wnd);
+    return r;
+}
+
 const screen_backend_t Screen_BackendSDL = {
     SDL_BInit, SDL_BUnInit, SDL_BPresent, SDL_BKey, SDL_BMouse,
-    SDL_BKeyEvent
+    SDL_BKeyEvent, SDL_BFileDialog,
+#ifdef __APPLE__
+    "Right Option"      /* the held note preview (issue #20), not Caps Lock */
+#else
+    NULL
+#endif
 };
 
 #endif /* HAVE_SDL */

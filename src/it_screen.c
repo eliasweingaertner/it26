@@ -7,6 +7,7 @@
  * Win32 pixel window (it_screen_win32.c). See it_screen.h.
  */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1408,4 +1409,145 @@ void Screen_GetMouse(it_mouse_t *m)
         CornerMousePX = m->px;           /* corner-art hover test */
         CornerMousePY = m->py;
     }
+}
+
+/* ===================================================================
+ * System file dialogs (feature 016, issue #26) -- the platform-neutral
+ * half: the test hook, display conversion, the extension lists and the
+ * checks every backend's answer goes through.
+ * =================================================================== */
+
+int Screen_Utf8ToCP437Display(const char *utf8, char *out, size_t cap)
+{
+    const unsigned char *p = (const unsigned char *)utf8;
+    size_t n = 0;
+    int lossy = 0;
+
+    if (cap == 0)
+        return 0;
+    while (*p && n + 1 < cap) {
+        uint32_t u;
+        int extra;
+        uint16_t c;
+        if (*p < 0x80)                  { u = *p;        extra = 0; }
+        else if ((*p & 0xE0) == 0xC0)   { u = *p & 0x1F; extra = 1; }
+        else if ((*p & 0xF0) == 0xE0)   { u = *p & 0x0F; extra = 2; }
+        else if ((*p & 0xF8) == 0xF0)   { u = *p & 0x07; extra = 3; }
+        else                            { u = 0;         extra = 0; }
+        p++;
+        while (extra-- > 0 && (*p & 0xC0) == 0x80)
+            u = (u << 6) | (uint32_t)(*p++ & 0x3F);
+        c = (u >= 32) ? Screen_UnicodeToCP437(u) : 0;
+        if (c == 0) {
+            c = '?';
+            lossy = 1;
+        }
+        out[n++] = (char)c;
+    }
+    out[n] = 0;
+    return lossy;
+}
+
+int Screen_SaveFormatFromName(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    const char *sep = strrchr(name, '/');
+    const char *bsl = strrchr(name, '\\');
+    if (bsl > sep)
+        sep = bsl;
+    if (!dot || (sep && dot < sep))
+        return 0;
+    return (tolower((unsigned char)dot[1]) == 's' &&
+            dot[2] == '3' &&
+            tolower((unsigned char)dot[3]) == 'm' && dot[4] == 0) ? 1 : 0;
+}
+
+/* the loaders' own lists: Import_KnownExt (modules), RIS_KnownExt
+ * (samples, incl. the modules a sample can be taken from), RI_KnownExt
+ * (instruments, incl. IT/XM to take one from) */
+const char *Screen_DialogExts(int kind)
+{
+    switch (kind) {
+    case IT_DLG_OPEN_MODULE:     return "it;s3m;xm;mod;mtm;669";
+    case IT_DLG_SAVE_MODULE:     return "it;s3m";
+    case IT_DLG_OPEN_SAMPLE:     return "wav;its;iff;8sv;16s;pat;krz;txw;w01;"
+                                        "it;s3m;xm;mod;mtm;669;ptm;far";
+    case IT_DLG_OPEN_INSTRUMENT: return "iti;xi;it;xm";
+    default:                     return "";
+    }
+}
+
+const char *Screen_DialogTitle(int kind)
+{
+    switch (kind) {
+    case IT_DLG_OPEN_MODULE:     return "Load Module";
+    case IT_DLG_SAVE_MODULE:     return "Save Module";
+    case IT_DLG_OPEN_SAMPLE:     return "Load Sample";
+    case IT_DLG_OPEN_INSTRUMENT: return "Load Instrument";
+    default:                     return "Choose Folder";
+    }
+}
+
+static const char *FakeDialog(void)
+{
+    const char *f = getenv("ITED_DIALOG_FAKE");
+    return (f && *f) ? f : NULL;
+}
+
+int Screen_HasFileDialog(void)
+{
+    return FakeDialog() || (Backend && Backend->file_dialog);
+}
+
+const char *Screen_PreviewKeyLabel(void)
+{
+    return Backend ? Backend->preview_key : NULL;
+}
+
+int Screen_FileDialog(const it_dialog_req_t *req, it_dialog_res_t *res)
+{
+    const char *fake = FakeDialog();
+
+    memset(res, 0, sizeof(*res));
+    res->save_format = req->save_format;
+    if (fake) {                         /* test hook: no UI at all */
+        if (!strcmp(fake, "!cancel")) {
+            res->status = IT_DLG_CANCELLED;
+        } else if (!strcmp(fake, "!unavailable")) {
+            res->status = IT_DLG_UNAVAILABLE;
+        } else if (strlen(fake) >= sizeof(res->path)) {
+            res->status = IT_DLG_REJECTED;
+            res->reason = "Path too long";
+            return res->status;
+        } else {
+            res->status = IT_DLG_CHOSEN;
+            memcpy(res->path, fake, strlen(fake) + 1);
+            res->lossy = Screen_Utf8ToCP437Display(res->path, res->display,
+                                                   sizeof(res->display));
+            if (req->kind == IT_DLG_SAVE_MODULE)
+                res->save_format = Screen_SaveFormatFromName(res->path);
+        }
+    } else if (!Backend || !Backend->file_dialog) {
+        res->status = IT_DLG_UNAVAILABLE;
+    } else {
+        Backend->file_dialog(req, res);
+    }
+
+    if (res->status == IT_DLG_UNAVAILABLE && !res->reason)
+        res->reason = "No file dialog available";
+    if (res->status != IT_DLG_CHOSEN)
+        return res->status;
+
+    /* checks common to every host (FR-013) */
+    if (strlen(res->path) >= sizeof(res->path) - 1) {
+        res->status = IT_DLG_REJECTED;
+        res->reason = "Path too long";
+    } else if (req->kind == IT_DLG_PICK_FOLDER && res->lossy) {
+        res->status = IT_DLG_REJECTED;
+        res->reason = "Folder name has characters ittrack cannot show";
+    } else if (req->kind == IT_DLG_PICK_FOLDER && strlen(res->path) > 64) {
+        res->status = IT_DLG_REJECTED;              /* F12 field width */
+        res->reason = "Path too long for this field";
+    }
+    return res->status;
 }

@@ -39,6 +39,11 @@ set(EDITOR_SOURCES
     src/it_vgadata.c
     src/it_cornerart.c
     src/it_editor.c
+    # feature 016: native file dialogs; each file compiles only on its
+    # own platform (Win32 backend / SDL on macOS / SDL on other POSIX)
+    src/it_dialog_win32.c
+    src/it_dialog_mac.c
+    src/it_dialog_posix.c
 )
 if(WIN32)
     list(APPEND EDITOR_SOURCES src/it_screen_win32.c)
@@ -59,7 +64,7 @@ endif()
 
 add_executable(ited ${ENGINE_SOURCES} ${EDITOR_SOURCES})
 if(WIN32)
-    target_link_libraries(ited user32 gdi32)
+    target_link_libraries(ited user32 gdi32 ole32 shell32 uuid)   # + COM dialogs (016)
 endif()
 if(ITED_HAVE_SDL)
     target_compile_definitions(ited PRIVATE HAVE_SDL)

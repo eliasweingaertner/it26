@@ -30,6 +30,7 @@
 #ifndef IT_SCREEN_H
 #define IT_SCREEN_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define SCREEN_W 80
@@ -182,6 +183,11 @@ enum {
     ITK_SHIFT_MINUS, ITK_RCTRL_ENTER,
     ITK_SHIFT_F5,           /* Glbl_DriverScreen: the Miniaudio Driver
                                screen (extension) */
+    /* feature 016 (issue #26): system file dialogs -- extensions. IT 2.14
+     * binds neither key (type-0 F9/F10 match only without modifiers, and
+     * no Ctrl-F9/F10 entry exists for Ctrl-Shift to fall back to). */
+    ITK_CTRL_SHIFT_F9 = 0x298,  /* open module (system dialog) */
+    ITK_CTRL_SHIFT_F10,         /* save module as (system dialog) */
     ITK_QUIT = 0x300,       /* window closed (pixel backend) */
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };
@@ -270,6 +276,53 @@ typedef struct it_mouse_t {
 } it_mouse_t;
 void Screen_GetMouse(it_mouse_t *m);
 
+/* ---- system file dialogs (feature 016, issue #26) ----
+ * An extension next to IT's own file screens: the host's open / save /
+ * folder dialog. The result carries the path twice -- `path` for the C
+ * library's file calls (never cut or altered), `display` for the screen
+ * (CP437, '?' for each character CP437 cannot show). */
+enum {
+    IT_DLG_OPEN_MODULE, IT_DLG_SAVE_MODULE, IT_DLG_OPEN_SAMPLE,
+    IT_DLG_OPEN_INSTRUMENT, IT_DLG_PICK_FOLDER
+};
+enum { IT_DLG_CHOSEN, IT_DLG_CANCELLED, IT_DLG_UNAVAILABLE, IT_DLG_REJECTED };
+#define IT_DLG_PATH_MAX 1024
+
+typedef struct it_dialog_req_t {
+    int         kind;           /* IT_DLG_OPEN_MODULE ...                   */
+    const char *start_dir;      /* NULL/"" or missing = working directory   */
+    const char *suggest_name;   /* save: pre-filled file name               */
+    int         save_format;    /* save: 0 = IT, 1 = S3M pre-selected       */
+} it_dialog_req_t;
+
+typedef struct it_dialog_res_t {
+    int         status;         /* IT_DLG_CHOSEN ...                        */
+    char        path[IT_DLG_PATH_MAX];
+    char        display[IT_DLG_PATH_MAX];
+    int         lossy;          /* display has a '?' substitution           */
+    int         save_format;    /* save: 0 = IT, 1 = S3M (type/extension)   */
+    const char *reason;         /* status-line text for REJECTED/UNAVAILABLE */
+} it_dialog_res_t;
+
+/* Blocks while the dialog is open (audio keeps running on its own
+ * thread). Test hook: ITED_DIALOG_FAKE = "!cancel" | "!unavailable" |
+ * <path> answers without any UI. Returns res->status. */
+int  Screen_FileDialog(const it_dialog_req_t *req, it_dialog_res_t *res);
+int  Screen_HasFileDialog(void);        /* backend dialog or fake hook   */
+/* label of the held note-preview key where it is not Caps Lock (macOS:
+ * "Right Option"); NULL = Caps Lock, IT's own help text applies */
+const char *Screen_PreviewKeyLabel(void);
+/* UTF-8 -> CP437 for display, '?' per unmappable character; returns 1
+ * if anything was substituted */
+int  Screen_Utf8ToCP437Display(const char *utf8, char *out, size_t cap);
+/* 1 = S3M for a ".s3m" name (any case), else 0 = IT */
+int  Screen_SaveFormatFromName(const char *name);
+/* ';'-separated extensions (no dots, lower case) a dialog kind offers --
+ * the lists the loaders accept (Import_KnownExt, RIS_KnownExt,
+ * RI_KnownExt); "" for the folder picker */
+const char *Screen_DialogExts(int kind);
+const char *Screen_DialogTitle(int kind);
+
 /* ---- internal: backend interface (it_screen.c / it_screen_win32.c) ---- */
 
 typedef struct screen_cell_t {
@@ -304,6 +357,12 @@ typedef struct screen_backend_t {
      * report physical positions; Key_GetEvent() then synthesizes one
      * from key() and fills scan from the configured reverse map. */
     int  (*key_event)(it_key_t *k);
+    /* feature 016: the host's file dialog; NULL = none (terminal). Must
+     * fill path/display/lossy (and save_format for saves), not ask about
+     * overwriting (the editor does, as F10), and flush input before it
+     * returns (no key typed into the dialog, no modifier left held). */
+    int  (*file_dialog)(const it_dialog_req_t *req, it_dialog_res_t *res);
+    const char *preview_key;    /* see Screen_PreviewKeyLabel            */
 } screen_backend_t;
 
 #ifdef _WIN32

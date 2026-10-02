@@ -639,11 +639,13 @@ required to *regenerate* it (`make vgadata`).
 
 ### MSVC directly (Windows) — the command used this session
 ```
-cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" >nul 2>&1 && cl /nologo /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c src\it_load.c src\it_pattern.c src\it_save.c src\it_import.c src\it_ris.c src\it_screen.c src\it_screen_win32.c src\it_cornerart.c src\it_vgadata.c src\it_editor.c user32.lib gdi32.lib"
+cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" >nul 2>&1 && cl /nologo /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c src\it_load.c src\it_pattern.c src\it_save.c src\it_import.c src\it_ris.c src\it_screen.c src\it_screen_win32.c src\it_cornerart.c src\it_vgadata.c src\it_editor.c src\it_dialog_win32.c src\it_dialog_mac.c src\it_dialog_posix.c user32.lib gdi32.lib ole32.lib shell32.lib uuid.lib"
 ```
 `/std:c11` is **required** (for `_Static_assert`); `/D_CRT_SECURE_NO_WARNINGS`
 silences CRT warnings. The editor needs `user32.lib gdi32.lib` (pixel
-backend). For `itplay.exe` / `test_pattern.exe`, swap the trailing
+backend) and, since feature 016, `ole32.lib shell32.lib uuid.lib` for the
+system file dialogs. The three `it_dialog_*.c` files are always listed;
+each compiles only on its own platform. For `itplay.exe` / `test_pattern.exe`, swap the trailing
 sources + `/Fe`: `src\main.c` (or `tests\test_pattern.c`) plus the
 engine files `it_music.c it_effects.c it_tables.c it_driver.c
 it_load.c it_pattern.c` **and `it_save.c`** — since feature 004 the
@@ -871,6 +873,47 @@ flag) and opens a 1-channel device; the rates 8000/11025/16000/22050
 are always listed (`drv_add_lofi`, `*` = not native). Verified 192 kHz float, exclusive,
 10 ms, on a VB-Audio virtual cable. Re-apply the patch when updating
 miniaudio.
+
+## 5c. System file dialogs (feature 016, GitHub #26)
+
+A deliberate extension; spec/plan in `specs/016-native-file-dialogs/`.
+Keys (all unbound in IT 2.14, checked against `IT_M.ASM`
+`M_FunctionDivider`): **Ctrl-Shift-F9** open module, **Ctrl-Shift-F10**
+save module as (global, also forwarded by the modal screens), **Ctrl-O**
+on F3 / F4 (load into the current slot via `lib_open_source`, i.e. the
+library requester's Enter: a standalone file loads, a module opens as a
+library) and on a focused F12 path field (folder picker). Both pixel
+backends test Ctrl+Shift+F9/F10 *before* Shift-F9.
+
+- `screen_backend_t.file_dialog` (+ `preview_key`), wrapper
+  `Screen_FileDialog()` in `it_screen.c` with the test hook
+  `ITED_DIALOG_FAKE` (`!cancel`, `!unavailable`, or a path).
+- Windows: `it_dialog_win32.c`, `IFileOpenDialog`/`IFileSaveDialog` from
+  C. miniaudio makes the UI thread COM-multithreaded, so each dialog runs
+  on its own STA thread while the UI thread pumps messages. Non-ANSI
+  names fall back to the 8.3 short path.
+- macOS: `it_dialog_mac.c`, `NSOpenPanel`/`NSSavePanel` via the
+  Objective-C runtime from C (no `.m`).
+- Linux: `it_dialog_posix.c`, `zenity` then `kdialog` via
+  `posix_spawnp`; neither installed = "No file dialog available".
+- Results reuse the original paths: `do_load_named`,
+  `save_module_dispatch` (format from type/extension, this save only,
+  `.it` appended when missing/unknown), the tracker's own overwrite
+  prompt. Directories as the screens do it: `chdir` for modules and
+  instruments, `DirSample` for samples.
+- Paths are kept twice: real (`path`) and CP437 display with `?`
+  (`display`). `FileSaveName` holds the real name Ctrl-S saves to after
+  a dialog load/save; the original screens clear it.
+- Help: port-owned lines next to `draw_help` (`help_lines()`), never in
+  the generated `it_help.inc`. macOS shows "Right Option+Key" for the
+  preview line (Preview stays in column 17); "ittrack additions" lines
+  list the keys where dialogs exist.
+- After a dialog the backend drops queued/pending keys, resets the
+  modifier state and queues `ITK_SHIFT_RELEASE`.
+- Selftest block `DLG`; `SaveNoKeyWait` skips the S3M-warning key wait
+  there only.
+- Verified on Windows with the real dialog (open, Save As, help); macOS
+  and Linux dialogs need a hand test on those machines.
 
 ## 6. Next phase
 

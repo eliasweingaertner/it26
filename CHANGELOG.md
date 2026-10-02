@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **System file dialogs** (#26, suggested by **@esaruoho**): next to
+  IT's own file screens, the operating system's dialogs as shortcuts.
+  **Ctrl-Shift-F9** opens a module and **Ctrl-Shift-F10** saves it under
+  a new name (IT or S3M, from the file type or extension), from any
+  screen. **Ctrl-O** on F3/F4 loads a sample or instrument into the
+  current slot (a module opens as a library to pick from), and on a
+  focused F12 path field picks the folder. Results are the same as with
+  IT's screens, and the folder you used becomes the current one there
+  too. Windows and macOS use their own dialogs; Linux uses `zenity` or
+  `kdialog` if installed.
+- **F1 help on the Mac** names Right Option for the note preview (#20),
+  and the help lists the new dialog keys as "ittrack additions".
+
 ## v0.6.0 — 2026-09-30
 
 Thanks again to **Esa Juhani Ruoho (@esaruoho)** for the reports behind

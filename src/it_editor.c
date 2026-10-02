@@ -27,6 +27,7 @@
  * Pattern edits are serialised against the audio thread.
  */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -204,6 +205,11 @@ static int       CurInstr = 1;
 static int       ListSel = 0;             /* sample/instrument/order index */
 static int       Running = 1;
 static char      FileNameDisp[20] = "";   /* header File Name field */
+/* feature 016: the real file name Ctrl-S saves to after a system-dialog
+ * load/save, when it differs from the display (case kept, characters
+ * CP437 cannot show kept); "" = save to FileNameDisp as before. The
+ * original screens clear it whenever they set FileNameDisp. */
+static char      FileSaveName[260] = "";
 static time_t    StartTime;
 static char      DirModule[256], DirSample[256], DirInstr[256];
 
@@ -4438,9 +4444,62 @@ static void help_expand(const uint8_t *src, uint8_t *out, int *n, int cap)
     }
 }
 
+/* ---- port-owned help lines (feature 016) ----
+ * Not IT's text: kept apart from the generated it_help.inc, in the same
+ * line encoding (start column, text, 0FFh repeat, 80h.. dictionary). On
+ * macOS the note preview is Right Option (issue #20), so that one line
+ * names it, with "Preview" in the original column 17 (13 + 4 spaces =
+ * 16 + 1). Where the system file dialogs exist, the keys are listed
+ * after the original lines under a heading that marks them as additions. */
+#define HL(s) ((const uint8_t *)(s))
+static const char PortHelpPreview[] =
+    "\x05" "Right Option+Key" "\xFF\x01\x20" "Preview " "\xA5";
+static const char PortHelpHead[] =
+    "\x03" "ittrack additions (not in Impulse Tracker).";
+static const char PortHelpOpen[] =
+    "\x05" "Ctrl-Shift-F9     Open module (system dialog)";
+static const char PortHelpSave[] =
+    "\x05" "Ctrl-Shift-F10    Save module as (system dialog)";
+static const char PortHelpSmp[] =
+    "\x05" "Ctrl-O            Load sample into this slot (system dialog)";
+static const char PortHelpIns[] =
+    "\x05" "Ctrl-O            Load instrument into this slot (system dialog)";
+static const char PortHelpDir[] =
+    "\x05" "Ctrl-O            Choose folder for a path field (system dialog)";
+
+/* the line list a context shows: IT's own, or a copy with the port lines
+ * applied (rebuilt per call -- a few hundred pointers) */
+static const uint8_t *const *help_lines(int ctx)
+{
+    static const uint8_t *buf[400];
+    const uint8_t *const *src = HelpContextPtrs[ctx];
+    const char *pk = Screen_PreviewKeyLabel();
+    int dlg = Screen_HasFileDialog(), n = 0;
+
+    if (!pk && !dlg)
+        return src;
+    for (; *src && n < 380; src++)
+        buf[n++] = (pk && *src == HLP_helpcontext1_181) ? HL(PortHelpPreview)
+                                                         : *src;
+    if (dlg) {
+        buf[n++] = HLP_newline;
+        buf[n++] = HL(PortHelpHead);
+        buf[n++] = HL(PortHelpOpen);
+        buf[n++] = HL(PortHelpSave);
+        if (ctx == 2)
+            buf[n++] = HL(PortHelpSmp);
+        else if (ctx == 7)
+            buf[n++] = HL(PortHelpIns);
+        else if (ctx == 5 && HelpReturnScreen == SCR_VARS)
+            buf[n++] = HL(PortHelpDir);     /* context 5 is shared */
+    }
+    buf[n] = NULL;
+    return buf;
+}
+
 static void draw_help(void)
 {
-    const uint8_t *const *ln = HelpContextPtrs[HelpContext] + HelpTop;
+    const uint8_t *const *ln = help_lines(HelpContext) + HelpTop;
     int i;
 
     Screen_DrawBox(1, 12, 78, 45, 27);                  /* HelpBox */
@@ -4488,7 +4547,7 @@ static int help_context_of(int scr)
  * the global keys */
 static int help_key(int key)
 {
-    const uint8_t *const *ln = HelpContextPtrs[HelpContext];
+    const uint8_t *const *ln = help_lines(HelpContext);
     int i, rows = 0;
 
     while (ln[rows])
@@ -9852,9 +9911,11 @@ static void save_s3m_warning_draw(int row, const char *msg)
 
 /* D_SaveS3M tail: when any format warning fired, hold the screen
  * until a key is pressed (K_ClearKeyboardQueue + K_GetKey wait) */
+static int SaveNoKeyWait = 0;           /* selftest only (feature 016) */
+
 static void save_s3m_keywait(void)
 {
-    if (!Save_S3MWarned)
+    if (!Save_S3MWarned || SaveNoKeyWait)
         return;
     while (ed_get_key() != ITK_NONE)
         ;                               /* clear the queue */
@@ -9919,6 +9980,7 @@ static void req_do_save(int *done)
         for (q = FileNameDisp; *q; q++)
             if (*q >= 'a' && *q <= 'z')
                 *q = (char)(*q - 32);
+        FileSaveName[0] = 0;
         status("Saved.");
         *done = 1;
     } else {
@@ -10157,6 +10219,7 @@ static int modal_global_key(int key, int help_context)
     case ITK_F9: case ITK_F10: case ITK_F11: case ITK_F12:
     case ITK_CTRL_F1: case ITK_CTRL_F3: case ITK_CTRL_F4: case ITK_SHIFT_F9:
     case ITK_SHIFT_F5:
+    case ITK_CTRL_SHIFT_F9: case ITK_CTRL_SHIFT_F10:    /* feature 016 */
         PendingGlobalKey = key;
         return 2;
     default:
@@ -11407,14 +11470,15 @@ static void instrument_library_requester(void)
  * D_SaveSong replaces the extension with IT/S3M per SaveFormat. */
 static void quick_save(void)
 {
-    char name[40], *dot;
+    char name[sizeof(FileSaveName) + 8], *dot;
     FILE *f;
 
     if (!FileNameDisp[0]) {
         save_requester();
         return;
     }
-    snprintf(name, sizeof(name), "%s", FileNameDisp);
+    snprintf(name, sizeof(name), "%s",
+             FileSaveName[0] ? FileSaveName : FileNameDisp);
     dot = strrchr(name, '.');
     if (dot && (size_t)(dot - name) < sizeof(name) - 5)
         strcpy(dot, SaveFormat == 1 ? ".S3M" : ".IT");
@@ -11460,9 +11524,282 @@ static int do_load_named(const char *path)
         for (q = FileNameDisp; *q; q++)
             if (*q >= 'a' && *q <= 'z')
                 *q = (char)(*q - 32);
+        FileSaveName[0] = 0;
         return 1;
     }
     return 0;
+}
+
+/* ===================================================================
+ * System file dialogs (feature 016, issue #26) -- an extension next to
+ * IT's own file screens: Ctrl-Shift-F9 / Ctrl-Shift-F10 (global),
+ * Ctrl-O on F3 / F4 / an F12 path field. Every result goes through the
+ * code the original screens use, and updates the same directory they
+ * would (the working directory for modules and instruments, as the
+ * F9/F10 requester's chdir; LsDir/DirSample for samples). The dialog
+ * itself lives behind the backend (Screen_FileDialog).
+ * =================================================================== */
+static int ed_dialog(int kind, const char *start, const char *suggest,
+                     it_dialog_res_t *r)
+{
+    it_dialog_req_t q;
+
+    memset(&q, 0, sizeof(q));
+    q.kind = kind;
+    q.start_dir = start;
+    q.suggest_name = suggest;
+    q.save_format = SaveFormat;
+    if (Screen_FileDialog(&q, r) == IT_DLG_CHOSEN)
+        return 1;
+    if (r->reason)
+        status("%s", r->reason);
+    return 0;
+}
+
+/* change to a directory we have been in / were handed; silent on
+ * failure (the caller has already reported its own result) */
+static void cd_back(const char *dir)
+{
+    if (dir[0] && chdir(dir) != 0)
+        return;
+}
+
+static const char *path_base(const char *p)
+{
+    const char *b = p;
+    for (; *p; p++)
+        if (*p == '/' || *p == '\\')
+            b = p + 1;
+    return b;
+}
+
+/* the folder part of a chosen path ("" = none); 0 if it does not fit */
+static int path_dir(const char *p, char *out, size_t cap)
+{
+    size_t n = (size_t)(path_base(p) - p);
+
+    if (n > 1 && (p[n - 1] == '/' || p[n - 1] == '\\') &&
+        !(n == 3 && p[1] == ':'))       /* keep "/" and "C:\" */
+        n--;
+    if (n >= cap)
+        return 0;
+    memcpy(out, p, n);
+    out[n] = 0;
+    return 1;
+}
+
+/* header File Name from the display form (upper-cased like the F9/F10
+ * screens, '?' already in place); Ctrl-S keeps the real name */
+static void dialog_set_names(const it_dialog_res_t *r, const char *realbase)
+{
+    char *q;
+
+    snprintf(FileNameDisp, sizeof(FileNameDisp), "%.*s",   /* display: cut */
+             (int)sizeof(FileNameDisp) - 1, path_base(r->display));
+    for (q = FileNameDisp; *q; q++)
+        if (*q >= 'a' && *q <= 'z')
+            *q = (char)(*q - 32);
+    snprintf(FileSaveName, sizeof(FileSaveName), "%s", realbase);
+}
+
+static void act_dialog_open_module(void)
+{
+    it_dialog_res_t r;
+    char dir[IT_DLG_PATH_MAX], keep[IT_DLG_PATH_MAX];
+    const char *base;
+
+    if (!getcwd(keep, sizeof(keep)))
+        keep[0] = 0;
+    if (!ed_dialog(IT_DLG_OPEN_MODULE, keep, NULL, &r))
+        return;
+    base = path_base(r.path);
+    if (strlen(base) >= sizeof(FileSaveName) || !path_dir(r.path, dir, sizeof(dir))) {
+        status("Path too long");
+        return;
+    }
+    if (dir[0] && chdir(dir)) {
+        status("Can't change to %s.", dir);
+        return;
+    }
+    if (do_load_named(base)) {          /* as the F9 requester's Enter */
+        dialog_set_names(&r, base);
+    } else {
+        status("Can't load %s.", path_base(r.display));
+        cd_back(keep);
+    }
+}
+
+static void act_dialog_save_module(void)
+{
+    it_dialog_res_t r;
+    char dir[IT_DLG_PATH_MAX], keep[IT_DLG_PATH_MAX];
+    char name[sizeof(FileSaveName) + 8];
+    const char *base, *dot;
+    int fmt, keepfmt = SaveFormat, ok;
+    FILE *f;
+
+    if (!getcwd(keep, sizeof(keep)))
+        keep[0] = 0;
+    if (!ed_dialog(IT_DLG_SAVE_MODULE, keep,
+                   FileSaveName[0] ? FileSaveName
+                   : FileNameDisp[0] ? FileNameDisp : "UNTITLED.IT", &r))
+        return;
+    base = path_base(r.path);
+    if (strlen(base) >= sizeof(FileSaveName) - 4 ||
+        !path_dir(r.path, dir, sizeof(dir))) {
+        status("Path too long");
+        return;
+    }
+    /* the chosen type / typed extension decides; none or an unknown
+     * one saves as IT with ".it" appended */
+    snprintf(name, sizeof(name), "%.*s", (int)sizeof(name) - 5, base);
+    dot = strrchr(name, '.');            /* (length checked above) */
+    if (dot && (Screen_SaveFormatFromName(name) == 1 ||
+                (tolower((unsigned char)dot[1]) == 'i' &&
+                 tolower((unsigned char)dot[2]) == 't' && dot[3] == 0))) {
+        fmt = Screen_SaveFormatFromName(name);
+    } else {
+        fmt = 0;
+        strcat(name, ".it");
+    }
+    if (dir[0] && chdir(dir)) {
+        status("Can't change to %s.", dir);
+        return;
+    }
+    f = fopen(name, "rb");              /* D_CheckOverWrite, as F10 */
+    if (f) {
+        fclose(f);
+        if (!confirm_overwrite(draw_screen)) {
+            cd_back(keep);
+            return;
+        }
+    }
+    commit_current_pattern();           /* PE_SaveCurrentPattern */
+    SaveFormat = fmt;                   /* this save only */
+    ok = save_module_dispatch(name);
+    SaveFormat = keepfmt;
+    if (ok) {
+        it_dialog_res_t shown = r;      /* display gets the final name */
+        if (strcmp(name, base)) {
+            size_t n = strlen(shown.display);
+            snprintf(shown.display + n, sizeof(shown.display) - n, ".it");
+        }
+        dialog_set_names(&shown, name);
+        status("Saved.");
+    } else {
+        status("Unable to save file");
+        cd_back(keep);
+    }
+}
+
+/* Ctrl-O on F3 / F4: the chosen file goes where the library requester's
+ * Enter sends it (lib_open_source): a standalone sample / instrument
+ * loads into the current slot, a module opens as a library to pick from */
+static void act_dialog_load_slot(int instruments)
+{
+    it_dialog_res_t r;
+    char dir[IT_DLG_PATH_MAX], cwd[IT_DLG_PATH_MAX];
+    int done = 0, keepmode = ReqLibMode;
+
+    if (!getcwd(cwd, sizeof(cwd)))
+        cwd[0] = 0;
+    if (!ed_dialog(instruments ? IT_DLG_OPEN_INSTRUMENT : IT_DLG_OPEN_SAMPLE,
+                   instruments ? cwd : (DirSample[0] ? DirSample : cwd),
+                   NULL, &r))
+        return;
+    if (strlen(r.path) >= sizeof(((slibent_t *)0)->SrcFile) ||
+        !path_dir(r.path, dir, sizeof(dir)) ||
+        (!instruments && strlen(dir) >= sizeof(DirSample))) {
+        status("Path too long");
+        return;
+    }
+    ReqLibMode = instruments ? 2 : 1;
+    if (instruments)
+        LibUnused = RI_UnusedSamples();     /* D_InitLoadInstruments */
+    lib_open_source(r.path, &done);
+    ReqLibMode = keepmode;
+    lib_release_check();
+    if (!done)
+        return;
+    if (instruments) {                  /* the requester's directory */
+        cd_back(dir);
+    } else {
+        memcpy(DirSample, dir, strlen(dir) + 1);    /* SampleDirectory */
+    }
+}
+
+/* Ctrl-O on F12: the focused Module / Sample / Instrument path field */
+static void act_dialog_pick_folder(void)
+{
+    it_dialog_res_t r;
+    widget_t *w;
+    char *field;
+
+    if (NW <= 0 || FocusIdx[Screen] >= NW)
+        return;
+    w = &W[FocusIdx[Screen]];
+    field = w->type == WT_TEXT ? w->text : NULL;
+    if (field != DirModule && field != DirSample && field != DirInstr)
+        return;                         /* not a path field: nothing */
+    if (!ed_dialog(IT_DLG_PICK_FOLDER, field, NULL, &r))
+        return;
+    if (strlen(r.path) > (size_t)w->tmax) {
+        status("Path too long for this field");
+        return;
+    }
+    memcpy(field, r.path, strlen(r.path) + 1);
+}
+
+/* selftest helpers (feature 016): set/clear the dialog test hook */
+static void dlg_fake(const char *v)
+{
+#ifdef _WIN32
+    _putenv_s("ITED_DIALOG_FAKE", v ? v : "");
+#else
+    if (v)
+        setenv("ITED_DIALOG_FAKE", v, 1);
+    else
+        unsetenv("ITED_DIALOG_FAKE");
+#endif
+}
+
+static int files_equal(const char *a, const char *b)
+{
+    FILE *fa = fopen(a, "rb"), *fb = fopen(b, "rb");
+    int ca, cb, same = fa && fb;
+
+    while (same) {
+        ca = fgetc(fa);
+        cb = fgetc(fb);
+        if (ca != cb)
+            same = 0;
+        if (ca == EOF || cb == EOF)
+            break;
+    }
+    if (fa) fclose(fa);
+    if (fb) fclose(fb);
+    return same;
+}
+
+/* screen column (from the line's start) where `word` begins once a help
+ * line is expanded; -1 if absent. 0FFh n c counts n columns, 0FEh a
+ * (attribute) none. */
+static int help_col_of(const uint8_t *line, const char *word)
+{
+    uint8_t buf[160];
+    int n = 0, i, col = 0;
+    size_t wl = strlen(word);
+
+    help_expand(line, buf, &n, (int)sizeof(buf) - 1);
+    buf[n] = 0;
+    for (i = 0; i < n; i++) {
+        if (buf[i] == 0xFF) { col += buf[i + 1]; i += 2; continue; }
+        if (buf[i] == 0xFE) { i += 1; continue; }
+        if ((size_t)(n - i) >= wl && !memcmp(buf + i, word, wl))
+            return col;
+        col++;
+    }
+    return -1;
 }
 
 /* default (empty) song header, as IT's F_FileNew sets up */
@@ -11514,6 +11851,7 @@ static void new_song(void)
     CurInstr = 1;
     load_pattern(0);
     FileNameDisp[0] = 0;
+    FileSaveName[0] = 0;
 }
 
 /* ited.cfg: directories + octave/edit step, written by the F12 "Save
@@ -11964,6 +12302,29 @@ static void handle_global(int key)
     case ITK_F9:  file_requester(); return;
     case ITK_F10: save_requester(); return;
     case 0x13:    quick_save(); return;     /* Ctrl-S */
+    /* -- feature 016 (issue #26): system file dialogs, extensions -- */
+    case ITK_CTRL_SHIFT_F9:
+        if (Screen != SCR_HELP)
+            act_dialog_open_module();
+        return;
+    case ITK_CTRL_SHIFT_F10:
+        if (Screen != SCR_HELP)
+            act_dialog_save_module();
+        return;
+    case 0x0F:                              /* Ctrl-O: unbound in IT */
+        if (Screen == SCR_SAMPLES) {
+            act_dialog_load_slot(0);
+            return;
+        }
+        if (Screen == SCR_INSTRUMENTS && !InstrumentEdit) {
+            act_dialog_load_slot(1);
+            return;
+        }
+        if (Screen == SCR_VARS) {
+            act_dialog_pick_folder();
+            return;
+        }
+        break;
     /* -- hotkey audit (2026-09): the rest of the global key list -- */
     case 0x0C: case 0x12:                   /* Ctrl-L / Ctrl-R = Glbl_F9 */
         file_requester(); return;
@@ -15437,6 +15798,275 @@ int main(int argc, char **argv)
             }
             fprintf(stderr, "ITED selftest: [%s]\n",
                     l_ok ? "LSS OK" : "LSS FAIL");
+        }
+
+        /* ---- feature 016: system file dialogs, driven through the
+         * ITED_DIALOG_FAKE hook (no UI; any backend) ---- */
+        {
+            int d_ok = 1, i, n, dfail_line = 0;
+#define DFAIL() do { if (d_ok) dfail_line = __LINE__; d_ok = 0; } while (0)
+            char home[IT_DLG_PATH_MAX], cwd[IT_DLG_PATH_MAX];
+            char keepdir[sizeof(DirSample)];
+            int keepscr = Screen, keepsel = ListSel;
+            const uint8_t *const *hl;
+
+            if (!getcwd(home, sizeof(home)))
+                home[0] = 0;
+            memcpy(keepdir, DirSample, sizeof(keepdir));
+
+            /* reference song */
+            if (!do_load_named("testdata/itdemo.it"))
+                DFAIL();
+
+            /* cancel / unavailable / overlong: nothing changes */
+            dlg_fake("!cancel");
+            FileNameDisp[0] = 0;
+            handle_global(ITK_CTRL_SHIFT_F9);
+            if (FileNameDisp[0] || !getcwd(cwd, sizeof(cwd)) || strcmp(cwd, home))
+                DFAIL();
+            dlg_fake("!unavailable");
+            StatusMsg[0] = 0;
+            handle_global(ITK_CTRL_SHIFT_F9);
+            if (!strstr(StatusMsg, "No file dialog available") || FileNameDisp[0])
+                DFAIL();
+            {
+                static char longp[1100];
+                memset(longp, 'a', sizeof(longp) - 1);
+                longp[sizeof(longp) - 1] = 0;
+                dlg_fake(longp);
+                StatusMsg[0] = 0;
+                handle_global(ITK_CTRL_SHIFT_F9);
+                if (!strstr(StatusMsg, "too long") || FileNameDisp[0])
+                    DFAIL();
+            }
+
+            /* US1: open = the F9 load, and the folder becomes current */
+            {
+                char name0[27];
+                uint16_t ord0 = Song.Header.OrdNum, pat0 = Song.Header.PatNum;
+                memcpy(name0, Song.Header.SongName, sizeof(name0));
+                act_file_new();
+                dlg_fake("testdata/itdemo.it");
+                handle_global(ITK_CTRL_SHIFT_F9);
+                if (memcmp(name0, Song.Header.SongName, sizeof(name0)) ||
+                    Song.Header.OrdNum != ord0 || Song.Header.PatNum != pat0 ||
+                    strcmp(FileNameDisp, "ITDEMO.IT") ||
+                    strcmp(FileSaveName, "itdemo.it"))
+                    DFAIL();
+                if (!getcwd(cwd, sizeof(cwd)) ||
+                    strcmp(path_base(cwd), "testdata"))
+                    DFAIL();
+                cd_back(home);
+            }
+            /* Shift-F9 is still the message editor */
+            handle_global(ITK_SHIFT_F9);
+            if (Screen != SCR_MESSAGE)
+                DFAIL();
+            Screen = keepscr;
+
+            /* US2: Save As = the F10 writer, byte for byte; the format
+             * follows the extension; SaveFormat is left as it was */
+            {
+                const char *wd = "st_dlg_work";
+                static const char *const files[4] = {
+                    "dlg_a.it", "dlg_b.IT", "dlg_c.s3m", "dlg_d.S3M" };
+                int keepfmt = SaveFormat, pass, j;
+#ifdef _WIN32
+                _mkdir(wd);
+#else
+                mkdir(wd, 0777);
+#endif
+                SaveNoKeyWait = 1;              /* S3M warnings: no wait */
+                for (j = 0; j < 4; j++) {       /* fresh: no overwrite prompt */
+                    char p[300];
+                    snprintf(p, sizeof(p), "%s/%s", wd, files[j]);
+                    remove(p);
+                }
+                for (pass = 0; pass < 2; pass++) {   /* IT, then S3M */
+                    int same = 0, tries;
+                    for (tries = 0; tries < 2 && !same; tries++) {
+                        /* a second boundary between the two writes
+                         * changes the stored edit time: one retry, on
+                         * fresh files (no overwrite prompt) */
+                        char p1[300], p2[300];
+                        snprintf(p1, sizeof(p1), "%s/%s", wd, files[pass * 2]);
+                        snprintf(p2, sizeof(p2), "%s/%s", wd, files[pass * 2 + 1]);
+                        remove(p1);
+                        remove(p2);
+                        dlg_fake(pass ? "st_dlg_work/dlg_c.s3m"
+                                      : "st_dlg_work/dlg_a");
+                        handle_global(ITK_CTRL_SHIFT_F10);
+                        SaveFormat = pass;
+                        save_module_dispatch(files[pass * 2 + 1]);
+                        SaveFormat = keepfmt;
+                        same = files_equal(files[pass * 2],
+                                           files[pass * 2 + 1]);
+                        cd_back(home);
+                    }
+                    if (!same)
+                        DFAIL();
+                }
+                SaveNoKeyWait = 0;
+                if (SaveFormat != keepfmt)
+                    DFAIL();
+                dlg_fake("!cancel");                /* writes nothing */
+                handle_global(ITK_CTRL_SHIFT_F10);
+                for (j = 0; j < 4; j++) {
+                    char p[300];
+                    snprintf(p, sizeof(p), "%s/%s", wd, files[j]);
+                    remove(p);
+                }
+#ifdef _WIN32
+                _rmdir(wd);
+#else
+                rmdir(wd);
+#endif
+                if (!do_load_named("testdata/itdemo.it"))  /* names reset */
+                    DFAIL();
+            }
+
+            /* US3: Ctrl-O on F3 / F4 = the library requester's load */
+            {
+                uint16_t keepnum = Song.Header.SmpNum, keepins = Song.Header.InsNum;
+                uint16_t keepflags = Song.Header.Flags;
+                slibent_t ref[4];
+                sample_t t;
+                uint8_t had[99];
+                instrument_t keepi = Song.Ins[98];
+
+                Song.Header.Flags &= (uint16_t)~ITF_INSTRUMENTS;    /* no
+                                                   host-instrument prompt */
+                Screen = SCR_SAMPLES;
+                ListSel = 97;
+                dlg_fake("testdata/lib_test8.wav");
+                handle_global(0x0F);
+                memset(&t, 0, sizeof(t));
+                if (RIS_ScanModule("testdata/lib_test8.wav", ref, 4) != 1 ||
+                    !RIS_LoadSample(&ref[0], &t))
+                    DFAIL();
+                else {
+                    sample_t *d = &Song.Smp[97];
+                    size_t bytes = (size_t)t.Length << ((t.Flags & 2) ? 1 : 0);
+                    if (!(d->Flags & 1) || d->Length != t.Length ||
+                        d->LoopBeg != t.LoopBeg || d->LoopEnd != t.LoopEnd ||
+                        d->C5Speed != t.C5Speed || !d->Data || !t.Data ||
+                        memcmp(d->Data, t.Data, bytes))
+                        DFAIL();
+                    free(t.Data);
+                }
+                if (strcmp(DirSample, "testdata"))
+                    DFAIL();
+                smp_free_data(&Song.Smp[97]);
+                Music_InitSample(&Song.Smp[97]);
+                dlg_fake("!cancel");
+                handle_global(0x0F);
+                if (Song.Smp[97].Flags & 1)
+                    DFAIL();
+                Song.Header.SmpNum = keepnum;
+
+                for (i = 0; i < 99; i++)
+                    had[i] = (uint8_t)(Song.Smp[i].Flags & 1);
+                Song.Header.Flags = keepflags;
+                Screen = SCR_INSTRUMENTS;
+                ListSel = 98;
+                dlg_fake("testdata/lib_test.xi");
+                handle_global(0x0F);
+                if (!Song.Ins[98].InstrumentName[0] ||
+                    strcmp(path_base(getcwd(cwd, sizeof(cwd)) ? cwd : ""),
+                           "testdata"))
+                    DFAIL();
+                cd_back(home);
+                for (i = 0; i < 99; i++)                /* undo the load */
+                    if (!had[i] && (Song.Smp[i].Flags & 1)) {
+                        smp_free_data(&Song.Smp[i]);
+                        Music_InitSample(&Song.Smp[i]);
+                    }
+                Song.Ins[98] = keepi;
+                Song.Header.SmpNum = keepnum;
+                Song.Header.InsNum = keepins;
+                Song.Header.Flags = keepflags;
+            }
+
+            /* US4: Ctrl-O on an F12 path field */
+            {
+                int fi = -1, other = -1;
+                Screen = SCR_VARS;
+                draw_screen();                  /* builds the widgets */
+                for (i = 0; i < NW; i++) {
+                    if (W[i].type == WT_TEXT && W[i].text == DirSample)
+                        fi = i;
+                    else if (other < 0 && !(W[i].type == WT_TEXT &&
+                             (W[i].text == DirModule || W[i].text == DirInstr)))
+                        other = i;
+                }
+                if (fi < 0)
+                    DFAIL();
+                else {
+                    FocusIdx[SCR_VARS] = fi;
+                    dlg_fake("testdata");
+                    handle_global(0x0F);
+                    if (strcmp(DirSample, "testdata"))
+                        DFAIL();
+                    dlg_fake("testdata/\xF0\x9F\x8E\xB5");  /* emoji */
+                    StatusMsg[0] = 0;
+                    handle_global(0x0F);
+                    if (strcmp(DirSample, "testdata") ||
+                        !strstr(StatusMsg, "cannot show"))
+                        DFAIL();
+                    {
+                        char seventy[71];
+                        memset(seventy, 'b', 70);
+                        seventy[70] = 0;
+                        dlg_fake(seventy);
+                        StatusMsg[0] = 0;
+                        handle_global(0x0F);
+                        if (strcmp(DirSample, "testdata") ||
+                            !strstr(StatusMsg, "too long"))
+                            DFAIL();
+                    }
+                    if (other >= 0) {
+                        FocusIdx[SCR_VARS] = other;
+                        dlg_fake("st_never");
+                        handle_global(0x0F);
+                        if (!strcmp(DirModule, "st_never") ||
+                            !strcmp(DirSample, "st_never") ||
+                            !strcmp(DirInstr, "st_never"))
+                            DFAIL();
+                    }
+                }
+            }
+
+            /* US5: help -- additions only where dialogs exist; the
+             * macOS preview line keeps "Preview" in its column */
+            dlg_fake("!cancel");
+            hl = help_lines(1);
+            for (n = 0; hl[n]; n++)
+                ;
+            if (n < 3 || hl[n - 1] != HL(PortHelpSave) ||
+                hl[n - 3] != HL(PortHelpHead))
+                DFAIL();
+            dlg_fake(NULL);
+            if (!Screen_HasFileDialog() && help_lines(1) != HelpContextPtrs[1])
+                DFAIL();
+            if (help_col_of(HL(PortHelpPreview) + 1, "Preview") !=
+                help_col_of(HLP_helpcontext1_181 + 1, "Preview") ||
+                help_col_of(HL(PortHelpPreview) + 1, "Preview") < 0) {
+                fprintf(stderr, "ITED selftest: DLG preview col %d vs %d\n",
+                        help_col_of(HL(PortHelpPreview) + 1, "Preview"),
+                        help_col_of(HLP_helpcontext1_181 + 1, "Preview"));
+                DFAIL();
+            }
+
+            dlg_fake(NULL);
+            cd_back(home);
+            memcpy(DirSample, keepdir, sizeof(keepdir));
+            Screen = keepscr;
+            ListSel = keepsel;
+            if (!d_ok)
+                fprintf(stderr, "ITED selftest: DLG first failure at line %d\n", dfail_line);
+#undef DFAIL
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    d_ok ? "DLG OK" : "DLG FAIL");
         }
 
         commit_current_pattern();
