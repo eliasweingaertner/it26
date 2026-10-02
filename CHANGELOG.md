@@ -24,6 +24,11 @@
   files (.ITI, .XI) and modules with instruments (.IT, .XM) are listed;
   a module opens in place to pick an instrument from. The folder is the
   F12 instrument directory, as in IT.
+- **The help's Ctrl keys work** (#28): **Ctrl-E** redraws the screen,
+  **Ctrl-I** reinitialises the sound driver (reopens the audio device,
+  playback continues; handy after unplugging an interface), **Ctrl-M**
+  shows/hides the mouse pointer. Ctrl-D (DOS Shell) has nothing to shell
+  to, so the help no longer lists it.
 - **Ctrl-Q works on the file screens** (#27): Load Sample, Load
   Instrument, the libraries and the F9/F10 file screens ask "Exit
   Impulse Tracker?" right there; Cancel stays on the screen.

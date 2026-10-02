@@ -37,6 +37,7 @@ static int       MouseB;
 static int       SkipChar;              /* WM_CHAR that duplicates a key
                                            already pushed from WM_KEYDOWN */
 static int       FullScr;               /* Alt-Enter borderless fullscreen */
+static int       MouseHidden;           /* #28: Ctrl-M, pointer hidden */
 static WINDOWPLACEMENT SavedPlacement;
 static int       DstX, DstY;            /* letterboxed blit rect (for the */
 static int       DstW = PIX_W * SCALE;  /* window -> logical mouse map)   */
@@ -356,6 +357,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_F2:     PushKey(ITK_CTRL_F2);        return 0;
             case 'H':       PushKey(0x08);               return 0;
                             /* Ctrl-H (row hilight); WM_CHAR drops 08h */
+            case 'I':       PushKey(0x09);               return 0;
+                            /* Ctrl-I = Music_ReinitSoundCard (#28); the
+                               09h WM_CHAR is dropped (Tab is VK_TAB) */
+            case 'M':       PushKey(0x0D);               return 0;
+                            /* Ctrl-M = MouseToggle (#28); 0Dh likewise */
             default: break;
             }
         }
@@ -460,6 +466,12 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             PushKeyCh((int)wp, 0);      /* Ctrl-A..Z (BS/Tab/CR are
                                            delivered as VK keys above) */
         return 0;
+    case WM_SETCURSOR:                  /* #28: MouseToggle (Ctrl-M) */
+        if (MouseHidden && LOWORD(lp) == HTCLIENT) {
+            SetCursor(NULL);
+            return TRUE;
+        }
+        break;
     case WM_MOUSEMOVE:
         MouseFromLParam(lp);
         return 0;
@@ -651,9 +663,16 @@ static int W32_FileDialog(const it_dialog_req_t *req, it_dialog_res_t *res)
     return r;
 }
 
+/* #28: MouseToggle -- hide the pointer while it is over the window */
+static void W32_MouseVisible(int show)
+{
+    MouseHidden = !show;
+    SetCursor(show ? LoadCursor(NULL, IDC_ARROW) : NULL);
+}
+
 const screen_backend_t Screen_BackendWin32 = {
     W32_Init, W32_UnInit, W32_Present, W32_Key, W32_Mouse, W32_KeyEvent,
-    W32_FileDialog, NULL
+    W32_FileDialog, NULL, NULL, W32_MouseVisible
 };
 
 #endif /* _WIN32 */

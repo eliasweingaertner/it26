@@ -1509,6 +1509,29 @@ const char *Screen_DialogModLabel(void)
     return Backend ? Backend->dialog_mod : NULL;
 }
 
+/* #28: MouseToggle / Refresh */
+static int MouseShown = 1;
+
+void Screen_SetMouseVisible(int show)
+{
+    MouseShown = show ? 1 : 0;
+    if (Backend && Backend->mouse_visible)
+        Backend->mouse_visible(MouseShown);
+}
+
+int Screen_MouseVisible(void)
+{
+    return MouseShown;
+}
+
+void Screen_Refresh(void)
+{
+    /* the terminal sends only cells that changed since TermFront; make
+     * every cell differ. The pixel backends repaint the whole frame on
+     * every present anyway. */
+    memset(TermFront, 0xFF, sizeof(TermFront));
+}
+
 int Screen_FileDialog(const it_dialog_req_t *req, it_dialog_res_t *res)
 {
     const char *fake = FakeDialog();

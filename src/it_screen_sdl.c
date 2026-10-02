@@ -689,15 +689,22 @@ static int SDL_BFileDialog(const it_dialog_req_t *req, it_dialog_res_t *res)
     return r;
 }
 
+/* #28: MouseToggle (Ctrl-M) */
+static void SDL_BMouseVisible(int show)
+{
+    SDL_ShowCursor(show ? SDL_ENABLE : SDL_DISABLE);
+}
+
 const screen_backend_t Screen_BackendSDL = {
     SDL_BInit, SDL_BUnInit, SDL_BPresent, SDL_BKey, SDL_BMouse,
     SDL_BKeyEvent, SDL_BFileDialog,
 #ifdef __APPLE__
     "Right Option",     /* the held note preview (issue #20), not Caps Lock */
-    "Cmd"               /* dialog keys: Cmd-F9 / Cmd-F10 / Cmd-O */
+    "Cmd",              /* dialog keys: Cmd-F9 / Cmd-F10 / Cmd-O */
 #else
-    NULL, NULL
+    NULL, NULL,
 #endif
+    SDL_BMouseVisible
 };
 
 #endif /* HAVE_SDL */

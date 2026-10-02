@@ -303,6 +303,9 @@ places where it deliberately or unavoidably differs.
 - **Ctrl-F2** pushes one undo snapshot of the current pattern before
   resizing; the original's resize isn't undoable.
 - **Replacing an instrument** asks "Replace instrument N?" first.
+- **Ctrl-D (DOS Shell)** isn't offered, since there's no DOS to shell
+  to; the help doesn't list it (#28). Ctrl-E redraws the screen, Ctrl-I
+  reopens the audio device, Ctrl-M shows/hides the mouse pointer.
 - **Windows:** while ittrack is in front, it keeps left-Alt shortcuts
   away from other programs' global hotkeys (the NVIDIA overlay, for
   example, takes Alt-F1…F3).

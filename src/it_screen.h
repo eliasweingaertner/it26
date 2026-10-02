@@ -276,6 +276,11 @@ typedef struct it_mouse_t {
 } it_mouse_t;
 void Screen_GetMouse(it_mouse_t *m);
 
+/* #28: IT's MouseToggle (Ctrl-M) and Refresh (Ctrl-E) */
+void Screen_SetMouseVisible(int show);
+int  Screen_MouseVisible(void);
+void Screen_Refresh(void);      /* next Screen_Update repaints everything */
+
 /* ---- system file dialogs (feature 016, issue #26) ----
  * An extension next to IT's own file screens: the host's open / save /
  * folder dialog. The result carries the path twice -- `path` for the C
@@ -367,6 +372,9 @@ typedef struct screen_backend_t {
     int  (*file_dialog)(const it_dialog_req_t *req, it_dialog_res_t *res);
     const char *preview_key;    /* see Screen_PreviewKeyLabel            */
     const char *dialog_mod;     /* see Screen_DialogModLabel             */
+    /* #28: Ctrl-M (MouseToggle) -- show/hide the pointer over the
+     * window; NULL = no pointer to hide (terminal) */
+    void (*mouse_visible)(int show);
 } screen_backend_t;
 
 #ifdef _WIN32

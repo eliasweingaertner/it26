@@ -4478,7 +4478,7 @@ static const char PortHelpInsMac[] =
 static const char PortHelpDirMac[] =
     "\x05" "Cmd-O             Choose folder for a path field (system dialog)";
 
-/* the line list a context shows: IT's own, or a copy with the port lines
+/* the line list a context shows: a copy of IT's own with the port lines
  * applied (rebuilt per call -- a few hundred pointers) */
 static const uint8_t *const *help_lines(int ctx)
 {
@@ -4487,11 +4487,14 @@ static const uint8_t *const *help_lines(int ctx)
     const char *pk = Screen_PreviewKeyLabel();
     int dlg = Screen_HasFileDialog(), n = 0;
 
-    if (!pk && !dlg)
-        return src;
-    for (; *src && n < 380; src++)
+    for (; *src && n < 380; src++) {
+        if (*src == HLP_helpglobal_16)  /* "Ctrl-D  DOS Shell": no DOS to
+                                           shell to (#28; parked for a
+                                           later re-addition) */
+            continue;
         buf[n++] = (pk && *src == HLP_helpcontext1_181) ? HL(PortHelpPreview)
                                                          : *src;
+    }
     if (dlg) {
         int mac = Screen_DialogModLabel() != NULL;
         buf[n++] = HLP_newline;
@@ -10223,6 +10226,7 @@ static int modal_global_key(int key, int help_context)
     switch (key) {
     case ITK_F6: case ITK_F7: case ITK_F8:
     case ITK_CTRL_F5: case ITK_SHIFT_F6:
+    case 0x05: case 0x09: case 0x0D:    /* Ctrl-E / I / M (#28) */
     in_place:
         handle_global(key);
         return 1;
@@ -12440,12 +12444,25 @@ static int act_pb_mark(void)
     return 1;
 }
 static int act_pb_stop(void) { stop_song(); return 1; }
+/* Music_ReinitSoundCard (Ctrl-I, #28): DriverReinitSound re-initialises
+ * the card; here that is reopening the audio device (helps after the
+ * device changed or was unplugged) with the mixer reset. Rate and format
+ * stay, so the song keeps playing. */
+static int audio_open(void);
 static int act_pb_reinit(void)
 {
+    if (DeviceUp) {                     /* no engine lock held: uninit
+                                           waits for the callback */
+        ma_device_uninit(&Device);
+        DeviceUp = 0;
+    }
     ed_lock();
     Driver->InitSound();
     ed_unlock();
-    status("Sound driver reinitialised.");
+    if (audio_open())
+        status("Sound driver reinitialised.");
+    else
+        status("Can't open the audio device.");
     return 1;
 }
 static void drv_open(void);
@@ -12729,6 +12746,17 @@ static void handle_global(int key)
         file_requester(); return;
     case 0x17:    save_requester(); return; /* Ctrl-W = Glbl_F10 */
     case 0x0E:    act_file_new(); return;   /* Ctrl-N: F_NewSong */
+    /* #28: the rest of the help's Ctrl keys (Ctrl-D DOSShell is not
+     * offered -- no DOS to shell to; its help line is hidden) */
+    case 0x05:                              /* Ctrl-E: Refresh -- repaint
+                                               everything (no cache files
+                                               to reset in the port) */
+        Screen_Refresh();
+        return;
+    case 0x09:    act_pb_reinit(); return;  /* Ctrl-I: Music_ReinitSoundCard */
+    case 0x0D:                              /* Ctrl-M: MouseToggle */
+        Screen_SetMouseVisible(!Screen_MouseVisible());
+        return;
     case 0x10:    act_pb_length(); return;  /* Ctrl-P: Music_TimeSong */
     case ITK_CTRL_F4: act_ins_lib(); return;    /* Glbl_Ctrl_F4 */
     case ITK_SHIFT_F5: drv_open(); return;      /* Glbl_DriverScreen */
@@ -16450,8 +16478,18 @@ int main(int argc, char **argv)
                 hl[n - 3] != HL(PortHelpHead))
                 DFAIL();
             dlg_fake(NULL);
-            if (!Screen_HasFileDialog() && help_lines(1) != HelpContextPtrs[1])
-                DFAIL();
+            if (!Screen_HasFileDialog()) {  /* IT's lines, minus Ctrl-D (#28) */
+                const uint8_t *const *o = HelpContextPtrs[1];
+                const uint8_t *const *m = help_lines(1);
+                int a = 0, b = 0;
+                for (; o[a]; a++) {
+                    if (o[a] == HLP_helpglobal_16)
+                        continue;
+                    if (m[b++] != o[a]) { DFAIL(); break; }
+                }
+                if (m[b])
+                    DFAIL();
+            }
             if (help_col_of(HL(PortHelpPreview) + 1, "Preview") !=
                 help_col_of(HLP_helpcontext1_181 + 1, "Preview") ||
                 help_col_of(HL(PortHelpPreview) + 1, "Preview") < 0) {
@@ -16589,6 +16627,27 @@ int main(int argc, char **argv)
                 new_song();
             }
             memcpy(DirInstr, keepins, sizeof(keepins));
+
+            /* #28: Ctrl-E / Ctrl-I / Ctrl-M do something; the help no
+             * longer lists Ctrl-D in any context */
+            {
+                int c, k2;
+                handle_global(0x0D);                    /* Ctrl-M: hide */
+                if (Screen_MouseVisible()) LFAIL();
+                handle_global(0x0D);                    /* and show */
+                if (!Screen_MouseVisible()) LFAIL();
+                StatusMsg[0] = 0;
+                handle_global(0x09);                    /* Ctrl-I */
+                if (!strstr(StatusMsg, "reinitialised") &&
+                    !strstr(StatusMsg, "audio device"))
+                    LFAIL();
+                handle_global(0x05);                    /* Ctrl-E: no crash */
+                for (c = 0; c < 15; c++) {
+                    const uint8_t *const *hl2 = help_lines(c);
+                    for (k2 = 0; hl2[k2]; k2++)
+                        if (hl2[k2] == HLP_helpglobal_16) { LFAIL(); break; }
+                }
+            }
 
             /* Ctrl-Q on a file screen: asks in place; Cancel stays */
             memset(&fk, 0, sizeof(fk));

@@ -936,6 +936,33 @@ sorted (same deviation as Load Sample). The file requester's old
 screens: `modal_global_key` asks in place (`bg_keep`). Selftest block
 `LI`.
 
+## 5e. Help-screen Ctrl keys (#28, 2026-10-02)
+
+The global help lists Ctrl-D/E/I/M; until #28 none of them did anything.
+Now (IT_OBJ1.ASM 3154..3184):
+- **Ctrl-E** `Refresh` → `Screen_Refresh()` (full repaint; the terminal
+  forgets `TermFront`). No cache files exist to reset.
+- **Ctrl-I** `Music_ReinitSoundCard` → `act_pb_reinit()`: reopens the
+  audio device and resets the mixer, rate/format kept, song keeps
+  playing (also the menu's "Reinit Soundcard").
+- **Ctrl-M** `MouseToggle` → `Screen_SetMouseVisible()`, backend member
+  `mouse_visible` (Win32 `WM_SETCURSOR`, SDL `SDL_ShowCursor`).
+- Ctrl-I / Ctrl-M share their control codes with Tab / Enter (09h/0Dh):
+  the Win32 backend pushes them explicitly from `WM_KEYDOWN` (its
+  `WM_CHAR` drops 9/13); SDL already sends Ctrl-letter codes; the
+  terminal maps a real Tab/Enter to `ITK_TAB`/`ITK_ENTER`.
+
+### Parked: Ctrl-D (DOSShell)
+
+Not offered: there is no DOS to shell to. Its help line
+(`HLP_helpglobal_16`, "Ctrl-D  DOS Shell") is left out by `help_lines()`;
+the File menu's "Shell to DOS (Ctrl-D)" stays (IT's menu layout) and
+reports "No DOS to shell to.". **To re-add later:** open the system's
+terminal in the current directory (Windows `cmd`/Terminal, macOS
+Terminal.app via `open -a Terminal .`, Linux `$TERMINAL` / `x-terminal-
+emulator`), bind 04h in `handle_global`, point `act_file_shell` at it and
+drop the `HLP_helpglobal_16` filter.
+
 ## 6. Next phase
 
 Stage-4 status: the "make it the real IT UI" milestone landed
