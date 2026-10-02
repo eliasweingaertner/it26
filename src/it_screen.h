@@ -312,6 +312,9 @@ int  Screen_HasFileDialog(void);        /* backend dialog or fake hook   */
 /* label of the held note-preview key where it is not Caps Lock (macOS:
  * "Right Option"); NULL = Caps Lock, IT's own help text applies */
 const char *Screen_PreviewKeyLabel(void);
+/* "Cmd" where the host has its own shorter dialog keys (macOS: Cmd-F9,
+ * Cmd-F10, Cmd-O next to Ctrl-Shift-F9/F10, Ctrl-O); NULL elsewhere */
+const char *Screen_DialogModLabel(void);
 /* UTF-8 -> CP437 for display, '?' per unmappable character; returns 1
  * if anything was substituted */
 int  Screen_Utf8ToCP437Display(const char *utf8, char *out, size_t cap);
@@ -363,6 +366,7 @@ typedef struct screen_backend_t {
      * returns (no key typed into the dialog, no modifier left held). */
     int  (*file_dialog)(const it_dialog_req_t *req, it_dialog_res_t *res);
     const char *preview_key;    /* see Screen_PreviewKeyLabel            */
+    const char *dialog_mod;     /* see Screen_DialogModLabel             */
 } screen_backend_t;
 
 #ifdef _WIN32

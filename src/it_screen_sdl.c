@@ -224,6 +224,23 @@ static void PumpEvents(void)
                 PushKey(kc == SDLK_F9 ? ITK_CTRL_SHIFT_F9 : ITK_CTRL_SHIFT_F10);
                 break;
             }
+#ifdef __APPLE__
+            /* Mac twins, one key fewer (F-keys need Fn there): Cmd-F9 /
+             * Cmd-F10 = Ctrl-Shift-F9 / -F10, Cmd-O = Ctrl-O. macOS and
+             * SDL's own menu (Cmd-Q/H/M) use none of them; IT has no Cmd
+             * key at all. */
+            if ((mod & KMOD_GUI) && !(mod & (KMOD_CTRL | KMOD_ALT))) {
+                if (kc == SDLK_F9 || kc == SDLK_F10) {
+                    PushKey(kc == SDLK_F9 ? ITK_CTRL_SHIFT_F9
+                                          : ITK_CTRL_SHIFT_F10);
+                    break;
+                }
+                if (kc == SDLK_o && !(mod & KMOD_SHIFT)) {
+                    PushKey(0x0F);          /* as Ctrl-O */
+                    break;
+                }
+            }
+#endif
             if (kc == SDLK_F9 && (mod & KMOD_SHIFT)) {
                 PushKey(ITK_SHIFT_F9);
                 break;
@@ -676,9 +693,10 @@ const screen_backend_t Screen_BackendSDL = {
     SDL_BInit, SDL_BUnInit, SDL_BPresent, SDL_BKey, SDL_BMouse,
     SDL_BKeyEvent, SDL_BFileDialog,
 #ifdef __APPLE__
-    "Right Option"      /* the held note preview (issue #20), not Caps Lock */
+    "Right Option",     /* the held note preview (issue #20), not Caps Lock */
+    "Cmd"               /* dialog keys: Cmd-F9 / Cmd-F10 / Cmd-O */
 #else
-    NULL
+    NULL, NULL
 #endif
 };
 

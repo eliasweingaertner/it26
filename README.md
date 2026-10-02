@@ -314,8 +314,10 @@ places where it deliberately or unavoidably differs.
   **Ctrl-Shift-F9** opens a module and **Ctrl-Shift-F10** saves it under
   a new name, from any screen; **Ctrl-O** loads a sample or instrument
   into the current slot on F3/F4, or picks the folder for a focused F12
-  path field. The result goes through the same code as IT's own file
-  screens. Save As picks IT or S3M from the file type or extension.
+  path field. On the Mac, where F-keys need Fn, **Cmd-F9**, **Cmd-F10**
+  and **Cmd-O** do the same (the Ctrl keys work there too). The result
+  goes through the same code as IT's own file screens. Save As picks IT
+  or S3M from the file type or extension.
   Windows and macOS use their own dialogs; Linux needs `zenity` or
   `kdialog`; the terminal mode has none. Names with characters the
   tracker's character set lacks still load and save; on screen those

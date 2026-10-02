@@ -883,7 +883,10 @@ save module as (global, also forwarded by the modal screens), **Ctrl-O**
 on F3 / F4 (load into the current slot via `lib_open_source`, i.e. the
 library requester's Enter: a standalone file loads, a module opens as a
 library) and on a focused F12 path field (folder picker). Both pixel
-backends test Ctrl+Shift+F9/F10 *before* Shift-F9.
+backends test Ctrl+Shift+F9/F10 *before* Shift-F9. macOS (SDL backend)
+also maps Cmd-F9 / Cmd-F10 / Cmd-O to the same codes (F-keys need Fn on
+a Mac); `screen_backend_t.dialog_mod = "Cmd"` switches the help lines to
+those keys.
 
 - `screen_backend_t.file_dialog` (+ `preview_key`), wrapper
   `Screen_FileDialog()` in `it_screen.c` with the test hook

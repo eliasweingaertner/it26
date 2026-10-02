@@ -4466,6 +4466,17 @@ static const char PortHelpIns[] =
     "\x05" "Ctrl-O            Load instrument into this slot (system dialog)";
 static const char PortHelpDir[] =
     "\x05" "Ctrl-O            Choose folder for a path field (system dialog)";
+/* macOS: the shorter Cmd twins (F-keys need Fn there) */
+static const char PortHelpOpenMac[] =
+    "\x05" "Cmd-F9            Open module (system dialog)";
+static const char PortHelpSaveMac[] =
+    "\x05" "Cmd-F10           Save module as (system dialog)";
+static const char PortHelpSmpMac[] =
+    "\x05" "Cmd-O             Load sample into this slot (system dialog)";
+static const char PortHelpInsMac[] =
+    "\x05" "Cmd-O             Load instrument into this slot (system dialog)";
+static const char PortHelpDirMac[] =
+    "\x05" "Cmd-O             Choose folder for a path field (system dialog)";
 
 /* the line list a context shows: IT's own, or a copy with the port lines
  * applied (rebuilt per call -- a few hundred pointers) */
@@ -4482,16 +4493,17 @@ static const uint8_t *const *help_lines(int ctx)
         buf[n++] = (pk && *src == HLP_helpcontext1_181) ? HL(PortHelpPreview)
                                                          : *src;
     if (dlg) {
+        int mac = Screen_DialogModLabel() != NULL;
         buf[n++] = HLP_newline;
         buf[n++] = HL(PortHelpHead);
-        buf[n++] = HL(PortHelpOpen);
-        buf[n++] = HL(PortHelpSave);
+        buf[n++] = HL(mac ? PortHelpOpenMac : PortHelpOpen);
+        buf[n++] = HL(mac ? PortHelpSaveMac : PortHelpSave);
         if (ctx == 2)
-            buf[n++] = HL(PortHelpSmp);
+            buf[n++] = HL(mac ? PortHelpSmpMac : PortHelpSmp);
         else if (ctx == 7)
-            buf[n++] = HL(PortHelpIns);
-        else if (ctx == 5 && HelpReturnScreen == SCR_VARS)
-            buf[n++] = HL(PortHelpDir);     /* context 5 is shared */
+            buf[n++] = HL(mac ? PortHelpInsMac : PortHelpIns);
+        else if (ctx == 5 && HelpReturnScreen == SCR_VARS)  /* shared ctx */
+            buf[n++] = HL(mac ? PortHelpDirMac : PortHelpDir);
     }
     buf[n] = NULL;
     return buf;

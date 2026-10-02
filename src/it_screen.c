@@ -1504,6 +1504,11 @@ const char *Screen_PreviewKeyLabel(void)
     return Backend ? Backend->preview_key : NULL;
 }
 
+const char *Screen_DialogModLabel(void)
+{
+    return Backend ? Backend->dialog_mod : NULL;
+}
+
 int Screen_FileDialog(const it_dialog_req_t *req, it_dialog_res_t *res)
 {
     const char *fake = FakeDialog();
