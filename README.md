@@ -293,10 +293,11 @@ places where it deliberately or unavoidably differs.
   the original file format is still supported via `keyboard_cfg=` in
   `ited.cfg` (`tools/asm_keyboard_cfg.py` assembles the shipped
   `Keyboard/*.ASM` tables).
-- **Load Sample screen:** the list is always sorted (the original sorts
-  only once background identification finishes), there is no
-  `CACHE.ITS`, and saving an edited sample keeps its file format (the
-  original always wrote ITS data, even under a `.WAV` name).
+- **Load Sample and Load Instrument screens:** the list is always sorted
+  (the original sorts only once background identification finishes),
+  there is no `CACHE.ITS` / `CACHE.ITI`, and saving an edited sample
+  keeps its file format (the original always wrote ITS data, even under
+  a `.WAV` name).
 - **Ctrl-F1** opens a keypress table as in IT, but with the port's own
   layout (a scrolling event log) instead of the original's two hex grids.
 - **Ctrl-F2** pushes one undo snapshot of the current pattern before

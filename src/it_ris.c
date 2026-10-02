@@ -29,6 +29,7 @@
 
 #ifdef _WIN32
 #include <windows.h>                    /* feature 015: directory listing */
+#include <sys/stat.h>                   /* #27: RI_IdentifyFile size */
 #else
 #include <dirent.h>
 #include <sys/stat.h>
@@ -1629,6 +1630,181 @@ int RI_KnownExt(const char *name)
 {
     return has_ext(name, ".ITI") || has_ext(name, ".XI") ||
            has_ext(name, ".IT") || has_ext(name, ".XM");
+}
+
+/* ---- #27: the Load Instrument directory listing ------------------- */
+
+/* DirectoryMsg / LibraryMsg into the 25-character name field */
+static void ilib_marker(ilibent_t *e, int pad, const char *word)
+{
+    int i, n = 0;
+
+    memset(e->Name, 0, sizeof(e->Name));
+    for (i = 0; i < pad; i++) e->Name[n++] = (char)154;
+    for (i = 0; word[i]; i++) e->Name[n++] = word[i];
+    for (i = 0; i < pad; i++) e->Name[n++] = (char)154;
+}
+
+/* D_GetInstrumentInfo (IT_D_INF.INC 201): 0 = not an instrument source
+ * (the original removes the record) */
+static int ilib_identify(ilibent_t *e)
+{
+    uint8_t d[0x130];
+    size_t n;
+    FILE *fp = fopen(e->SrcFile, "rb");
+
+    if (!fp)
+        return 0;
+    n = fread(d, 1, sizeof(d), fp);
+    fclose(fp);
+
+    if (n >= 17 && !memcmp(d, "Extended Module: ", 17)) {
+        e->Format = 9;                          /* XM module */
+        ilib_marker(e, 9, "Library");
+        return 1;
+    }
+    if (n >= 0x2E && !memcmp(d, "IMPM", 4) && b16(d, n, 0x22) != 0 &&
+        (d[0x2C] & 4)) {                        /* IT, instrument mode */
+        e->Format = 8;
+        ilib_marker(e, 9, "Library");
+        return 1;
+    }
+    if (n >= 4 && !memcmp(d, "IMPI", 4)) {      /* .ITI */
+        e->Format = 3;
+        ilib_name(e, d, n, 0x20, 25);
+        e->NumSamples = b8(d, n, 0x1E);         /* AL = [SI+1Eh], AH = 0 */
+        return 1;
+    }
+    if (n >= 21 && !memcmp(d, "Extended Instrument: ", 21)) {
+        e->Format = 4;                          /* .XI */
+        ilib_name(e, d, n, 21, 22);
+        e->NumSamples = b16(d, n, 0x128);
+        return 1;
+    }
+    return 0;
+}
+
+static int ilib_add(ilibent_t *ents, int n, int max, const char *dir,
+                    const char *name, int isdir, uint32_t size)
+{
+    ilibent_t *e;
+
+    if (n >= max)
+        return n;
+    e = &ents[n];
+    memset(e, 0, sizeof(*e));
+    snprintf(e->SrcFile, sizeof(e->SrcFile), "%s/%s", dir, name);
+    snprintf(e->FileName, sizeof(e->FileName), "%s",
+             (isdir && !strcmp(name, ".")) ? "\\" : name);
+    if (isdir) {
+        e->Format = 1;
+        ilib_marker(e, 8, "Directory");
+        return n + 1;
+    }
+    /* file size in k; 0FFFFh when it does not fit a word */
+    e->SizeK = (size >> 10) > 0xFFFF ? 0xFFFF : (uint16_t)(size >> 10);
+    return ilib_identify(e) ? n + 1 : n;
+}
+
+int RI_IdentifyFile(const char *path, ilibent_t *e)
+{
+    const char *base = path, *p;
+    struct stat st;
+
+    memset(e, 0, sizeof(*e));
+    snprintf(e->SrcFile, sizeof(e->SrcFile), "%s", path);
+    for (p = path; *p; p++)
+        if (*p == '/' || *p == '\\')
+            base = p + 1;
+    snprintf(e->FileName, sizeof(e->FileName), "%s", base);
+    if (stat(path, &st) == 0)
+        e->SizeK = ((uint32_t)st.st_size >> 10) > 0xFFFF
+                   ? 0xFFFF : (uint16_t)((uint32_t)st.st_size >> 10);
+    return ilib_identify(e) ? e->Format : 0;
+}
+
+/* D_SlowInstrumentSort: directories, then modules (format bit 3), then
+ * instrument files; each group by file name */
+static int ilib_group(const ilibent_t *e)
+{
+    return e->Format == 1 ? 0 : (e->Format & 8) ? 1 : 2;
+}
+
+static int ilib_cmp(const void *a, const void *b)
+{
+    const ilibent_t *x = (const ilibent_t *)a, *y = (const ilibent_t *)b;
+    int c;
+
+    if (ilib_group(x) != ilib_group(y))
+        return ilib_group(x) < ilib_group(y) ? -1 : 1;
+    c = memcmp(x->FileName, y->FileName, sizeof(x->FileName));
+    return c ? c : strcmp(x->SrcFile, y->SrcFile);
+}
+
+int RI_ListDirectory(const char *dir, ilibent_t *ents, int max)
+{
+    int n = 0, pass, pinned = 0, i;
+
+    if (max > 999)
+        max = 999;                      /* D_LoadInstrumentFiles cap */
+    for (pass = 0; pass < 2; pass++) {  /* directories first, then files */
+#ifdef _WIN32
+        WIN32_FIND_DATAA fd;
+        char pat[280];
+        HANDLE h;
+
+        snprintf(pat, sizeof(pat), "%s\\*", dir);
+        h = FindFirstFileA(pat, &fd);
+        if (h == INVALID_HANDLE_VALUE)
+            return pass ? n : -1;
+        do {
+            int isdir = (fd.dwFileAttributes &
+                         FILE_ATTRIBUTE_DIRECTORY) != 0;
+            if (isdir != (pass == 0))
+                continue;
+            n = ilib_add(ents, n, max, dir, fd.cFileName, isdir,
+                         (uint32_t)fd.nFileSizeLow);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+#else
+        DIR *dp = opendir(dir);
+        struct dirent *de;
+
+        if (!dp)
+            return pass ? n : -1;
+        while ((de = readdir(dp))) {
+            char full[600];
+            struct stat st;
+            int isdir;
+            snprintf(full, sizeof(full), "%s/%s", dir, de->d_name);
+            if (stat(full, &st))
+                continue;
+            isdir = S_ISDIR(st.st_mode);
+            if (isdir != (pass == 0))
+                continue;
+            n = ilib_add(ents, n, max, dir, de->d_name, isdir,
+                         (uint32_t)st.st_size);
+        }
+        closedir(dp);
+#endif
+    }
+
+    /* "\" then ".." stay on top, unsorted */
+    for (i = 0; i < n && pinned < 2; i++) {
+        if (!strcmp(ents[i].FileName, "\\") || !strcmp(ents[i].FileName, "..")) {
+            ilibent_t t = ents[pinned];
+            ents[pinned] = ents[i];
+            ents[i] = t;
+            pinned++;
+        }
+    }
+    if (pinned == 2 && !strcmp(ents[0].FileName, "..")) {
+        ilibent_t t = ents[0];
+        ents[0] = ents[1];
+        ents[1] = t;
+    }
+    qsort(ents + pinned, (size_t)(n - pinned), sizeof(*ents), ilib_cmp);
+    return n;
 }
 
 /* =================================================================

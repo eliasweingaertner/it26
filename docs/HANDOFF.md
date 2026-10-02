@@ -899,8 +899,8 @@ backends test Ctrl+Shift+F9/F10 *before* Shift-F9.
 - Results reuse the original paths: `do_load_named`,
   `save_module_dispatch` (format from type/extension, this save only,
   `.it` appended when missing/unknown), the tracker's own overwrite
-  prompt. Directories as the screens do it: `chdir` for modules and
-  instruments, `DirSample` for samples.
+  prompt. Directories as the screens do it: `chdir` for modules,
+  `DirSample` for samples, `DirInstr` for instruments (since #27).
 - Paths are kept twice: real (`path`) and CP437 display with `?`
   (`display`). `FileSaveName` holds the real name Ctrl-S saves to after
   a dialog load/save; the original screens clear it.
@@ -914,6 +914,24 @@ backends test Ctrl+Shift+F9/F10 *before* Shift-F9.
   there only.
 - Verified on Windows with the real dialog (open, Save As, help); macOS
   and Linux dialogs need a hand test on those machines.
+
+## 5d. Load Instrument screen (#27, 2026-10-02)
+
+F4 → Enter / Ctrl-F4 are IT's own screen now (`load_instrument_screen_run`
+in `it_editor.c`), ported from `D_DrawLoadInstrument` /
+`D_PreLoadInstrument` / `D_LIDrawDriveWindow` and the
+`ViewInstrumentKeys` / `LIDriveWindowKeys` lists (IT_DISK.ASM). Listing:
+`RI_ListDirectory` in `it_ris.c` = `D_LoadInstrumentFiles` +
+`D_GetInstrumentInfo` (formats 1 dir, 3 ITI, 4 XI, 8 IT module in
+instrument mode, 9 XM; anything else is dropped, as the original does) +
+`D_SlowInstrumentSort` ("\" and ".." pinned, then dirs, modules, files).
+A module opens in place (`li_enter_module`, exit record "."), rows carry
+the module's file name and size 0 like `TransferInstrumentName`. The
+directory is `DirInstr` (InstrumentDirectory). No CACHE.ITI, list always
+sorted (same deviation as Load Sample). The file requester's old
+`ReqLibMode == 2` path is no longer reached. Ctrl-Q on the modal file
+screens: `modal_global_key` asks in place (`bg_keep`). Selftest block
+`LI`.
 
 ## 6. Next phase
 

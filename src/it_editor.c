@@ -10202,6 +10202,8 @@ static int PendingGlobalKey = 0, PendingHelpContext = 1;
 static void handle_global(int key);
 static void help_open(int context);
 
+static void bg_keep(void) { }          /* leave the screen as drawn */
+
 static int modal_global_key(int key, int help_context)
 {
     if ((key >= ITK_ALT_F1 && key <= ITK_ALT_F1 + 7) || key == ITK_ALT_F11)
@@ -10222,6 +10224,15 @@ static int modal_global_key(int key, int help_context)
     case ITK_CTRL_SHIFT_F9: case ITK_CTRL_SHIFT_F10:    /* feature 016 */
         PendingGlobalKey = key;
         return 2;
+    case 0x11:
+        /* Ctrl-Q: Glbl_Quit is in the global key list, so it works on
+         * the file screens too (#27). Asked in place, over the screen as
+         * it is drawn; Cancel stays here. */
+        if (confirm_box_bg("Exit Impulse Tracker?", 1, bg_keep)) {
+            Running = 0;
+            return 2;
+        }
+        return 1;
     default:
         return 0;
     }
@@ -11448,21 +11459,385 @@ static void sample_library_requester(void)
     load_sample_screen_run(0);
 }
 
-/* F4 Enter: the instrument library requester (Load Instrument) */
+/* ===================================================================
+ * Load Instrument / Instrument Library screen (#27) --
+ * O1_LoadInstrumentList / O1_ViewInstrumentLibrary (IT_OBJ1.ASM 8115),
+ * custom draws from IT_DISK.ASM: D_DrawLoadInstrument 9221,
+ * D_PreLoadInstrument 9464, D_LIDrawDriveWindow 6022 /
+ * D_LIPreDriveWindow 6071; keys LoadInstrumentKeys / ViewInstrumentKeys
+ * / LIDriveWindowKeys (IT_DISK.ASM 845). Until 2026-10 the port showed
+ * the module file requester here. As on the Load Sample screen, every
+ * file is identified at once (no CACHE.ITI, no idle name loader), so the
+ * list is always sorted.
+ * Objects: 5 = the list (LoadInstrumentWindow (5,12)-(62,48)),
+ *          7 = the drives (LoadInstrumentDriveWindow (63,15)-(72,48)).
+ * =================================================================== */
+static const char *path_base(const char *p);
+
+#define LI_MAX   999                    /* D_LoadInstrumentFiles cap */
+#define LI_ROWS  35                     /* rows 13..47 */
+#define LI_DROWS 32                     /* D_LIDrawDriveWindow: 32 rows */
+
+static ilibent_t LiEnt[LI_MAX];
+static int  LiN, LiCur, LiTop;
+static int  LiFocus = 5;                /* object 5 list, 7 drives */
+static int  LiView;                     /* 1 = Instrument Library (Ctrl-F4) */
+static int  LiInModule;                 /* InstrumentsInModule */
+static char LiDrives[26];
+static int  LiNDrv, LiDrvCur, LiDrvTop;
+
+static void li_scan_drives(void)
+{
+    LiNDrv = 0;
+    LiDrvCur = 0;
+#ifdef _WIN32
+    {
+        DWORD drives = GetLogicalDrives();
+        int i;
+        char cur = (char)toupper((unsigned char)DirInstr[0]);
+        for (i = 0; i < 26; i++)
+            if (drives & (1u << i)) {
+                if ((char)('A' + i) == cur)
+                    LiDrvCur = LiNDrv;
+                LiDrives[LiNDrv++] = (char)('A' + i);
+            }
+    }
+#else
+    LiDrives[LiNDrv++] = '/';
+#endif
+}
+
+/* D_InitLoadInstruments: InstrumentDirectory = path, (re)read it */
+static void li_set_dir(const char *path)
+{
+    char d[sizeof(DirInstr)];
+
+    if (strlen(path) >= sizeof(d)) {
+        status("Path too long.");
+        return;
+    }
+    memcpy(d, path, strlen(path) + 1);
+    ls_normalize(d, sizeof(d));
+    memcpy(DirInstr, d, sizeof(d));     /* InstrumentDirectory */
+    LiN = RI_ListDirectory(DirInstr, LiEnt, LI_MAX);
+    if (LiN < 0)
+        LiN = 0;
+    LiCur = LiTop = 0;
+    LiInModule = 0;
+    li_scan_drives();
+}
+
+/* LIWindow_InInstrument1 / LIWindow_EnterLoadInInstrumentData: the
+ * module's instruments on the same screen, behind the
+ * ExitInstrumentLibraryDirectory record ("." + Directory); each row
+ * carries the module's file name and size 0 (TransferInstrumentName) */
+static void li_enter_module(const ilibent_t *m)
+{
+    ilibent_t mod = *m;
+    int n, i;
+
+    n = RI_ScanModule(mod.SrcFile, LiEnt + 1, LI_MAX - 1);
+    if (n < 0) {
+        status("Unknown instrument source: %.12s", mod.FileName);
+        return;
+    }
+    memset(&LiEnt[0], 0, sizeof(LiEnt[0]));
+    LiEnt[0].Format = 1;
+    snprintf(LiEnt[0].FileName, sizeof(LiEnt[0].FileName), ".");
+    for (i = 0; i < 8; i++) {
+        LiEnt[0].Name[i] = (char)154;
+        LiEnt[0].Name[17 + i] = (char)154;
+    }
+    memcpy(LiEnt[0].Name + 8, "Directory", 9);
+    for (i = 1; i <= n; i++) {
+        memcpy(LiEnt[i].FileName, mod.FileName, sizeof(mod.FileName));
+        LiEnt[i].SizeK = 0;
+    }
+    LiN = n + 1;
+    LiCur = LiTop = 0;
+    LiInModule = 1;
+}
+
+static void li_enter_dir(const ilibent_t *e)
+{
+    char nd[264];
+
+    if (LiInModule && e->FileName[0] == '.') {
+        snprintf(nd, sizeof(nd), "%s", DirInstr);   /* leave the module */
+    } else if (!strcmp(e->FileName, "\\")) {
+#ifdef _WIN32
+        snprintf(nd, sizeof(nd), "%c:\\", DirInstr[0]);
+#else
+        snprintf(nd, sizeof(nd), "/");
+#endif
+    } else {
+        snprintf(nd, sizeof(nd), "%s", e->SrcFile);
+    }
+    li_set_dir(nd);
+}
+
+/* LI_DriveWindow_Enter: that drive's current directory, back to the list */
+static void li_enter_drive(void)
+{
+#ifdef _WIN32
+    char d[MAX_PATH];
+    if (_getdcwd(LiDrives[LiDrvCur] - 'A' + 1, d, sizeof(d)))
+        li_set_dir(d);
+    else
+        status("Can't read drive %c:", LiDrives[LiDrvCur]);
+#else
+    li_set_dir("/");
+#endif
+    LiFocus = 5;
+}
+
+/* D_DeleteInstrumentFile: only instrument files (formats 2..7), not
+ * inside a module; O1_ConfirmDelete3, default Cancel */
+static void li_delete_file(void)
+{
+    int i;
+
+    if (LiN == 0 || LiInModule || LiEnt[LiCur].Format <= 1 ||
+        LiEnt[LiCur].Format >= 8)
+        return;
+    if (!confirm_box("Delete file?"))
+        return;
+    if (remove(LiEnt[LiCur].SrcFile) != 0) {
+        status("Can't delete %s.", LiEnt[LiCur].FileName);
+        return;
+    }
+    for (i = LiCur; i < LiN - 1; i++)
+        LiEnt[i] = LiEnt[i + 1];
+    LiN--;
+    if (LiCur >= LiN && LiCur > 0)
+        LiCur--;
+}
+
+static void li_divider(int x, int y)
+{
+    Screen_PutChar(x, y, 0xA8, 0x02);           /* 2A8h */
+}
+
+/* D_DrawLoadInstrument + D_PreLoadInstrument */
+static void li_draw_list(void)
+{
+    int i, k;
+
+    if (LiN == 0) {
+        Screen_DrawString(6, 13, "No files.", 0x05);    /* NoFilesMsg */
+        return;
+    }
+    if (LiTop > LiCur)
+        LiTop = LiCur;
+    if (LiTop + (LI_ROWS - 1) < LiCur)
+        LiTop = LiCur - (LI_ROWS - 1);
+
+    for (i = 0; i < LI_ROWS; i++) {
+        int idx = LiTop + i, y = 13 + i;
+        const ilibent_t *e;
+        uint8_t a;
+
+        if (idx >= LiN) {                       /* empty rows: dividers */
+            li_divider(31, y);
+            li_divider(44, y);
+            li_divider(55, y);
+            continue;
+        }
+        e = &LiEnt[idx];
+        drawf(2, y, 0x20, "%03d", idx + 1);     /* PE_ConvAX2Num */
+        /* 0 unchecked 6, directory 5, unrecognised 7, instrument 3 */
+        a = e->Format == 0 ? 0x06 : e->Format == 1 ? 0x05
+          : e->Format == 2 ? 0x07 : 0x03;
+        for (k = 0; k < 25; k++) {              /* instrument name */
+            uint8_t c = (uint8_t)e->Name[k];
+            Screen_PutChar(6 + k, y, c >= 226 ? ' ' : c, a);
+        }
+        li_divider(31, y);
+        for (k = 0; k < 12; k++) {              /* file name, col 32 */
+            uint8_t c = (uint8_t)e->FileName[k];
+            Screen_PutChar(32 + k, y, c, a);
+            if (!c)
+                break;
+        }
+        li_divider(44, y);
+        if (e->Format >= 3) {
+            if (e->Format >= 8)
+                drawf(45, y, a, "\x9A\x9A" "Module" "\x9A\x9A");
+            else if (e->NumSamples == 0)
+                drawf(45, y, a, "No Samples");
+            else if (e->NumSamples == 1)
+                drawf(45, y, a, "1 Sample");
+            else if (e->NumSamples == 0xFFFF)
+                drawf(45, y, a, "???");
+            else
+                drawf(45, y, a, "%u Samples", (unsigned)e->NumSamples);
+            li_divider(55, y);
+            drawf(56, y, a, "%uk", (unsigned)e->SizeK);     /* FileSizeMsg */
+        } else {
+            li_divider(55, y);
+        }
+    }
+
+    if (LiFocus == 5) {                 /* D_PreLoadInstrument: 56 cells */
+        int y = 13 + LiCur - LiTop;
+        for (k = 0; k < 56; k++)
+            Screen_SetAttr(6 + k, y,
+                           Screen_GetCell(6 + k, y).ch == 0xA8 ? 0x32 : 0x30);
+    }
+}
+
+/* D_LIDrawDriveWindow + D_LIPreDriveWindow */
+static void li_draw_drives(void)
+{
+    int i;
+
+    if (LiDrvTop > LiDrvCur)
+        LiDrvTop = LiDrvCur;
+    if (LiDrvTop + (LI_DROWS - 1) < LiDrvCur)
+        LiDrvTop = LiDrvCur - (LI_DROWS - 1);
+    for (i = 0; i < LI_DROWS && LiDrvTop + i < LiNDrv; i++)
+        drawf(64, 16 + i, 0x05, "Drive %c:", LiDrives[LiDrvTop + i]);
+    if (LiFocus == 7 && LiNDrv) {
+        int y = 16 + LiDrvCur - LiDrvTop, k;
+        for (k = 0; k < 8; k++)
+            Screen_SetAttr(64 + k, y, 0x30);
+    }
+}
+
+static void li_draw(void)
+{
+    Screen_Clear(0x20);
+    draw_chrome(LiView ? "Instrument Library (Ctrl-F4)" : "Load Instrument");
+    Screen_DrawBox(5, 12, 62, 48, 27);          /* LoadInstrumentWindow */
+    Screen_DrawBox(63, 15, 72, 48, 27);         /* LoadInstrumentDriveWindow */
+    li_draw_list();
+    /* FreeSampleMsg: "Available" 13 "Samples: " 0FDh 'D' at (64,13) */
+    Screen_DrawString(64, 13, "Available", 0x20);
+    drawf(64, 14, 0x20, "Samples: %d", LibUnused);
+    li_draw_drives();
+}
+
+/* LIWindow_Enter (load) / LIViewWindow_Enter (view): directories and
+ * modules open in place; an instrument loads into the current slot
+ * (load mode only). Returns 1 when the screen should close. */
+static int li_enter(void)
+{
+    ilibent_t *e;
+
+    if (LiN == 0)
+        return 0;
+    e = &LiEnt[LiCur];
+    if (e->Format == 1) {
+        li_enter_dir(e);
+        return 0;
+    }
+    if (e->Format >= 8) {
+        li_enter_module(e);
+        return 0;
+    }
+    if (!LiView && e->Format >= 3)
+        return lib_load_instrument_entry(e);
+    return 0;
+}
+
+static void load_instrument_screen_run(int view, const char *module)
+{
+    LiView = view;
+    LiFocus = 5;
+    LibUnused = RI_UnusedSamples();     /* D_InitLoadInstruments */
+    li_set_dir(DirInstr[0] ? DirInstr : ".");
+    if (module) {                       /* opened on a module (Ctrl-O) */
+        ilibent_t m;
+        memset(&m, 0, sizeof(m));
+        snprintf(m.SrcFile, sizeof(m.SrcFile), "%s", module);
+        snprintf(m.FileName, sizeof(m.FileName), "%s", path_base(module));
+        li_enter_module(&m);
+    }
+
+    while (Running) {
+        int key;
+
+        li_draw();
+        Screen_Update();
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; break; }
+        if (key == ITK_ESC)                     /* Glbl_F4 */
+            break;
+        if (key == ITK_ALT_A + ('S' - 'A'))     /* D_SlowInstrumentSort: */
+            continue;                           /* always sorted already */
+        {
+            int g = modal_global_key(key, 11);  /* SetHelpContext11 */
+            if (g == 1) continue;
+            if (g == 2) break;
+        }
+
+        if (key == ITK_MOUSE) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 2, 13, 61, 47)) {          /* the list */
+                int idx = LiTop + (m.y - 13);
+                if (idx >= LiN)
+                    continue;
+                if (idx == LiCur && LiFocus == 5) {
+                    key = ITK_ENTER;            /* click again = Enter */
+                } else {
+                    LiFocus = 5;
+                    LiCur = idx;
+                    continue;
+                }
+            } else if (mouse_in(&m, 64, 16, 71, 47)) {  /* drives */
+                int di = LiDrvTop + (m.y - 16);
+                LiFocus = 7;
+                if (di < LiNDrv) {
+                    LiDrvCur = di;
+                    li_enter_drive();
+                }
+                continue;
+            } else {
+                continue;
+            }
+        }
+
+        if (LiFocus == 7) {                     /* LIDriveWindowKeys */
+            switch (key) {
+            case ITK_UP:   if (LiDrvCur > 0) LiDrvCur--; break;
+            case ITK_DOWN: if (LiDrvCur < LiNDrv - 1) LiDrvCur++; break;
+            case ITK_LEFT: case ITK_TAB:        /* LIDriveWindow_Tab */
+                LiFocus = 5; break;
+            case ITK_ENTER: li_enter_drive(); break;
+            default: break;
+            }
+            continue;
+        }
+
+        switch (key) {                          /* ViewInstrumentKeys */
+        case ITK_UP:   if (LiCur > 0) LiCur--; break;
+        case ITK_DOWN: if (LiCur + 1 < LiN) LiCur++; break;
+        case ITK_PGUP: LiCur = LiCur >= 35 ? LiCur - 35 : 0; break;
+        case ITK_PGDN: LiCur = LiCur + 35 < LiN ? LiCur + 35
+                                                : (LiN ? LiN - 1 : 0);
+                       break;
+        case ITK_HOME: LiCur = 0; break;
+        case ITK_END:  LiCur = LiN ? LiN - 1 : 0; break;
+        case ITK_DEL:  li_delete_file(); break;
+        case ITK_RIGHT: case ITK_TAB:           /* LIViewWindow_Tab */
+            LiFocus = 7; break;
+        case ITK_ENTER:
+            if (li_enter())
+                goto leave;
+            break;
+        default: break;
+        }
+    }
+leave:
+    lib_release_check();
+}
+
+/* F4 Enter: Load Instrument */
 static void instrument_library_requester(void)
 {
-    char keep[26];
-
-    memcpy(keep, ReqName, sizeof(keep));
-    ReqLibMode = 2;
-    ReqInfoIdx = -1;
-    LibUnused = RI_UnusedSamples();     /* D_InitLoadInstruments */
-    snprintf(ReqName, sizeof(ReqName), "*.*");
-    file_requester_run(0);
-    ReqLibMode = 0;
-    ReqInfoIdx = -1;
-    memcpy(ReqName, keep, sizeof(keep));
-    lib_release_check();
+    load_instrument_screen_run(0, NULL);
 }
 
 /* "Save Current" (Ctrl-S): save to the loaded filename without the
@@ -11692,40 +12067,52 @@ static void act_dialog_save_module(void)
     }
 }
 
-/* Ctrl-O on F3 / F4: the chosen file goes where the library requester's
- * Enter sends it (lib_open_source): a standalone sample / instrument
- * loads into the current slot, a module opens as a library to pick from */
+/* Ctrl-O on F3 / F4. Samples: where the library requester's Enter sends
+ * a file (lib_open_source): a standalone sample loads into the current
+ * slot, a module opens as a library. Instruments: an .ITI/.XI loads into
+ * the current slot (LIWindow_Enter), a module opens the Load Instrument
+ * screen inside it (#27). The folder becomes SampleDirectory /
+ * InstrumentDirectory. */
 static void act_dialog_load_slot(int instruments)
 {
     it_dialog_res_t r;
     char dir[IT_DLG_PATH_MAX], cwd[IT_DLG_PATH_MAX];
+    const char *home = instruments ? DirInstr : DirSample;
     int done = 0, keepmode = ReqLibMode;
 
     if (!getcwd(cwd, sizeof(cwd)))
         cwd[0] = 0;
     if (!ed_dialog(instruments ? IT_DLG_OPEN_INSTRUMENT : IT_DLG_OPEN_SAMPLE,
-                   instruments ? cwd : (DirSample[0] ? DirSample : cwd),
-                   NULL, &r))
+                   home[0] ? home : cwd, NULL, &r))
         return;
     if (strlen(r.path) >= sizeof(((slibent_t *)0)->SrcFile) ||
         !path_dir(r.path, dir, sizeof(dir)) ||
-        (!instruments && strlen(dir) >= sizeof(DirSample))) {
+        strlen(dir) >= sizeof(DirSample)) {     /* = sizeof(DirInstr) */
         status("Path too long");
         return;
     }
-    ReqLibMode = instruments ? 2 : 1;
-    if (instruments)
-        LibUnused = RI_UnusedSamples();     /* D_InitLoadInstruments */
+    if (instruments) {
+        ilibent_t e;
+        int f = RI_IdentifyFile(r.path, &e);
+        if (f == 0) {
+            status("Unknown instrument source: %.12s", path_base(r.display));
+            return;
+        }
+        memcpy(DirInstr, dir, strlen(dir) + 1);     /* InstrumentDirectory */
+        if (f >= 8) {
+            load_instrument_screen_run(0, r.path);
+        } else {
+            LibUnused = RI_UnusedSamples();
+            lib_load_instrument_entry(&e);
+        }
+        return;
+    }
+    ReqLibMode = 1;
     lib_open_source(r.path, &done);
     ReqLibMode = keepmode;
     lib_release_check();
-    if (!done)
-        return;
-    if (instruments) {                  /* the requester's directory */
-        cd_back(dir);
-    } else {
+    if (done)
         memcpy(DirSample, dir, strlen(dir) + 1);    /* SampleDirectory */
-    }
 }
 
 /* Ctrl-O on F12: the focused Module / Sample / Instrument path field */
@@ -12061,8 +12448,8 @@ static int act_smp_lib(void)           /* Sample Library (Ctrl-F3) */
 { Screen = SCR_SAMPLES; load_sample_screen_run(1); return 1; }
 static int act_ins_list(void)
 { Screen = SCR_INSTRUMENTS; ListSel = CurInstr - 1; return 1; }
-static int act_ins_lib(void)
-{ Screen = SCR_INSTRUMENTS; instrument_library_requester(); return 1; }
+static int act_ins_lib(void)           /* Instrument Library (Ctrl-F4) */
+{ Screen = SCR_INSTRUMENTS; load_instrument_screen_run(1, NULL); return 1; }
 
 /* ---- submenus (coordinates/texts verbatim from IT_OBJ1.ASM) ---- */
 static const menuitem_t FileItems[] = {
@@ -15969,12 +16356,17 @@ int main(int argc, char **argv)
                 Song.Header.Flags = keepflags;
                 Screen = SCR_INSTRUMENTS;
                 ListSel = 98;
-                dlg_fake("testdata/lib_test.xi");
-                handle_global(0x0F);
-                if (!Song.Ins[98].InstrumentName[0] ||
-                    strcmp(path_base(getcwd(cwd, sizeof(cwd)) ? cwd : ""),
-                           "testdata"))
-                    DFAIL();
+                {
+                    char keepins[sizeof(DirInstr)];
+                    memcpy(keepins, DirInstr, sizeof(keepins));
+                    dlg_fake("testdata/lib_test.xi");
+                    handle_global(0x0F);
+                    /* loaded; the folder is InstrumentDirectory (#27) */
+                    if (!Song.Ins[98].InstrumentName[0] ||
+                        strcmp(DirInstr, "testdata"))
+                        DFAIL();
+                    memcpy(DirInstr, keepins, sizeof(keepins));
+                }
                 cd_back(home);
                 for (i = 0; i < 99; i++)                /* undo the load */
                     if (!had[i] && (Song.Smp[i].Flags & 1)) {
@@ -16067,6 +16459,141 @@ int main(int argc, char **argv)
 #undef DFAIL
             fprintf(stderr, "ITED selftest: [%s]\n",
                     d_ok ? "DLG OK" : "DLG FAIL");
+        }
+
+        /* ---- #27: Load Instrument screen as IT 2.14 (D_DrawLoadInstrument)
+         * and Ctrl-Q on the file screens ---- */
+        {
+            int li_ok = 1, i, grp = 0, mod = -1, xi = -1, lfail_line = 0;
+#define LFAIL() do { if (li_ok) lfail_line = __LINE__; li_ok = 0; } while (0)
+            char keepins[sizeof(DirInstr)];
+            it_key_t fk;
+
+            memcpy(keepins, DirInstr, sizeof(keepins));
+            li_set_dir("testdata");
+            /* "." is shown as "\" (to the root), then ".." */
+            if (LiN < 4 || strcmp(LiEnt[0].FileName, "\\") ||
+                strcmp(LiEnt[1].FileName, ".."))
+                LFAIL();
+            for (i = 0; i < LiN; i++) {
+                const ilibent_t *e = &LiEnt[i];
+                int g = e->Format == 1 ? 0 : (e->Format & 8) ? 1 : 2;
+                if (e->Format == 2 || e->Format == 0)   /* never listed */
+                    LFAIL();
+                if (has_ext_ci(e->FileName, ".WAV") ||
+                    has_ext_ci(e->FileName, ".MOD"))
+                    LFAIL();
+                if (g < grp)                            /* group order */
+                    LFAIL();
+                grp = g;
+                if (e->Format == 8 && !strcmp(e->FileName, "itdemo.it"))
+                    mod = i;
+                if (e->Format == 4 && !strcmp(e->FileName, "lib_test.xi"))
+                    xi = i;
+            }
+            if (mod < 0 || xi < 0)
+                LFAIL();
+            /* the drawn rows: columns, dividers, colours */
+            LiView = 0; LiFocus = 5; LibUnused = 42;
+            if (mod >= 0) {
+                LiCur = mod; LiTop = 0;
+                li_draw();
+                i = 13 + mod - LiTop;
+                if (Screen_GetCell(31, i).ch != 0xA8 ||
+                    Screen_GetCell(44, i).ch != 0xA8 ||
+                    Screen_GetCell(55, i).ch != 0xA8 ||
+                    Screen_GetCell(47, i).ch != 'M' ||        /* "Module" */
+                    Screen_GetCell(6 + 9, i).ch != 'L' ||     /* Library */
+                    Screen_GetCell(32, i).ch != 'i' ||        /* itdemo.it */
+                    Screen_GetCell(6, i).attr != 0x30 ||      /* cursor bar */
+                    Screen_GetCell(31, i).attr != 0x32)
+                    LFAIL();
+                if (Screen_GetCell(64, 13).ch != 'A' ||       /* Available */
+                    Screen_GetCell(73, 14).ch != '4' ||       /* Samples: 42 */
+                    Screen_GetCell(64, 16).ch != 'D')         /* Drive */
+                    LFAIL();
+            }
+            if (xi >= 0) {
+                LiCur = xi; LiTop = 0;
+                li_draw();
+                i = 13 + xi - LiTop;
+                if (Screen_GetCell(32, i).ch != 'l' ||          /* lib_test.xi */
+                    Screen_GetCell(6, i).attr != 0x30 ||
+                    Screen_GetCell(45, i).ch < '0' ||          /* "N Sample" */
+                    Screen_GetCell(56, i).ch < '0')            /* size "Nk" */
+                    LFAIL();
+            }
+            /* a module opens in place behind the "." exit record */
+            if (mod >= 0) {
+                LiCur = mod;
+                li_enter_module(&LiEnt[mod]);
+                if (!LiInModule || LiN < 2 || LiEnt[0].Format != 1 ||
+                    strcmp(LiEnt[0].FileName, ".") || LiEnt[1].Format != 5 ||
+                    strcmp(LiEnt[1].FileName, "itdemo.it"))
+                    LFAIL();
+                LiCur = 0;
+                li_enter_dir(&LiEnt[0]);                /* back out */
+                if (LiInModule || LiN < 3)
+                    LFAIL();
+            }
+            /* loading from the screen into a blank song (instrument mode
+             * off): IT module, XM module, standalone .XI -- Enter in
+             * load mode transfers the instrument; view mode does not */
+            {
+                static const char *const srcs[3] = {
+                    "beyond_network.it", "import_test.xm", "lib_test.xi" };
+                int s;
+                for (s = 0; s < 3; s++) {
+                    int j, found = -1, r;
+                    new_song();
+                    ListSel = 0;
+                    LibUnused = RI_UnusedSamples();
+                    li_set_dir("testdata");
+                    for (j = 0; j < LiN; j++)       /* FileName is cut to 12 */
+                        if (!strcmp(path_base(LiEnt[j].SrcFile), srcs[s]))
+                            found = j;
+                    if (found < 0) { LFAIL(); continue; }
+                    LiCur = found;
+                    LiView = 1;                         /* library: view */
+                    if (LiEnt[found].Format >= 8) {
+                        li_enter();                     /* opens module */
+                        if (!LiInModule || LiN < 2) { LFAIL(); continue; }
+                        LiCur = 1;
+                    }
+                    if (li_enter() || Song.Ins[0].InstrumentName[0])
+                        LFAIL();                        /* view: no load */
+                    LiView = 0;                         /* Load Instrument */
+                    memset(&fk, 0, sizeof(fk));
+                    fk.flags = ITKF_PRESSED; fk.code = ITK_ESC;
+                    Screen_KeyFeedTest(&fk, 1);         /* "Enable
+                                                           instrument mode?" */
+                    r = li_enter();
+                    if (r != 1 || !(Song.Ins[0].InstrumentName[0] ||
+                                    Song.Ins[0].NoteSampleTable[1]))
+                        LFAIL();
+                    while (ed_get_key() != ITK_NONE)
+                        ;
+                }
+                new_song();
+            }
+            memcpy(DirInstr, keepins, sizeof(keepins));
+
+            /* Ctrl-Q on a file screen: asks in place; Cancel stays */
+            memset(&fk, 0, sizeof(fk));
+            fk.flags = ITKF_PRESSED; fk.code = ITK_ESC;
+            Screen_KeyFeedTest(&fk, 1);
+            if (modal_global_key(0x11, 6) != 1 || !Running)
+                LFAIL();
+            fk.code = ITK_ENTER;                        /* OK = quit */
+            Screen_KeyFeedTest(&fk, 1);
+            if (modal_global_key(0x11, 6) != 2 || Running)
+                LFAIL();
+            Running = 1;
+            if (!li_ok)
+                fprintf(stderr, "ITED selftest: LI first failure at line %d\n", lfail_line);
+#undef LFAIL
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    li_ok ? "LI OK" : "LI FAIL");
         }
 
         commit_current_pattern();

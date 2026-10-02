@@ -14,6 +14,17 @@
   `kdialog` if installed.
 - **F1 help on the Mac** names Right Option for the note preview (#20),
   and the help lists the new dialog keys as "ittrack additions".
+- **Load Instrument screen as in IT 2.14** (#27, reported by
+  **@esaruoho**): F4 → Enter (and Ctrl-F4, the Instrument Library) now
+  show IT's own screen instead of the module file requester: numbered
+  list with instrument name, file name, number of samples and size,
+  "Available Samples", and the drive list. Only folders, instrument
+  files (.ITI, .XI) and modules with instruments (.IT, .XM) are listed;
+  a module opens in place to pick an instrument from. The folder is the
+  F12 instrument directory, as in IT.
+- **Ctrl-Q works on the file screens** (#27): Load Sample, Load
+  Instrument, the libraries and the F9/F10 file screens ask "Exit
+  Impulse Tracker?" right there; Cancel stays on the screen.
 
 ## v0.6.0 — 2026-09-30
 

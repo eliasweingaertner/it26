@@ -66,9 +66,25 @@ typedef struct ilibent_t {
     uint16_t NumSamples;
     uint32_t Offset;                    /* record +44 */
     char     SrcFile[264];
+    /* #27: the Load Instrument list's columns (record +1 file name,
+     * +42 file size in k) */
+    char     FileName[13];
+    uint16_t SizeK;
 } ilibent_t;
 
 int RI_ScanModule(const char *path, ilibent_t *ents, int max);
+
+/* #27: D_LoadInstrumentFiles + D_GetInstrumentInfo + D_SlowInstrumentSort
+ * for the Load Instrument screen. Formats as the original's record byte
+ * 0: 1 = directory ("\" for the root entry, ".."), 3 = .ITI, 4 = .XI,
+ * 8 = .IT module in instrument mode, 9 = .XM module; anything else is
+ * not listed (the original drops unrecognised files). Order: "\" and
+ * ".." first, then directories, modules, instrument files, each by file
+ * name. Returns the count, -1 if the directory can't be read. */
+int RI_ListDirectory(const char *dir, ilibent_t *ents, int max);
+/* one file as RI_ListDirectory would list it; returns its format, 0 if
+ * it is not an instrument source */
+int RI_IdentifyFile(const char *path, ilibent_t *e);
 
 /* 99 - (sample slots with data), as D_InitLoadInstruments computes
  * when the requester opens. */
