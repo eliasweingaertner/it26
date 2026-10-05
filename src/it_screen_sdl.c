@@ -103,6 +103,16 @@ static uint8_t SDLScanToSet1(SDL_Scancode s)
 #if defined(__APPLE__) && !defined(ITED_RIGHTOPT_PREVIEW)
 #define ITED_RIGHTOPT_PREVIEW 1
 #endif
+
+/* Both Alt keys make IT's Alt hotkeys, as in DOS IT. On Linux a Right
+ * Alt that turns out to be AltGr (it delivers a character) types that
+ * character instead -- see AltDefer below. On a Mac Right Option is the
+ * note preview in the pattern editor, handled before the Alt branch. */
+#ifdef __APPLE__
+#define ALT_RIGHT_DEFERS 0
+#else
+#define ALT_RIGHT_DEFERS 1
+#endif
 #ifdef ITED_RIGHTOPT_PREVIEW
 static int RightOptPreview(SDL_Keymod m)
 {
@@ -131,14 +141,50 @@ static uint8_t ModFlags(void)
     return f;
 }
 
+/* Right Alt on Linux is plain Alt on some layouts (US) and AltGr on
+ * others (German: AltGr+Q = '@'). Which one only shows afterwards: AltGr
+ * delivers a character, Alt does not. So a Right-Alt hotkey is held back
+ * (AltDefer while the Alt branch runs) and either dropped when its
+ * character arrives, or released when none came -- at the next key, or
+ * after ALT_DEFER_MS so an input method that commits text late (IBus)
+ * still gets its chance. */
+#define ALT_DEFER_MS 40
+static int      AltDefer;               /* Alt branch is filling Pending */
+static int      AltPendingOn;
+static it_key_t AltPending;
+static Uint32   AltPendingAt;
+static SDL_Keycode AltPendingKc;        /* the key's plain character */
+
 static void PushKeyCh(int k, uint16_t ch)
 {
     int next = (KeyTail + 1) % 64;
+    if (AltDefer) {                     /* hold the Right-Alt hotkey back */
+        AltPending.scan  = CurScan;
+        AltPending.flags = CurFlags;
+        AltPending.ch    = ch;
+        AltPending.code  = k;
+        AltPendingOn = 1;
+        AltPendingAt = SDL_GetTicks();
+        return;
+    }
     if (next != KeyHead) {
         KeyQueue[KeyTail].scan  = CurScan;
         KeyQueue[KeyTail].flags = CurFlags;
         KeyQueue[KeyTail].ch    = ch;
         KeyQueue[KeyTail].code  = k;
+        KeyTail = next;
+    }
+}
+
+/* no character came: it was a plain Right Alt, the hotkey stands */
+static void AltPendingRelease(void)
+{
+    int next = (KeyTail + 1) % 64;
+    if (!AltPendingOn)
+        return;
+    AltPendingOn = 0;
+    if (next != KeyHead) {
+        KeyQueue[KeyTail] = AltPending;
         KeyTail = next;
     }
 }
@@ -193,6 +239,7 @@ static void PumpEvents(void)
 {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+        AltDefer = 0;                   /* only while one Alt branch runs */
         switch (e.type) {
         case SDL_QUIT:
             WantQuit = 1;
@@ -209,6 +256,12 @@ static void PumpEvents(void)
             CurScan  = SDLScanToSet1(e.key.keysym.scancode);
             CurFlags = ModFlags();
             SDL_Keymod  mod = SDL_GetModState();
+            /* a TEXTINPUT belongs to the KEYDOWN just before it: a skip
+             * flag a previous key left unused (no text came) must not
+             * swallow this key's character, and a held-back Right-Alt
+             * hotkey that got no character was a real Alt hotkey */
+            SkipText = 0;
+            AltPendingRelease();
             if (kc == SDLK_LSHIFT || kc == SDLK_RSHIFT) {
                 if (!e.key.repeat)
                     PushKey(ITK_SHIFT_PRESS);
@@ -274,6 +327,15 @@ static void PumpEvents(void)
 #endif
             if (mod & KMOD_ALT) {           /* Alt combos (parity with
                                              * the Win32 backend) */
+                if (ALT_RIGHT_DEFERS && (mod & KMOD_RALT) &&
+                    !(mod & KMOD_LALT)) {
+                    AltDefer = 1;           /* Right Alt: AltGr or Alt? */
+                    AltPendingKc = kc;
+                } else
+                    SkipText = 1;           /* X11 still reports the plain
+                                               letter as text for Alt+key;
+                                               that "q" would enter a note
+                                               after Alt-Q (transpose) */
                 if (kc == SDLK_RETURN || kc == SDLK_KP_ENTER) {
                     /* host concern -- toggle fullscreen (logical size
                      * keeps the letterbox + mouse map) -- except in the
@@ -326,6 +388,7 @@ static void PumpEvents(void)
             }
             if (mod & KMOD_CTRL) {
                 int shifted = (mod & KMOD_SHIFT) != 0;
+                SkipText = 1;               /* no text for Ctrl combos */
                 if (kc == SDLK_q) {
                     PushKey(0x11);          /* Ctrl-Q, as Win32 WM_CHAR */
                     break;
@@ -432,6 +495,21 @@ static void PumpEvents(void)
                 SkipText = 0;
                 break;
             }
+            if (AltPendingOn) {
+                /* the key's own plain letter = X11 echoing an Alt combo:
+                 * the hotkey stands, the letter goes. Any other character
+                 * = AltGr: type it, no hotkey. */
+                uint32_t u0 = p[0];
+                if ((p[0] & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80)
+                    u0 = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+                if (u0 == (uint32_t)AltPendingKc ||
+                    (u0 >= 'A' && u0 <= 'Z' &&
+                     u0 + 32 == (uint32_t)AltPendingKc)) {
+                    AltPendingRelease();
+                    break;
+                }
+                AltPendingOn = 0;
+            }
             while (*p) {
                 uint32_t u;
                 int extra;
@@ -469,6 +547,10 @@ static void PumpEvents(void)
             break;
         }
     }
+    AltDefer = 0;
+    /* a held-back Right-Alt hotkey whose character never came */
+    if (AltPendingOn && SDL_GetTicks() - AltPendingAt >= ALT_DEFER_MS)
+        AltPendingRelease();
 }
 
 #ifdef __APPLE__
@@ -680,6 +762,7 @@ static int SDL_BFileDialog(const it_dialog_req_t *req, it_dialog_res_t *res)
 #endif
     SDL_SetModState(KMOD_NONE);
     KeyHead = KeyTail = 0;
+    AltPendingOn = 0;                   /* nothing held back either */
     SkipText = 0;
     CurScan = 0;
     CurFlags = ITKF_PRESSED;

@@ -24,6 +24,14 @@
   files (.ITI, .XI) and modules with instruments (.IT, .XM) are listed;
   a module opens in place to pick an instrument from. The folder is the
   F12 instrument directory, as in IT.
+- **Linux: Alt hotkeys no longer enter notes.** On X11 the system also
+  reports the plain letter as text when Alt is held, so Alt-Q
+  (transpose), Alt-B/E (mark block) and friends entered a note as well.
+  Alt and Ctrl combinations now drop that text. Both Alt keys stay Alt,
+  as in DOS IT; where the right one is AltGr (German and other layouts),
+  AltGr+key still types its character (@, € …) instead of firing the
+  hotkey. The Mac had the same leak for the few Option characters the
+  tracker can show (å, for example).
 - **The help's Ctrl keys work** (#28): **Ctrl-E** redraws the screen,
   **Ctrl-I** reinitialises the sound driver (reopens the audio device,
   playback continues; handy after unplugging an interface), **Ctrl-M**
