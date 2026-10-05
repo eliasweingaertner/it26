@@ -1572,7 +1572,7 @@ int Screen_FileDialog(const it_dialog_req_t *req, it_dialog_res_t *res)
         res->reason = "Path too long";
     } else if (req->kind == IT_DLG_PICK_FOLDER && res->lossy) {
         res->status = IT_DLG_REJECTED;
-        res->reason = "Folder name has characters ittrack cannot show";
+        res->reason = "Folder name has characters it26 cannot show";
     } else if (req->kind == IT_DLG_PICK_FOLDER && strlen(res->path) > 64) {
         res->status = IT_DLG_REJECTED;              /* F12 field width */
         res->reason = "Path too long for this field";

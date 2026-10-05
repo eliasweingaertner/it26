@@ -95,10 +95,10 @@ specs/008-wav-sample-loading/
 └── tasks.md             # Phase 2 (/speckit-tasks — not created here)
 ```
 
-### Source Code (repository root: `ittrack/`)
+### Source Code (repository root: `it26/`)
 
 ```text
-ittrack/
+it26/
 ├── src/
 │   ├── it_ris.c         # + scan_wav() (D_GetSampleInfo8 port), RIS_ScanModule
 │   │                    #   dispatch branch, RIS_KnownExt + ".WAV",

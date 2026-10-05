@@ -57,7 +57,7 @@ jobs:
         run: choco install nsis -y --no-progress
 
       - name: Configure
-        run: cmake -B build -DITTRACK_VERSION=${{ needs.meta.outputs.version }}
+        run: cmake -B build -DIT26_VERSION=${{ needs.meta.outputs.version }}
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -82,8 +82,8 @@ jobs:
           LABEL: ${{ needs.meta.outputs.label }}
         run: |
           mkdir -p dist
-          mv build/ittrack-*.exe "dist/ittrack-${LABEL}-windows-x64-setup.exe"
-          mv build/ittrack-*.zip "dist/ittrack-${LABEL}-windows-x64.zip"
+          mv build/it26-*.exe "dist/it26-${LABEL}-windows-x64-setup.exe"
+          mv build/it26-*.zip "dist/it26-${LABEL}-windows-x64.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -117,7 +117,7 @@ jobs:
           exit 1
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DITTRACK_VERSION=${{ needs.meta.outputs.version }}
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DIT26_VERSION=${{ needs.meta.outputs.version }}
 
       - name: Build
         run: cmake --build build --parallel
@@ -195,7 +195,7 @@ jobs:
         run: brew install sdl2 dylibbundler imagemagick
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DITTRACK_VERSION=${VERSION}
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DIT26_VERSION=${VERSION}
 
       - name: Build
         run: cmake --build build --parallel
@@ -234,7 +234,7 @@ jobs:
             <key>CFBundleName</key><string>ited</string>
             <key>CFBundleDisplayName</key><string>ited</string>
             <key>CFBundleExecutable</key><string>ited</string>
-            <key>CFBundleIdentifier</key><string>org.ittrack.ited</string>
+            <key>CFBundleIdentifier</key><string>org.it26.ited</string>
             <key>CFBundleIconFile</key><string>ited</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleShortVersionString</key><string>${VERSION}</string>
@@ -264,9 +264,9 @@ jobs:
           chmod +x dmgroot/itplay
           ln -s /Applications dmgroot/Applications
           mkdir -p dist
-          hdiutil create -volname "ittrack ${LABEL}" \
+          hdiutil create -volname "it26 ${LABEL}" \
             -srcfolder dmgroot -ov -format UDZO \
-            "dist/ittrack-${LABEL}-macos-${arch}.dmg"
+            "dist/it26-${LABEL}-macos-${arch}.dmg"
 
       - uses: actions/upload-artifact@v4
         with:

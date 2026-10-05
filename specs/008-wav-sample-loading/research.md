@@ -8,8 +8,8 @@ Sources read for this document:
   (`SampleFormatNames`), 556..557 (format-name strings), 2867..3239
   (`D_LoadSampleData` incl. the stereo prompt and channel-compaction pass),
   8788..8830 `IT_OBJ1.ASM` (`O1_StereoSampleList` Left/Right menu).
-- Port: `ittrack/src/it_load.c` (`Load_SampleData`), `ittrack/src/it_ris.c`
-  (feature-006 scanners + `RIS_LoadSample`), `ittrack/src/it_editor.c`
+- Port: `it26/src/it_load.c` (`Load_SampleData`), `it26/src/it_ris.c`
+  (feature-006 scanners + `RIS_LoadSample`), `it26/src/it_editor.c`
   (`lib_open_source`, requester glue, selftest LIB block).
 
 ## R1. Decision: identification = `D_GetSampleInfo8`, ported exactly

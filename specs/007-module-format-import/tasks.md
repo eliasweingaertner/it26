@@ -8,7 +8,7 @@
 
 ## Phase 2: Foundational
 
-- [X] T002 `ittrack/src/it_import.c/h`: reader, format sniffing/dispatch (research R1), shared sample-data reader (unsigned/delta/16-bit conversion per Cvt), tables (FineTuneTable, MODPeriodTable, PanningPositions, XMEffectG), pattern-grid → `Pattern_Pack` plumbing; export the loader's default-MIDI-macros init from `it_load.c`.
+- [X] T002 `it26/src/it_import.c/h`: reader, format sniffing/dispatch (research R1), shared sample-data reader (unsigned/delta/16-bit conversion per Cvt), tables (FineTuneTable, MODPeriodTable, PanningPositions, XMEffectG), pattern-grid → `Pattern_Pack` plumbing; export the loader's default-MIDI-macros init from `it_load.c`.
 - [X] T003 Requester + `do_load_named` accept the five formats (extension filter + Import_LoadModule).
 
 ## Phase 3: US1 — S3M (P1) 🎯 MVP

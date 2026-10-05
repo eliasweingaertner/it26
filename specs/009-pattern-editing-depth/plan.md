@@ -100,10 +100,10 @@ specs/009-pattern-editing-depth/
 └── tasks.md             # Phase 2 (/speckit-tasks)
 ```
 
-### Source Code (repository root: `ittrack/`)
+### Source Code (repository root: `it26/`)
 
 ```text
-ittrack/
+it26/
 ├── src/
 │   ├── it_editor.c        # the bulk: 9-column cursor model, mark state +
 │   │                      #   rendering, block ops, PE_NewNote pipeline

@@ -67,10 +67,10 @@ specs/005-sample-instrument-editors/
 ├── contracts/sample-editor.md
 └── tasks.md
 
-ittrack/src/
+it26/src/
 ├── it_screen.h / it_screen_win32.c   # ITK_ALT_* key codes
 ├── it_editor.c                       # waveform view, fields, ops
-ittrack/docs/HANDOFF.md, ittrack/README.md
+it26/docs/HANDOFF.md, it26/README.md
 ```
 
 ## Complexity Tracking

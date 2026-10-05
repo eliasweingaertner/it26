@@ -38,11 +38,11 @@ scan, XM SmpNum off-by-one, S3M Dxy dead code, XM note-0 → B-0).
 ## Project Structure
 
 ```text
-ittrack/src/it_import.c + it_import.h   # NEW: sniffing + 5 loaders
-ittrack/src/it_load.c                   # export default MIDI macros
-ittrack/src/it_editor.c                 # requester filter + dispatch
-ittrack/tools/gen_import_tests.py       # NEW: synthetic test modules
-ittrack/testdata/import_*.{s3m,mod,xm,mtm,669}
+it26/src/it_import.c + it_import.h   # NEW: sniffing + 5 loaders
+it26/src/it_load.c                   # export default MIDI macros
+it26/src/it_editor.c                 # requester filter + dispatch
+it26/tools/gen_import_tests.py       # NEW: synthetic test modules
+it26/testdata/import_*.{s3m,mod,xm,mtm,669}
 ```
 
 ## Complexity Tracking

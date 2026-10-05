@@ -8,7 +8,7 @@
 
 **Input**: User description: "Pattern editing depth (roadmap #5): port the remaining
 IT 2.17 pattern editor (F2) behaviour from the IT_PE.ASM key lists and PE_TRANS.INC
-into ittrack. Scope: (1) block marking and block operations; (2) edit mask,
+into it26. Scope: (1) block marking and block operations; (2) edit mask,
 multichannel entry toggle, template mode; (3) row/field operations per the original
 incl. undo; (4) navigation depth; (5) conveniences (pattern store/restore, play mark,
 in-F2 mute/solo, hilight/division/centralise/trace/tracking toggles, pattern length,

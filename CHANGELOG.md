@@ -15,7 +15,7 @@
   too. Windows and macOS use their own dialogs; Linux uses `zenity` or
   `kdialog` if installed.
 - **F1 help on the Mac** names Right Option for the note preview (#20),
-  and the help lists the new dialog keys as "ittrack additions".
+  and the help lists the new dialog keys as "it26 additions".
 - **Load Instrument screen as in IT 2.14** (#27, reported by
   **@esaruoho**): F4 → Enter (and Ctrl-F4, the Instrument Library) now
   show IT's own screen instead of the module file requester: numbered
@@ -44,7 +44,7 @@ most of these.
   now keeps entering notes, advancing by the cursor step, as in IT. With
   step 4, holding Q fills every 4th row. macOS had opened its accent
   menu instead of repeating: Homebrew's SDL2 runs on SDL3, and SDL3 turns
-  "press and hold" on by default. ittrack now switches it off for itself.
+  "press and hold" on by default. it26 now switches it off for itself.
   Your macOS settings are not changed.
 - **Right Option = note preview** (#20). IT plays notes while Caps Lock
   is held. macOS treats Caps Lock as a toggle and shows its own
@@ -179,7 +179,7 @@ These keys now work the way they do in IT 2.14:
 - **Windows:**
   - no system beep on Alt shortcuts;
   - Alt shortcuts are no longer taken away by other programs' global
-    hotkeys (for example the NVIDIA overlay's Alt-F1…F3) while ittrack is
+    hotkeys (for example the NVIDIA overlay's Alt-F1…F3) while it26 is
     in front.
 
 ### Known issues
@@ -188,4 +188,4 @@ Still open: #12 (F3 sample list layout), #15 (macOS: held note keys do not
 repeat), #16 (Shift-F5 driver screen), #19 (macOS confirmation pending),
 #20 (macOS: Caps Lock is passed to the system).
 
-**Full commit list:** https://github.com/eliasweingaertner/ittrack/compare/v0.4.0...v0.5.0
+**Full commit list:** https://github.com/eliasweingaertner/it26/compare/v0.4.0...v0.5.0

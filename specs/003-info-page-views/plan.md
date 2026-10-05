@@ -91,10 +91,10 @@ specs/003-info-page-views/
 └── tasks.md             # Phase 2
 ```
 
-### Source Code (repository root: `ittrack/`)
+### Source Code (repository root: `it26/`)
 
 ```text
-ittrack/
+it26/
 └── src/
     ├── it_editor.c   # EDIT: replace the first-pass draw_info with the
     │                 #   DisplayWindows engine (11 methods + key model)

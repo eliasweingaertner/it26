@@ -166,7 +166,7 @@ keyboard, read back position `15h` and character `z` (SC-007).
 - [X] T044 Fold the research R9 items 2 and 3 into `docs/HANDOFF.md` as either resolved or explicitly deferred (Alt+keypad numeric entry; `LastKey` autorepeat behaviour)
 - [X] T045 Re-run the complete gate set one final time on Windows and WSL — determinism ×4, round-trip ×4×3, and all selftest blocks including `KBD`
 - [X] T046 Compare the final hashes against `specs/014-scancode-keyboard-input/baseline.md` and confirm SC-005 exactly
-- [X] T047 Re-copy `specs/` and `.specify/memory/constitution.md` from `C:\Users\elias\fable5` into the `ittrack` repo snapshot so the committed copy does not drift
+- [X] T047 Re-copy `specs/` and `.specify/memory/constitution.md` from `C:\Users\elias\fable5` into the `it26` repo snapshot so the committed copy does not drift
 - [ ] T048 Stage the work as separate commits per phase (A..E) following the feature 009/010 precedent, using `git commit -F <file>` for the messages
 
 ---

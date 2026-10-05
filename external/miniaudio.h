@@ -23708,7 +23708,7 @@ static ma_result ma_device_init_internal__wasapi(ma_context* pContext, ma_device
                 }
 
                 /*
-                ittrack patch: prefer the requested sample rate when the device accepts it exclusively in its native
+                it26 patch: prefer the requested sample rate when the device accepts it exclusively in its native
                 bit depth and channel layout, instead of always opening at the native rate and resampling. Falls
                 back to the native format above when the device refuses.
                 */

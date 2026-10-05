@@ -1,6 +1,6 @@
 # Gate Baseline (pre-feature-014)
 
-**Captured**: 2026-08-20, at `ittrack` HEAD `8dfb8bd`
+**Captured**: 2026-08-20, at `it26` HEAD `8dfb8bd`
 **Purpose**: SC-005 / FR-016 reference. Every gate below MUST reproduce these
 exact values after the feature lands. Any movement is a defect in 014, not an
 accepted deviation — this feature touches no engine code.

@@ -2,7 +2,7 @@
 Sync Impact Report
 ==================
 Version change: template (unversioned) → 1.0.0
-Rationale: Initial ratification — first concrete constitution for ittrack.
+Rationale: Initial ratification — first concrete constitution for it26.
 
 Principles (all newly defined from the template placeholders):
   - I.   Engine Fidelity is 1:1 with the Original ASM (NON-NEGOTIABLE)
@@ -28,7 +28,7 @@ Follow-up TODOs: none. Ratification date set to first-version date (2026-06-16);
 no earlier adoption date exists.
 -->
 
-# ittrack Constitution
+# it26 Constitution
 
 ## Core Principles
 

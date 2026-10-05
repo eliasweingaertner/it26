@@ -12,8 +12,8 @@ zoom; US1/US2 deliver the authentic waveform view + Alt-op set.
 
 ## Phase 2: Foundational
 
-- [X] T002 Alt-key layer: `ITK_ALT_A..Z/0..9/INS/DEL/UP/DOWN/PLUS/MINUS`, `ITK_CTRL_PLUS/MINUS` in `ittrack/src/it_screen.h`; Win32 WM_SYSKEYDOWN mapping in `it_screen_win32.c`.
-- [X] T003 Modal helpers in `ittrack/src/it_editor.c`: `prompt_number()` (title/default/max), parameterised `confirm_box()`, 3-way `quality_dialog()`.
+- [X] T002 Alt-key layer: `ITK_ALT_A..Z/0..9/INS/DEL/UP/DOWN/PLUS/MINUS`, `ITK_CTRL_PLUS/MINUS` in `it26/src/it_screen.h`; Win32 WM_SYSKEYDOWN mapping in `it_screen_win32.c`.
+- [X] T003 Modal helpers in `it26/src/it_editor.c`: `prompt_number()` (title/default/max), parameterised `confirm_box()`, 3-way `quality_dialog()`.
 
 ## Phase 3: User Story 1 — Waveform view & loops (P1) 🎯 MVP
 

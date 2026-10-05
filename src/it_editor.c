@@ -4455,7 +4455,7 @@ static void help_expand(const uint8_t *src, uint8_t *out, int *n, int cap)
 static const char PortHelpPreview[] =
     "\x05" "Right Option+Key" "\xFF\x01\x20" "Preview " "\xA5";
 static const char PortHelpHead[] =
-    "\x03" "ittrack additions (not in Impulse Tracker).";
+    "\x03" "it26 additions (not in Impulse Tracker).";
 static const char PortHelpOpen[] =
     "\x05" "Ctrl-Shift-F9     Open module (system dialog)";
 static const char PortHelpSave[] =

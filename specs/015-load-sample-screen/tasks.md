@@ -22,7 +22,7 @@ touches a different file.
 
 ## Phase 1: Setup
 
-- [X] T001 Record the gate baseline (determinism x4 hashes, roundtrip 12/12, selftest block list incl. INS) at ittrack HEAD `278cb25` into `specs/015-load-sample-screen/baseline.md`
+- [X] T001 Record the gate baseline (determinism x4 hashes, roundtrip 12/12, selftest block list incl. INS) at it26 HEAD `278cb25` into `specs/015-load-sample-screen/baseline.md`
 - [X] T002 Create the selftest fixture generator: extend `tools/gen_import_tests.py` to emit `testdata/ls_fixture/` with two subdirectories (`ACOUSTIC/`, `BASS/`), one 8-bit WAV, one ITS, one junk file `README.TXT`, and one small module
 
 ---
@@ -102,7 +102,7 @@ touches a different file.
 - [X] T035 README fidelity notes: the three deviations (always sorted, no CACHE.ITS, POSIX drive box) in `README.md`
 - [X] T036 HANDOFF status paragraph, `LSS` in the gate list, capture aids 13/14 in `docs/HANDOFF.md`
 - [X] T037 Final gates on Windows, WSL and CI; compare with `baseline.md` -- Windows + WSL identical to baseline; CI runs on the next push
-- [X] T038 Copy `specs/015-load-sample-screen` into the ittrack `specs/` snapshot
+- [X] T038 Copy `specs/015-load-sample-screen` into the it26 `specs/` snapshot
 - [X] T039 Committed as one commit (phases interleave in it_editor.c) with `git commit -F`
 
 ---

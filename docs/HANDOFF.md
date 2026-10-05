@@ -1,4 +1,4 @@
-# ittrack — Session handoff / resume guide
+# it26 — Session handoff / resume guide
 
 > Read this first when resuming in a fresh agent session. It is a snapshot
 > of **where the project stands**, **how to build and verify it**, **how the
@@ -727,7 +727,7 @@ selftest's `IMPORT OK` / `LIB OK` blocks.
 ## 5. File map
 
 ```
-ittrack/
+it26/
   CMakeLists.txt           two targets: itplay (engine+main), ited (engine+screen+editor)
   README.md                user-facing overview + fidelity notes
   docs/
@@ -858,7 +858,7 @@ comes from `wasapi_exclusive_rates()`, which asks
 (it only queries the device and never opens it; it reuses miniaudio's
 COM helpers, so it is in the same translation unit). miniaudio itself
 always opened exclusive devices at their native rate and resampled, so
-`external/miniaudio.h` carries a marked **ittrack patch** in
+`external/miniaudio.h` carries a marked **it26 patch** in
 `ma_device_init_internal__wasapi`: it tries the requested rate with the
 native bit depth and channels first. macOS: CoreAudio has no exclusive mode (miniaudio refuses it), and
 miniaudio keeps the device's nominal rate (Audio MIDI Setup) and
@@ -909,7 +909,7 @@ those keys.
   a dialog load/save; the original screens clear it.
 - Help: port-owned lines next to `draw_help` (`help_lines()`), never in
   the generated `it_help.inc`. macOS shows "Right Option+Key" for the
-  preview line (Preview stays in column 17); "ittrack additions" lines
+  preview line (Preview stays in column 17); "it26 additions" lines
   list the keys where dialogs exist.
 - After a dialog the backend drops queued/pending keys, resets the
   modifier state and queues `ITK_SHIFT_RELEASE`.

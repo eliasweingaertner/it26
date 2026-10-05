@@ -19,7 +19,7 @@ editor screen; loader extended to read the embedded song message
 ## Technical Context
 
 **Language/Version**: C11 (MSVC + POSIX), same toolchain as the rest of
-`ittrack/`.
+`it26/`.
 
 **Primary Dependencies**: none new. `src/it_save.c` (new) uses stdio;
 editor screens in `src/it_editor.c`.
@@ -86,10 +86,10 @@ specs/004-save-module/
 └── tasks.md
 ```
 
-### Source Code (repository root: `ittrack/`)
+### Source Code (repository root: `it26/`)
 
 ```text
-ittrack/
+it26/
 ├── src/
 │   ├── it_save.c        # NEW: D_SaveIT + compressed/plain sample writers
 │   ├── it_save.h        # NEW: Save_ITModule(path), SaveFormat

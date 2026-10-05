@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "Port the original Impulse Tracker 'Load Sample' screen (and its sibling 'View Sample Library' screen) instead of reusing the F9 module-load requester. In IT you see everything about the highlighted sample file before loading it; in ittrack you see a format name and a byte size."
+**Input**: User description: "Port the original Impulse Tracker 'Load Sample' screen (and its sibling 'View Sample Library' screen) instead of reusing the F9 module-load requester. In IT you see everything about the highlighted sample file before loading it; in it26 you see a format name and a byte size."
 
 ## User Scenarios & Testing *(mandatory)*
 

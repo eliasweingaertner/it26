@@ -9,7 +9,7 @@ contracts/ris-wav.md, quickstart.md
 regression gates, so test tasks are included.
 
 **Organization**: Tasks grouped by user story. All code paths live in the
-port repo `ittrack/` (paths below are relative to `C:\Users\elias\fable5\ittrack`).
+port repo `it26/` (paths below are relative to `C:\Users\elias\fable5\ittrack`).
 
 ## Format: `[ID] [P?] [Story] Description`
 

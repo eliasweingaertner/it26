@@ -18,7 +18,7 @@ from `IT_I.ASM`: `I_DrawInstrumentWindow` (4653), `I_DrawNoteWindow` (5374, the
 General tab's note-translation window), `I_DrawEnvelope`/`I_PreEnvelope`/
 `I_PostEnvelope` (6678+, the envelope display and its node editing keys), and
 `I_DrawPitchPanCenter` (8799). All of this is ported into the existing widget
-framework in `ittrack/src/it_editor.c`; the engine is untouched. The 2.17 build
+framework in `it26/src/it_editor.c`; the engine is untouched. The 2.17 build
 uses `FILTERENVELOPES=1` (`SWITCH.INC`), so the Pitch tab includes Default
 Cutoff/Resonance and the shifted MIDI rows.
 
@@ -88,10 +88,10 @@ specs/002-f4-instrument-editor/
 └── tasks.md             # Phase 2 (/speckit-tasks)
 ```
 
-### Source Code (repository root: `ittrack/`)
+### Source Code (repository root: `it26/`)
 
 ```text
-ittrack/
+it26/
 └── src/
     ├── it_editor.c   # EDIT: replace draw_instruments' right pane with the four
     │                 #   object-exact tab layouts; add note-translation window,

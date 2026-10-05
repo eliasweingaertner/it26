@@ -53,11 +53,11 @@ memory (files are MB-scale; matches it_import.c).
 ## Project Structure (delta)
 
 ```
-ittrack/src/it_ris.c        # NEW: R2 scanners, R3 loader, R5 instrument side, R6 saves
-ittrack/src/it_ris.h        # NEW: slibent_t/ilibent_t + API
-ittrack/src/it_load.c/h     # Load_SampleData export (R3 converter superset)
-ittrack/src/it_editor.c     # sample/instrument library requesters, wiring, selftest
-ittrack/tools/gen_import_tests.py  # + minimal .XI (and .FAR/.PTM if feasible)
+it26/src/it_ris.c        # NEW: R2 scanners, R3 loader, R5 instrument side, R6 saves
+it26/src/it_ris.h        # NEW: slibent_t/ilibent_t + API
+it26/src/it_load.c/h     # Load_SampleData export (R3 converter superset)
+it26/src/it_editor.c     # sample/instrument library requesters, wiring, selftest
+it26/tools/gen_import_tests.py  # + minimal .XI (and .FAR/.PTM if feasible)
 ```
 
 ## Complexity Tracking

@@ -18,7 +18,7 @@ too. Implementation detail lives in `tasks.md`; this is the run/verify guide.
 ## Build
 
 ```sh
-cd ittrack
+cd it26
 cmake -B build && cmake --build build --config Release
 ```
 

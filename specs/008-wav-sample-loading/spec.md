@@ -8,7 +8,7 @@
 
 **Input**: User description: "Standalone WAV sample loading in the sample library
 requester (F3 Enter). Port IT 2.17's standalone WAV file support from the original
-disk/library code into the ittrack port: add .WAV to the requester's accepted-extension
+disk/library code into the it26 port: add .WAV to the requester's accepted-extension
 filter, scan RIFF WAVE files into library records (format codes 5 = 8-bit WAV,
 7 = 16-bit WAV as in the original loader table), and load/rip the selected WAV through
 the existing sample-data conversion paths (unsigned 8-bit, signed 16-bit PCM mono).

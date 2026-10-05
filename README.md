@@ -1,4 +1,4 @@
-# ittrack — a native cross-platform port of Impulse Tracker
+# it26 — a native cross-platform port of Impulse Tracker
 
 TL;DR AI-vibed 1:1 conversion of Jeffrey Lim's fantastic Impulse Tracker to modern operating systems. Originally written in pure (!) 486 x86 assembly code, this aims to be the first near-complete 1:1 translation of both the playback engine and the editor to C/SDL. The conversion was carried out fully with Anthropic's Claude models (Fable 5, Opus 4.8, Opus 5 and Opus 5.5). Everything I tested works - but bugs might still exist!
 
@@ -17,7 +17,7 @@ After burning quite a bunch of tokens, I am happy to present you an AI port of I
 
 ## Now we let the AI explain the rest :P
 
-ittrack is a 1:1 C port of Jeffrey Lim's Impulse Tracker for Windows,
+it26 is a 1:1 C port of Jeffrey Lim's Impulse Tracker for Windows,
 macOS and Linux. It has two parts:
 
 - **The playback engine:** the complete IT 2.17 engine, transliterated
@@ -99,7 +99,7 @@ to `master`) and pinned tagged versions.
 | Platform | Artifact | Notes |
 |----------|----------|-------|
 | Windows | `…-windows-x64-setup.exe`, `…-windows-x64.zip` | installer or portable ZIP |
-| macOS | `ittrack-…-macos-<arch>.dmg` | `ited.app` with SDL2 inside, plus the `itplay` CLI |
+| macOS | `it26-…-macos-<arch>.dmg` | `ited.app` with SDL2 inside, plus the `itplay` CLI |
 | Linux | `ited-…-x86_64.AppImage`, `itplay-…-linux-x86_64` | editor AppImage (SDL2 bundled) + bare player |
 
 The macOS DMG is not code-signed or notarised, so Gatekeeper quarantines
@@ -246,7 +246,7 @@ every pattern yields **byte-identical audio**.
 
 ## Audio (Shift-F5)
 
-The original's Shift-F5 shows the sound card driver's own screen. ittrack
+The original's Shift-F5 shows the sound card driver's own screen. it26
 has no sound card driver: it plays through miniaudio with IT's WAV-writer
 mixer, so **Shift-F5 opens a "Miniaudio Driver" screen** instead. This
 is a deliberate extension.
@@ -306,7 +306,7 @@ places where it deliberately or unavoidably differs.
 - **Ctrl-D (DOS Shell)** isn't offered, since there's no DOS to shell
   to; the help doesn't list it (#28). Ctrl-E redraws the screen, Ctrl-I
   reopens the audio device, Ctrl-M shows/hides the mouse pointer.
-- **Windows:** while ittrack is in front, it keeps left-Alt shortcuts
+- **Windows:** while it26 is in front, it keeps left-Alt shortcuts
   away from other programs' global hotkeys (the NVIDIA overlay, for
   example, takes Alt-F1…F3).
 - **macOS:** Caps Lock can't be held as a key there (macOS latches it
@@ -325,7 +325,7 @@ places where it deliberately or unavoidably differs.
   `kdialog`; the terminal mode has none. Names with characters the
   tracker's character set lacks still load and save; on screen those
   characters show as `?`. The F1 help lists these keys below IT's own
-  text, marked "ittrack additions".
+  text, marked "it26 additions".
 - The "2026 AI PORT" corner badge is drawn at the final pixel stage, so
   screen dumps and the text cells are untouched.
 

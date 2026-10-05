@@ -93,10 +93,10 @@ specs/001-sdl-posix-backend/
 └── tasks.md             # Phase 2 output (/speckit-tasks — NOT created here)
 ```
 
-### Source Code (repository root: `ittrack/`)
+### Source Code (repository root: `it26/`)
 
 ```text
-ittrack/
+it26/
 ├── CMakeLists.txt              # ADD: optional SDL2 discovery + ITED_SDL option;
 │                               #      link SDL2 + compile it_screen_sdl.c when enabled
 ├── src/
@@ -112,7 +112,7 @@ ittrack/
     └── test_pattern.c          # UNCHANGED (run as the determinism gate)
 ```
 
-**Structure Decision**: Single existing native project (`ittrack/`). The feature
+**Structure Decision**: Single existing native project (`it26/`). The feature
 adds exactly one source file plus a guarded extern and a small selection branch,
 following the established two-backend pattern (`Screen_BackendWin32` /
 `Screen_BackendTerm`). No new directories or modules; the SDL backend is a peer

@@ -493,7 +493,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 
 /* Global hotkeys of other programs (the NVIDIA overlay's Alt+F1/F2/F3,
  * Alt+F9/F10, Alt+Z, Alt+R, ...) swallow keys IT needs before they
- * reach this window. While ittrack is in front, a low-level keyboard
+ * reach this window. While it26 is in front, a low-level keyboard
  * hook takes left-Alt + F-key/letter/digit first -- the most recently
  * installed hook runs first -- and hands it to our own window as the
  * WM_SYSKEYDOWN it would have been. AltGr (right Alt, or Ctrl+Alt) is

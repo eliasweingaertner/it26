@@ -1,6 +1,6 @@
 # Gate Baseline (pre-feature-015)
 
-**Captured**: 2026-09-26 at ittrack `278cb25`.
+**Captured**: 2026-09-26 at it26 `278cb25`.
 
 | Module | Audio hash |
 |---|---|

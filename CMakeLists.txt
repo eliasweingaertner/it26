@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Version used for packaging (CPack / the Windows installer). CI passes
-# -DITTRACK_VERSION=<x.y.z>; the default keeps local `cpack` runs working.
-if(NOT DEFINED ITTRACK_VERSION)
-    set(ITTRACK_VERSION "0.0.0")
+# -DIT26_VERSION=<x.y.z>; the default keeps local `cpack` runs working.
+if(NOT DEFINED IT26_VERSION)
+    set(IT26_VERSION "0.0.0")
 endif()
-project(ittrack VERSION ${ITTRACK_VERSION} LANGUAGES C)
+project(it26 VERSION ${IT26_VERSION} LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -93,11 +93,11 @@ add_executable(test_pattern ${ENGINE_SOURCES} tests/test_pattern.c)
 # ---------------------------------------------------------------------------
 install(TARGETS itplay ited RUNTIME DESTINATION .)
 
-set(CPACK_PACKAGE_NAME "ittrack")
-set(CPACK_PACKAGE_VENDOR "ittrack")
+set(CPACK_PACKAGE_NAME "it26")
+set(CPACK_PACKAGE_VENDOR "it26")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
     "A native cross-platform port of Impulse Tracker")
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "ittrack")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "it26")
 set(CPACK_PACKAGE_EXECUTABLES
     "ited"   "ited (editor)"
     "itplay" "itplay (player)")
@@ -107,8 +107,8 @@ set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.TXT")
 if(WIN32)
     set(CPACK_GENERATOR "NSIS;ZIP")
     set(CPACK_SYSTEM_NAME "win64")
-    set(CPACK_NSIS_DISPLAY_NAME "ittrack")
-    set(CPACK_NSIS_PACKAGE_NAME "ittrack")
+    set(CPACK_NSIS_DISPLAY_NAME "it26")
+    set(CPACK_NSIS_PACKAGE_NAME "it26")
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
     # Executables are installed at the package root (not the NSIS default
     # of bin/), so Start Menu / desktop shortcuts must be wired accordingly.

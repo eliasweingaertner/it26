@@ -76,7 +76,7 @@ specs/010-pattern-editor-completion/
 └── tasks.md             # /speckit-tasks output
 ```
 
-### Source Code (ittrack repo, `C:\Users\elias\fable5\ittrack`)
+### Source Code (it26 repo, `C:\Users\elias\fable5\ittrack`)
 
 ```text
 src/

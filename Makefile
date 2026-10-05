@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# ittrack -- GNU Makefile (POSIX build path: Linux, macOS, MSYS2 / Git Bash)
+# it26 -- GNU Makefile (POSIX build path: Linux, macOS, MSYS2 / Git Bash)
 #
 # CMakeLists.txt stays the canonical cross-platform build and the only
 # supported path for MSVC/Windows.  This Makefile is the quick no-deps
@@ -231,7 +231,7 @@ distclean: clean
 	rm -f $(FONT)
 
 help:
-	@echo 'ittrack targets:'
+	@echo 'it26 targets:'
 	@echo '  all (default)  build itplay, ited, test_pattern'
 	@echo '  itplay         player / offline WAV renderer'
 	@echo '  ited           editor'
