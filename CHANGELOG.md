@@ -1,45 +1,72 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 — 2026-10-05
 
-- **System file dialogs** (#26, suggested by **@esaruoho**): next to
-  IT's own file screens, the operating system's dialogs as shortcuts.
-  **Ctrl-Shift-F9** opens a module and **Ctrl-Shift-F10** saves it under
-  a new name (IT or S3M, from the file type or extension), from any
-  screen. **Ctrl-O** on F3/F4 loads a sample or instrument into the
-  current slot (a module opens as a library to pick from), and on a
-  focused F12 path field picks the folder. On the Mac, **Cmd-F9**,
-  **Cmd-F10** and **Cmd-O** do the same with one key fewer (F-keys need
-  Fn there). Results are the same as with
-  IT's screens, and the folder you used becomes the current one there
-  too. Windows and macOS use their own dialogs; Linux uses `zenity` or
-  `kdialog` if installed.
-- **F1 help on the Mac** names Right Option for the note preview (#20),
-  and the help lists the new dialog keys as "it26 additions".
-- **Load Instrument screen as in IT 2.14** (#27, reported by
-  **@esaruoho**): F4 → Enter (and Ctrl-F4, the Instrument Library) now
-  show IT's own screen instead of the module file requester: numbered
-  list with instrument name, file name, number of samples and size,
-  "Available Samples", and the drive list. Only folders, instrument
-  files (.ITI, .XI) and modules with instruments (.IT, .XM) are listed;
-  a module opens in place to pick an instrument from. The folder is the
-  F12 instrument directory, as in IT.
-- **Linux: Alt hotkeys no longer enter notes.** On X11 the system also
-  reports the plain letter as text when Alt is held, so Alt-Q
-  (transpose), Alt-B/E (mark block) and friends entered a note as well.
-  Alt and Ctrl combinations now drop that text. Both Alt keys stay Alt,
-  as in DOS IT; where the right one is AltGr (German and other layouts),
-  AltGr+key still types its character (@, € …) instead of firing the
-  hotkey. The Mac had the same leak for the few Option characters the
-  tracker can show (å, for example).
+**The project is now called it26** (GitHub: `eliasweingaertner/it26`):
+the 2026 port of IT, and "ittrack" doubled the "tracker" in "IT". The
+programs keep their names, `ited` and `itplay`; the downloads are now
+named `it26-…`. Thanks again to **Esa Juhani Ruoho (@esaruoho)**, who
+suggested the file dialogs and reported the Load Instrument screen.
+
+### New
+
+- **System file dialogs** (#26): next to IT's own file screens, the
+  operating system's dialogs as shortcuts, on keys IT 2.14 doesn't use.
+
+  | | Windows / Linux | Mac |
+  |---|---|---|
+  | Open a module (any screen) | Ctrl-Shift-F9 | Cmd-F9 |
+  | Save module as, IT or S3M (any screen) | Ctrl-Shift-F10 | Cmd-F10 |
+  | Load a sample / instrument into the current slot (F3 / F4) | Ctrl-O | Cmd-O |
+  | Choose the folder for a path field (F12) | Ctrl-O | Cmd-O |
+
+  Results are the same as with IT's screens, and the folder you used
+  becomes the current one there too. Windows and macOS use their own
+  dialogs; Linux uses `zenity` or `kdialog` if installed. File names with
+  characters the tracker can't show still load and save (shown as `?`).
+- **F1 help** lists these keys at the bottom of the pages, marked
+  "it26 additions". On the Mac it shows the Cmd keys, and the note
+  preview line says Right Option (#20).
+
+### Closer to IT 2.14
+
+- **Load Instrument screen** (#27): F4 → Enter (and Ctrl-F4, the
+  Instrument Library) now show IT's own screen instead of the module
+  file requester: numbered list with instrument name, file name, number
+  of samples and size, "Available Samples", and the drive list. Only
+  folders, instrument files (.ITI, .XI) and modules with instruments
+  (.IT, .XM) are listed; a module opens in place to pick an instrument
+  from. The folder is the F12 instrument directory, as in IT. Ctrl-F4
+  browses only, as in 2.14.
+- **Ctrl-Q works on the file screens** (#27): Load Sample, Load
+  Instrument, the libraries and the F9/F10 screens ask "Exit Impulse
+  Tracker?" right there; Cancel stays on the screen.
 - **The help's Ctrl keys work** (#28): **Ctrl-E** redraws the screen,
   **Ctrl-I** reinitialises the sound driver (reopens the audio device,
   playback continues; handy after unplugging an interface), **Ctrl-M**
   shows/hides the mouse pointer. Ctrl-D (DOS Shell) has nothing to shell
   to, so the help no longer lists it.
-- **Ctrl-Q works on the file screens** (#27): Load Sample, Load
-  Instrument, the libraries and the F9/F10 file screens ask "Exit
-  Impulse Tracker?" right there; Cancel stays on the screen.
+
+### Fixes
+
+- **Linux: Alt hotkeys no longer enter notes.** On X11 the system also
+  reports the plain letter as text when Alt is held, so Alt-Q
+  (transpose), Alt-B/E (mark block) and friends entered a note as well.
+  Both Alt keys work as Alt, as in DOS IT; where the right one is AltGr
+  (German and other layouts), AltGr+key still types its character
+  (@, € …). The Mac had the same leak for the few Option characters the
+  tracker can show (å, for example).
+
+### Notes
+
+- **Windows:** the installer now installs to an "it26" folder with its
+  own uninstall entry; remove an older "ittrack" install yourself if you
+  like. **Mac:** the app's bundle id changed (`org.it26.ited`); settings
+  live in `ited.cfg` and are kept.
+- The spec-driven development setup (Spec Kit: specs, plans, templates)
+  is now part of the repository.
+
+**Full commit list:** https://github.com/eliasweingaertner/it26/compare/v0.6.0...v0.7.0
 
 ## v0.6.0 — 2026-09-30
 
