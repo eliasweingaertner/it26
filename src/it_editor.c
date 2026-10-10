@@ -10214,6 +10214,8 @@ static void draw_lib_browser(int inslib, const char *srcname)
  * has it back. Returns 0 (not a global key), 1 (handled, carry on) or 2
  * (leave the modal screen). */
 static int PendingGlobalKey = 0, PendingHelpContext = 1;
+static int FromFileScreen = 0;          /* handle_global runs a key a file
+                                           screen handed back (#29) */
 static void handle_global(int key);
 static void help_open(int context);
 
@@ -12678,7 +12680,11 @@ static void handle_global(int key)
         return;
     case ITK_F2:                        /* Glbl_F2 loads the packed-cell
                                            charsets for the small views */
-        if (Screen != SCR_PATTERN) {
+        /* CurrentMode == 2 test: a key handed back by a file screen
+         * (F9/F10, Load Sample/Instrument, libraries) comes from that
+         * screen's mode -- Glbl_F9 sets CurrentMode 9 -- even though the
+         * port's modal screen left Screen as it was (#29) */
+        if (Screen != SCR_PATTERN || FromFileScreen) {
             Screen_DefineSmallNumbers();
             Screen = SCR_PATTERN;
         } else {
@@ -16722,8 +16728,11 @@ int main(int argc, char **argv)
                 PendingGlobalKey = 0;
                 if (pk == ITK_F1)
                     help_open(PendingHelpContext);
-                else
+                else {
+                    FromFileScreen = 1;
                     handle_global(pk);
+                    FromFileScreen = 0;
+                }
             }
             if (Screen == SCR_ORDER)        /* one variable in the
                                                original: Order */
