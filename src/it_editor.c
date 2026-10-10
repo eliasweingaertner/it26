@@ -12703,7 +12703,10 @@ static int run_menu(const menudef_t *d, void (*under)(void), int *psel)
     }
 }
 
-static int  MainMenuSel = 2;            /* defaults to View Patterns */
+/* O1_MainMenu / O1_FileMenu / ... DW 3 (IT_OBJ1.ASM 6780): every menu
+ * starts on its first item, and F_MainMenu / F_FileMenu / ... open it
+ * with CX = 0FFFFh, i.e. on the object it was left on */
+static int  MainMenuSel = 0;
 static void menu_under_screen(void) { draw_screen(); }
 static void menu_under_main(void);
 
@@ -12870,14 +12873,16 @@ static const menudef_t InstrumentMenuDef = {
     InstrumentItems, 2
 };
 
+static int FileMenuSel, PlayBackMenuSel, SampleMenuSel, InstrumentMenuSel;
+
 static int act_file_menu(void)
-{ return run_menu(&FileMenuDef, menu_under_main, NULL); }
+{ return run_menu(&FileMenuDef, menu_under_main, &FileMenuSel); }
 static int act_playback_menu(void)
-{ return run_menu(&PlayBackMenuDef, menu_under_main, NULL); }
+{ return run_menu(&PlayBackMenuDef, menu_under_main, &PlayBackMenuSel); }
 static int act_sample_menu(void)
-{ return run_menu(&SampleMenuDef, menu_under_main, NULL); }
+{ return run_menu(&SampleMenuDef, menu_under_main, &SampleMenuSel); }
 static int act_instrument_menu(void)
-{ return run_menu(&InstrumentMenuDef, menu_under_main, NULL); }
+{ return run_menu(&InstrumentMenuDef, menu_under_main, &InstrumentMenuSel); }
 
 static const menuitem_t MainItems[] = {
     { " File Menu...",               act_file_menu },
