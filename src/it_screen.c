@@ -29,10 +29,25 @@ static screen_cell_t Back[SCREEN_H][SCREEN_W];
 static const screen_backend_t *Backend;
 static int Inited = 0;
 
+/* PaletteDefs (IT_S.ASM): the 16 colours as 6-bit RGB triplets,
+ * editable on the Palette Configuration screen (Ctrl-F12, #44); starts
+ * as Camouflage. */
+static uint8_t PaletteDefs[48];
+static int PaletteInited = 0;
+
+uint8_t *Screen_PaletteDefs(void)
+{
+    if (!PaletteInited) {
+        memcpy(PaletteDefs, IT_PaletteDefs, sizeof(PaletteDefs));
+        PaletteInited = 1;
+    }
+    return PaletteDefs;
+}
+
 /* 6-bit VGA DAC -> 8-bit, exactly as a VGA card displays it. */
-static uint8_t PalR(int i) { return (uint8_t)((IT_PaletteDefs[i*3+0]*255)/63); }
-static uint8_t PalG(int i) { return (uint8_t)((IT_PaletteDefs[i*3+1]*255)/63); }
-static uint8_t PalB(int i) { return (uint8_t)((IT_PaletteDefs[i*3+2]*255)/63); }
+static uint8_t PalR(int i) { return (uint8_t)((Screen_PaletteDefs()[i*3+0]*255)/63); }
+static uint8_t PalG(int i) { return (uint8_t)((Screen_PaletteDefs()[i*3+1]*255)/63); }
+static uint8_t PalB(int i) { return (uint8_t)((Screen_PaletteDefs()[i*3+2]*255)/63); }
 
 /* ---- cell-buffer drawing (backend independent) ----------------------- */
 
@@ -846,6 +861,7 @@ static void Term_CsiFinal(uint8_t f)
             return;
         case 24:
             if (mod == 3)      Term_PushKey(ITK_ALT_F12);
+            else if (mod == 5) Term_PushKey(ITK_CTRL_F12);
             else if (mod <= 1) Term_PushKey(ITK_F12);
             return;
         case 27:                                /* modifyOtherKeys */
@@ -1039,6 +1055,7 @@ static int Term_Key(void)
             case 92:  return ITK_SHIFT_F9;      /* Shift-F1..F10=84..93 */
             case 95:  return ITK_CTRL_F2;       /* Ctrl-F1..F10=94..103 */
             case 100: return ITK_CTRL_F7;
+            case 138: return ITK_CTRL_F12;      /* E0 8A */
             case 112: return ITK_ALT_F9;        /* Alt-F1..F10=104..113 */
             case 113: return ITK_ALT_F10;
             default:

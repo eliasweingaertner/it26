@@ -188,6 +188,8 @@ enum {
      * no Ctrl-F9/F10 entry exists for Ctrl-Shift to fall back to). */
     ITK_CTRL_SHIFT_F9 = 0x298,  /* open module (system dialog) */
     ITK_CTRL_SHIFT_F10,         /* save module as (system dialog) */
+    ITK_CTRL_F12,               /* Glbl_Ctrl_F12: Palette Configuration
+                                   (#44) */
     ITK_QUIT = 0x300,       /* window closed (pixel backend) */
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
 };
@@ -280,6 +282,9 @@ void Screen_GetMouse(it_mouse_t *m);
 void Screen_SetMouseVisible(int show);
 int  Screen_MouseVisible(void);
 void Screen_Refresh(void);      /* next Screen_Update repaints everything */
+/* PaletteDefs: 16 x 6-bit RGB, writable (Ctrl-F12 palette screen); after
+ * a change call Screen_Refresh (S_SetPalette2) */
+uint8_t *Screen_PaletteDefs(void);
 
 /* ---- system file dialogs (feature 016, issue #26) ----
  * An extension next to IT's own file screens: the host's open / save /

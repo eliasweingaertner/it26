@@ -347,6 +347,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             case VK_F4:     PushKey(ITK_CTRL_F4);        return 0;
             case VK_F5:     PushKey(ITK_CTRL_F5);        return 0;
             case VK_F6:     PushKey(ITK_CTRL_F6);        return 0;
+            case VK_F12:    PushKey(ITK_CTRL_F12);       return 0;
             case VK_RETURN:     /* Right-Ctrl+Enter = PE_ShowPatternLength;
                                    either way WM_CHAR follows with 0Ah,
                                    which would read as Ctrl-J */

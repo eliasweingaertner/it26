@@ -428,6 +428,7 @@ static void PumpEvents(void)
                 case SDLK_F4:       PushKey(ITK_CTRL_F4);        break;
                 case SDLK_F5:       PushKey(ITK_CTRL_F5);        break;
                 case SDLK_F6:       PushKey(ITK_CTRL_F6);        break;
+                case SDLK_F12:      PushKey(ITK_CTRL_F12);       break;
                 case SDLK_RETURN: case SDLK_KP_ENTER:   /* 111Ch */
                     PushKey((mod & KMOD_RCTRL) ? ITK_RCTRL_ENTER
                                                : ITK_ENTER);

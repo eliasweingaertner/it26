@@ -79,7 +79,7 @@ void Music_FreeIT(void);
 
 enum { SCR_HELP, SCR_PATTERN, SCR_SAMPLES, SCR_INSTRUMENTS,
        SCR_ORDER, SCR_VARS, SCR_INFO, SCR_MESSAGE, SCR_KEYS,
-       SCR_DRIVER, SCR_EMPTY, SCR_COUNT };
+       SCR_DRIVER, SCR_PALETTE, SCR_EMPTY, SCR_COUNT };
 
 /* ---- editor state ---- */
 static int      Screen = SCR_PATTERN;
@@ -4633,6 +4633,7 @@ static int help_context_of(int scr)
     case SCR_DRIVER:      return 5;
     case SCR_INFO:        return 9;
     case SCR_MESSAGE:     return 12;
+    case SCR_PALETTE:     return 10;     /* SetHelpContext10 */
     default:              return 1;
     }
 }
@@ -6373,6 +6374,207 @@ static void handle_message_key(int key)
 }
 
 /* ===================================================================
+ * Palette Configuration (Ctrl-F12, #44) -- O1_ConfigurePaletteList
+ * (IT_OBJ1.ASM 7380..8110): per colour a PaletteColourBorder (style 11)
+ * with the colour itself inside, a PaletteInputBox (style 27) and three
+ * type-9 thumbbars 0..63 on PaletteDefs (R, G, B); seven
+ * PredefinedPalette buttons (S_UsePresetPalette). The object links
+ * (Up, Down, Tab, Shift-Tab, PgUp, PgDn for the bars; Up, Down, Left,
+ * Right for the buttons) are the ASM's, renumbered: bars 0..47 = objects
+ * 53..100, buttons 48..54 = objects 102..108.
+ * =================================================================== */
+static const struct { uint8_t x, y; int8_t link[6]; } PalThumbs[48] = {
+    { 10, 14, { -1, 1, 21, 42, -1, 3 } },
+    { 10, 15, { 0, 2, 22, 43, -1, 4 } },
+    { 10, 16, { 1, 3, 23, 44, -1, 5 } },
+    { 10, 19, { 2, 4, 24, 45, 0, 6 } },
+    { 10, 20, { 3, 5, 25, 46, 1, 7 } },
+    { 10, 21, { 4, 6, 26, 47, 2, 8 } },
+    { 10, 24, { 5, 7, 27, -1, 3, 9 } },
+    { 10, 25, { 6, 8, 28, -1, 4, 10 } },
+    { 10, 26, { 7, 9, 29, -1, 5, 11 } },
+    { 10, 29, { 8, 10, 30, -1, 6, 12 } },
+    { 10, 30, { 9, 11, 31, -1, 7, 13 } },
+    { 10, 31, { 10, 12, 32, -1, 8, 14 } },
+    { 10, 34, { 11, 13, 33, -1, 9, 15 } },
+    { 10, 35, { 12, 14, 34, -1, 10, 16 } },
+    { 10, 36, { 13, 15, 35, -1, 11, 17 } },
+    { 10, 39, { 14, 16, 36, -1, 12, 18 } },
+    { 10, 40, { 15, 17, 37, -1, 13, 19 } },
+    { 10, 41, { 16, 18, 38, -1, 14, 20 } },
+    { 10, 44, { 17, 19, 39, -1, 15, 21 } },
+    { 10, 45, { 18, 20, 40, -1, 16, 22 } },
+    { 10, 46, { 19, 21, 41, -1, 17, 23 } },
+    { 37, 14, { 20, 22, 42, 0, 18, 24 } },
+    { 37, 15, { 21, 23, 43, 1, 19, 25 } },
+    { 37, 16, { 22, 24, 44, 2, 20, 26 } },
+    { 37, 19, { 23, 25, 45, 3, 21, 27 } },
+    { 37, 20, { 24, 26, 46, 4, 22, 28 } },
+    { 37, 21, { 25, 27, 47, 5, 23, 29 } },
+    { 37, 24, { 26, 28, 48, 6, 24, 30 } },
+    { 37, 25, { 27, 29, 48, 7, 25, 31 } },
+    { 37, 26, { 28, 30, 48, 8, 26, 32 } },
+    { 37, 29, { 29, 31, 48, 9, 27, 33 } },
+    { 37, 30, { 30, 32, 48, 10, 28, 34 } },
+    { 37, 31, { 31, 33, 48, 11, 29, 35 } },
+    { 37, 34, { 32, 34, 48, 12, 30, 36 } },
+    { 37, 35, { 33, 35, 48, 13, 31, 37 } },
+    { 37, 36, { 34, 36, 48, 14, 32, 38 } },
+    { 37, 39, { 35, 37, 48, 15, 33, 39 } },
+    { 37, 40, { 36, 38, 48, 16, 34, 40 } },
+    { 37, 41, { 37, 39, 48, 17, 35, 41 } },
+    { 37, 44, { 38, 40, 48, 18, 36, 42 } },
+    { 37, 45, { 39, 41, 48, 19, 37, 43 } },
+    { 37, 46, { 40, 42, 48, 20, 38, 44 } },
+    { 64, 14, { 41, 43, 0, 21, 39, 45 } },
+    { 64, 15, { 42, 44, 1, 22, 40, 46 } },
+    { 64, 16, { 43, 45, 2, 23, 41, 47 } },
+    { 64, 19, { 44, 46, 3, 24, 42, 48 } },
+    { 64, 20, { 45, 47, 4, 25, 43, 48 } },
+    { 64, 21, { 46, 48, 5, 26, 44, 48 } },
+};
+static const struct { uint8_t x0, y0, x1, y1; const char *label; int8_t link[4]; } PalButtons[7] = {
+    { 55, 27, 77, 29, "  Light Blue", { 47, 49, 29, 8 } },
+    { 55, 30, 77, 32, "  Gold", { 48, 50, 32, 11 } },
+    { 55, 33, 77, 35, "  Camouflage", { 49, 51, 33, 12 } },
+    { 55, 36, 77, 38, "  Midnight Tracking", { 50, 52, 35, 14 } },
+    { 55, 39, 77, 41, "  Pine Colours", { 51, 53, 37, 16 } },
+    { 55, 42, 77, 44, "  Soundtracker", { 52, 54, 38, 17 } },
+    { 55, 45, 77, 47, "  Volcanic", { 53, -1, 41, 20 } },
+};
+
+/* PresetPalettes (IT_S.ASM 82): Light Blue, Gold, Camouflage, Midnight
+ * Tracking, Pine Colours, Soundtracker, Volcanic */
+static const uint8_t PresetPalettes[7][48] = {
+    { 0,0,0, 10,25,45, 30,40,55, 51,58,63, 63,21,21, 21,63,21, 44,44,44, 22,22,22,
+      0,0,32, 0,0,42, 30,40,55, 51,58,63, 44,44,44, 21,63,21, 18,16,15, 12,11,10 },
+    { 0,0,0, 20,17,10, 41,36,21, 63,55,33, 63,21,21, 18,53,18, 38,37,36, 22,22,22,
+      0,0,32, 0,0,42, 41,36,21, 48,49,46, 44,44,44, 21,50,21, 18,16,15, 12,11,10 },
+    { 0,0,0, 31,22,17, 45,37,30, 58,58,50, 44,0,21, 63,63,21, 17,38,18, 19,3,6,
+      8,21,0, 6,29,11, 14,39,29, 55,58,56, 40,40,40, 35,5,21, 22,16,15, 13,12,11 },
+    { 0,0,0, 0,8,16, 0,19,32, 16,28,48, 63,21,21, 0,48,36, 32,32,32, 22,22,22,
+      0,0,24, 0,0,32, 0,18,32, 40,40,40, 32,32,32, 28,0,24, 4,13,20, 6,7,11 },
+    { 0,0,0, 2,16,13, 21,32,29, 51,58,63, 63,34,0, 52,51,33, 42,41,33, 31,22,22,
+      12,10,16, 18,0,24, 30,40,55, 58,58,33, 44,44,44, 49,39,21, 13,15,14, 14,11,14 },
+    { 0,0,0, 18,24,28, 35,42,47, 51,56,60, 63,21,21, 21,63,22, 0,35,63, 22,22,22,
+      32,13,38, 37,16,62, 27,40,55, 51,58,63, 44,44,44, 21,63,21, 18,16,17, 13,14,13 },
+    { 0,0,0, 25,9,0, 40,14,0, 51,23,0, 63,8,16, 0,39,5, 32,32,32, 0,20,20,
+      21,0,0, 28,0,0, 32,32,32, 62,31,0, 40,40,40, 0,28,38, 10,16,27, 8,11,19 },
+};
+
+static int PalFocus = 0;                /* O1_ConfigurePaletteList DW 53 */
+static int global_brace_key(int key);   /* { } [ ] speed / volume */
+
+static void draw_palette(void)
+{
+    uint8_t *pal = Screen_PaletteDefs();
+    int c, k;
+
+    for (c = 0; c < 16; c++) {
+        int x = 2 + (c / 7) * 27, y = 13 + (c % 7) * 5;
+
+        Screen_DrawBox(x, y, x + 6, y + 4, 11);         /* ColourBorder */
+        for (k = 0; k < 3; k++)                         /* ColourBox */
+            fill(x + 1, y + 1 + k, 5, ' ', (uint8_t)(c << 4));
+        Screen_DrawBox(x + 7, y, x + 17, y + 4, 27);    /* InputBox */
+    }
+    for (k = 0; k < 48; k++)
+        draw_thumbbar(PalThumbs[k].x, PalThumbs[k].y, 0, 63, pal[k],
+                      PalFocus == k ? 0x03 : 0x02);
+    Screen_DrawString(57, 25, "Predefined Palettes", 0x20);
+    for (k = 0; k < 7; k++)
+        draw_button_style(PalButtons[k].x0, PalButtons[k].y0,
+                          PalButtons[k].x1, PalButtons[k].y1, 8,
+                          PalButtons[k].label, 0, PalFocus == 48 + k);
+}
+
+static void palette_set(int k, int v)   /* type-9 bar on PaletteDefs */
+{
+    if (v < 0) v = 0;
+    if (v > 63) v = 63;
+    Screen_PaletteDefs()[k] = (uint8_t)v;
+    Screen_Refresh();                   /* S_SetPalette2 */
+}
+
+static void palette_preset(int n)       /* S_UsePresetPalette */
+{
+    memcpy(Screen_PaletteDefs(), PresetPalettes[n], 48);
+    Screen_Refresh();
+}
+
+static void palette_mouse(void)
+{
+    it_mouse_t m;
+    int k, v;
+
+    Screen_GetMouse(&m);
+    for (k = 0; k < 48; k++)
+        if (thumb_hit(&m, PalThumbs[k].x, PalThumbs[k].y, 0, 63, &v)) {
+            PalFocus = k;
+            palette_set(k, v);
+            return;
+        }
+    for (k = 0; k < 7; k++)
+        if (mouse_in(&m, PalButtons[k].x0, PalButtons[k].y0,
+                     PalButtons[k].x1, PalButtons[k].y1)) {
+            PalFocus = 48 + k;
+            palette_preset(k);
+            return;
+        }
+}
+
+static void palette_key(int key)
+{
+    int f = PalFocus, to = -1;
+
+    if (key == ITK_MOUSE) {
+        palette_mouse();
+        return;
+    }
+    if (f < 48) {                       /* thumbbar: F_PostThumbBar */
+        const int8_t *l = PalThumbs[f].link;
+        int v = Screen_PaletteDefs()[f];
+        switch (key) {
+        case ITK_UP:        to = l[0]; break;
+        case ITK_DOWN:      to = l[1]; break;
+        case ITK_TAB:       to = l[2]; break;
+        case ITK_SHIFT_TAB: to = l[3]; break;
+        case ITK_PGUP:      to = l[4]; break;
+        case ITK_PGDN:      to = l[5]; break;
+        case ITK_LEFT:        palette_set(f, v - 1); return;
+        case ITK_RIGHT:       palette_set(f, v + 1); return;
+        case ITK_SHIFT_LEFT:  palette_set(f, v - 4); return;
+        case ITK_SHIFT_RIGHT: palette_set(f, v + 4); return;
+        case ITK_CTRL_LEFT:   palette_set(f, v - 2); return;
+        case ITK_CTRL_RIGHT:  palette_set(f, v + 2); return;
+        case ITK_HOME:        palette_set(f, 0);     return;
+        case ITK_END:         palette_set(f, 63);    return;
+        default:
+            if (key >= '0' && key <= '9') {
+                int nv;
+                if (thumb_value_dialog(key, 0, 63, &nv, draw_screen))
+                    palette_set(f, nv);
+            } else {
+                global_brace_key(key);
+            }
+            return;
+        }
+    } else {                            /* button: F_PostButtonObject */
+        const int8_t *l = PalButtons[f - 48].link;
+        switch (key) {
+        case ITK_UP:    to = l[0]; break;
+        case ITK_DOWN:  to = l[1]; break;
+        case ITK_LEFT:  case ITK_SHIFT_TAB: to = l[2]; break;
+        case ITK_RIGHT: case ITK_TAB:       to = l[3]; break;
+        case ITK_ENTER: palette_preset(f - 48); return;
+        default:        global_brace_key(key); return;
+        }
+    }
+    if (to >= 0)
+        PalFocus = to;
+}
+
+/* ===================================================================
  * Rendering dispatch. draw_screen fills the cell buffer (and rebuilds
  * the active screen's widget table); redraw additionally presents it.
  * Modal overlays (menus) call draw_screen, draw on top, then present
@@ -6389,6 +6591,7 @@ static void draw_screen(void)
         "Info Page (F5)", "Message Editor (Shift-F9)",   /* DisplayHeader,
                                                         IT_OBJ1.ASM 6580 */
         "Keyboard (Ctrl-F1)", "Miniaudio Driver (Shift-F5)",
+        "Palette Configuration (Ctrl-F12)",     /* ConfigurePaletteHeader */
         "",                             /* O1_EmptyList: NoText */
     };
 
@@ -6415,6 +6618,7 @@ static void draw_screen(void)
     case SCR_HELP:        draw_help(); break;
     case SCR_KEYS:        NW = 0; draw_keys(); break;
     case SCR_DRIVER:      draw_driver(); break;
+    case SCR_PALETTE:     NW = 0; draw_palette(); break;
     case SCR_EMPTY:       NW = 0; break;
     case SCR_INFO:        NW = 0; draw_info(); break;
     case SCR_MESSAGE:     NW = 0; draw_message(); break;
@@ -9655,6 +9859,13 @@ static void act_save_prefs(void)
             "keyboard_cfg=%s\n",
             DirModule, DirSample, DirInstr, BaseOctave, EditStep,
             PEConfig, ViewDivision, ViewTracking, KeyboardCfg);
+    {                                   /* PaletteDefs, as IT.CFG keeps it */
+        const uint8_t *pal = Screen_PaletteDefs();
+        int i;
+        fputs("palette=", fp);
+        for (i = 0; i < 48; i++)
+            fprintf(fp, "%d%c", pal[i], i < 47 ? ',' : '\n');
+    }
     fclose(fp);
     status("Preferences saved to ited.cfg.");
 }
@@ -10503,6 +10714,7 @@ static int modal_global_key(int key, int help_context)
     case ITK_CTRL_F1: case ITK_CTRL_F3: case ITK_CTRL_F4: case ITK_SHIFT_F9:
     case ITK_SHIFT_F5:
     case ITK_CTRL_SHIFT_F9: case ITK_CTRL_SHIFT_F10:    /* feature 016 */
+    case ITK_CTRL_F12:
         PendingGlobalKey = key;
         return 2;
     case 0x11:
@@ -12776,6 +12988,19 @@ static void load_prefs(void)
         else if (!strncmp(line, "instrdir=", 9))
             snprintf(DirInstr, sizeof(DirInstr),
                      "%.*s", (int)sizeof(DirInstr) - 1, line + 9);
+        else if (!strncmp(line, "palette=", 8)) {
+            uint8_t *pal = Screen_PaletteDefs();
+            const char *q = line + 8;
+            int i;
+            for (i = 0; i < 48 && *q; i++) {
+                int v = atoi(q);
+                pal[i] = (uint8_t)(v < 0 ? 0 : v > 63 ? 63 : v);
+                q = strchr(q, ',');
+                if (!q)
+                    break;
+                q++;
+            }
+        }
         else if (!strncmp(line, "octave=", 7))
             BaseOctave = atoi(line + 7);
         else if (!strncmp(line, "step=", 5))
@@ -13237,6 +13462,7 @@ static void handle_global(int key)
                         !FromFileScreen);
         Screen = SCR_ORDER; ListSel = PEOrder; return;
     case ITK_F12: Screen = SCR_VARS; return;
+    case ITK_CTRL_F12: Screen = SCR_PALETTE; return;    /* Glbl_Ctrl_F12 */
     case ITK_F5: {                      /* Glbl_F5: info page; start the
                                            song only when nothing plays */
         int mode0, anyslave = 0, i;
@@ -13381,6 +13607,8 @@ static void handle_global(int key)
     } else if (Screen == SCR_HELP) {
         if (!help_key(key) && !widgets_key(key))
             global_brace_key(key);
+    } else if (Screen == SCR_PALETTE) {
+        palette_key(key);
     } else if (!widgets_key(key))
         global_brace_key(key);
 }

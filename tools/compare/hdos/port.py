@@ -171,7 +171,7 @@ class KeyTranslator:
                  "delete": "CTRL_DEL", "backspace": "CTRL_BACKSPACE",
                  "f1": "CTRL_F1", "f2": "CTRL_F2", "f3": "CTRL_F3",
                  "f4": "CTRL_F4", "f5": "CTRL_F5", "f6": "CTRL_F6",
-                 "f7": "CTRL_F7"}.get(q)
+                 "f7": "CTRL_F7", "f12": "CTRL_F12"}.get(q)
             if m:
                 return ev(K["ITK_" + m])
             if q in ("ret", "kp_enter"):
