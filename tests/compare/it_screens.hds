@@ -1,0 +1,46 @@
+# Tour of IT's main screens on an empty song, then JEFF93.IT loaded.
+# DOS side: IT /S0 (silent), so the startup dialog is the same everywhere.
+mask 9,62,9,79
+mask 6,62,7,79
+
+# IT 2.14 starts with the sound card dialog, then the Load Module screen;
+# the port starts in the pattern editor -> go to F9 there too (via F3:
+# F2->F9->F2 from the pattern editor hits the bug in f2_after_f9.hds).
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+capture 01_load_module
+key f2
+stable
+capture 02_pattern
+key f3
+stable
+capture 03_samples
+key f4
+stable
+capture 04_instruments
+key f11
+stable
+capture 05_orders
+key f12
+stable
+capture 06_variables
+key f1
+stable
+capture 07_help
+key esc
+stable
+key f9
+stable
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+capture 08_jeff93_loaded
+key f3
+stable
+capture 09_jeff93_samples
+key f2
+stable
+capture 10_jeff93_pattern

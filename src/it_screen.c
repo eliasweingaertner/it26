@@ -1089,6 +1089,15 @@ int Screen_Init(void)
 {
     const char *term = getenv("ITED_TERM");
     int force_term = (term && *term && *term != '0');
+    const char *remote = getenv("ITED_REMOTE");
+
+    if (remote && *remote && *remote != '0') {
+        Backend = &Screen_BackendRemote;
+        if (!Backend->init())
+            return 0;
+        Inited = 1;
+        return 1;
+    }
 
 #ifdef _WIN32
     Backend = force_term ? &Screen_BackendTerm : &Screen_BackendWin32;

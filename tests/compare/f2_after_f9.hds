@@ -1,0 +1,14 @@
+# Regression: F2 -> F9 -> F2 must return to the pattern editor.
+# IT 2.14 does; it26 (2026-10-10) opens Pattern Editor Options instead.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+stable 800
+key f2
+stable
+key f9
+stable
+key f2
+stable
+capture f2_after_f9

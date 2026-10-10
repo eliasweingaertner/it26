@@ -97,7 +97,8 @@ endif
 # ---------------------------------------------------------------------------
 ENGINE_SRCS := src/it_music.c src/it_effects.c src/it_tables.c src/it_driver.c \
                src/it_load.c src/it_pattern.c src/it_save.c
-EDITOR_SRCS := src/it_import.c src/it_ris.c src/it_screen.c src/it_vgadata.c \
+EDITOR_SRCS := src/it_import.c src/it_ris.c src/it_screen.c \
+               src/it_screen_remote.c src/it_vgadata.c \
                src/it_cornerart.c src/it_editor.c \
                src/it_dialog_win32.c src/it_dialog_mac.c src/it_dialog_posix.c
 

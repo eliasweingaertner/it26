@@ -722,6 +722,22 @@ pat}`, `lib_test{8,16,st,f,24}.wav`) come from
 `python tools/gen_import_tests.py testdata` and are consumed by the
 selftest's `IMPORT OK` / `LIB OK` blocks.
 
+**Side by side with the real IT 2.14 (`tools/compare`, issue #24).** Runs
+IT 2.14 headless in QEMU + FreeDOS and `ited` headless in remote mode
+(`ITED_REMOTE=1`, `src/it_screen_remote.c`), plays the same
+`tests/compare/*.hds` keystroke script into both, and writes
+`build-compare/<run>/report.md` with both screenshots, a pixel diff and a
+cell diff per capture:
+
+```
+tools\compare\build_port.bat          # Release ited in build-hdos/
+python tools/compare/compare.py compare-run --script tests/compare/it_screens.hds --out build-compare/it_screens
+```
+
+Setup (QEMU, venv, `IT214_DIR`) is in `tools/compare/README.md`. Findings:
+`docs/compare/<date>/FINDINGS.md`. The reference is the 2.14 binary, so
+check a difference against the 2.17 ASM before treating it as a bug.
+
 ---
 
 ## 5. File map

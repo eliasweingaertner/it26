@@ -39,3 +39,8 @@ screen_dump.txt
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# tools/compare (IT 2.14 comparison harness)
+/tools/compare/.venv/
+/tools/compare/.work/
+__pycache__/

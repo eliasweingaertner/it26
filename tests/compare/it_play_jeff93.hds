@@ -1,0 +1,12 @@
+# Load JEFF93.IT and play it for 8 seconds (use with --cmd "IT /S5" --audio x.wav)
+waittext Continue
+key enter
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f5
+wait 8000
+capture playing
+key f8

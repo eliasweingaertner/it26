@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hdos": {
+      "command": "tools/compare/.venv/Scripts/python.exe",
+      "args": ["tools/compare/mcp_server.py"],
+      "env": { "PYTHONUTF8": "1" }
+    }
+  }
+}

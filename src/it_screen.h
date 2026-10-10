@@ -381,6 +381,10 @@ typedef struct screen_backend_t {
 extern const screen_backend_t Screen_BackendWin32;
 #endif
 
+/* headless, driven over stdin by a test harness (ITED_REMOTE=1;
+ * it_screen_remote.c) */
+extern const screen_backend_t Screen_BackendRemote;
+
 #ifdef HAVE_SDL
 extern const screen_backend_t Screen_BackendSDL;
 #endif
