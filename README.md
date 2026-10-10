@@ -53,14 +53,19 @@ recent fixes come from side-by-side comparisons by **Esa Juhani Ruoho
 GitHub issues and has contributed pull requests. The open issues are
 the live list of known gaps.
 
-Three safety nets keep the port honest:
+Four safety nets keep the port honest:
 
-- **A scripted selftest** in the editor (18 blocks covering screens, key
+- **A scripted selftest** in the editor (20 blocks covering screens, key
   bindings, dialogs, load/save and the mixer's output formats).
 - **A determinism gate:** four test modules are rendered and must stay
   bit-identical, including after a save/load round trip in every format.
 - **CI builds** on Windows, Linux and macOS for every push to `master`
   and every pull request, plus a rolling release.
+- **A side-by-side harness against the real IT 2.14** (`tools/compare`,
+  suggested in [#24](https://github.com/eliasweingaertner/it26/issues/24)):
+  IT 2.14 runs headless in QEMU + FreeDOS, it26 runs headless too, both
+  get the same keystroke script, and every screen is compared cell by
+  cell. See [Comparing against IT 2.14](#comparing-against-it-214).
 
 ### What maps to what
 
@@ -175,10 +180,30 @@ pinned and SHA-256-checked.
     test_pattern testdata/itdemo.it --roundtrip           # determinism + save round trip
     itplay -w out.wav testdata/itdemo.it                  # renders are bit-deterministic
 
-The selftest prints 18 `OK` blocks (F5, IMPORT, F3, SAVE, LIB, PE, PE2,
-HOT, TERM, S3M, UPD, FFT, ORD, KBD, INS, LSS, GV WIRED, F4). The round
+The selftest prints 20 `OK` blocks (F5, IMPORT, F3, SAVE, LIB, PE, PE2,
+HOT, TERM, S3M, UPD, FFT, ORD, KBD, INS, LSS, DLG, LI, GV WIRED, F4). The round
 trip re-renders the module after saving it in every format and demands
 byte-identical audio.
+
+### Comparing against IT 2.14
+
+`tools/compare` plays the same keystroke script (`tests/compare/*.hds`)
+into the real IT 2.14, running in QEMU + FreeDOS, and into `ited` in
+its headless remote mode (`ITED_REMOTE=1`). Each `capture` step gets
+both screenshots, a pixel diff and a cell-by-cell diff of characters
+and colours in `build-compare/<run>/report.md`:
+
+    tools\compare\build_port.bat
+    python tools/compare/compare.py compare-run --script tests/compare/it_screens.hds --out build-compare/it_screens
+
+You need QEMU, Python and your own copy of IT 2.14 (`IT214_DIR`); IT
+itself is not in this repository. Setup and the script format are in
+[`tools/compare/README.md`](tools/compare/README.md). The first run found
+twelve differences (#29-#40), all fixed since; the reports are in
+[`docs/compare/2026-10-10/`](docs/compare/2026-10-10/) (`FINDINGS.md`,
+`RERUN.md`). The reference is the 2.14 binary while the port follows the
+2.17 source, so a difference is checked against the ASM before it counts
+as a bug.
 
 ## Using it
 
@@ -373,7 +398,8 @@ Shift chord entry is pixel-window-only), and has no Alt-F12 analyser.
 
 `docs/HANDOFF.md` is the living project handbook: status, build and
 verification commands, the file map, layout facts and the roadmap.
-`CHANGELOG.md` lists what changed per release. The spec-kit artifacts
+`CHANGELOG.md` lists what changed per release. `docs/compare/` holds
+the IT 2.14 comparison reports. The spec-kit artifacts
 are in `specs/` (one directory per feature: spec, plan, tasks), with the
 project constitution in `.specify/memory/constitution.md`.
 
