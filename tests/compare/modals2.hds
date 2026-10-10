@@ -1,6 +1,7 @@
 # Round 2: dialogs of the sample list, instrument list and pattern
 # editor with JEFF93.IT loaded (key tables IT_OBJ1.ASM 3376.., 6501..,
-# IT_PE.ASM 549..). Each dialog is captured, then cancelled with Esc.
+# IT_PE.ASM 549..). Each dialog is captured, then cancelled with Esc
+# (Alt-Y opens nothing here, so no Esc after it).
 mask 9,62,9,79
 mask 6,62,7,79
 @dos waittext Continue
@@ -46,8 +47,6 @@ stable
 key alt-y
 stable
 capture md_f3_c5speed
-key esc
-stable
 key f4
 stable
 key alt-d

@@ -1884,6 +1884,170 @@ static int confirm_box(const char *text)
     return confirm_box_def(text, 0);
 }
 
+/* ---- sample / instrument number dialogs (#45): O1_ExchangeSampleList,
+ * O1_SwapSampleList, O1_ReplaceSampleList and their instrument
+ * siblings plus O1_CopyInstrumentList (IT_OBJ1.ASM 4668..): style-3
+ * ExchangeSampleBox (26,23)-(54,32), the list's text at its own x on
+ * row 25, ExchangeSampleInputBox (41,26)-(45,28) style 27 around a
+ * 3-character string input on SampleNumberInput at (42,27), and
+ * CancelExchangeButton (35,29)-(44,31). GetNumberInput (IT_I.ASM 3076)
+ * clears the input, opens the list on the input (CX = 3) and returns
+ * GetSampleNumber's value: 0 for Cancel/Esc or anything that isn't a
+ * number. OKCancelList: O/Y = OK, C/N = Cancel (when the input doesn't
+ * take the letter). ---- */
+static int number_dialog(int tx, const char *text)
+{
+    char buf[4] = "";                   /* SampleNumberInput, cleared */
+    int focus = 3, len = 0;
+
+    for (;;) {
+        int key, i, n;
+
+        draw_screen();
+        Screen_DrawBox(26, 23, 54, 32, 3);              /* ExchangeSampleBox */
+        Screen_DrawStringCtl(tx, 25, (const uint8_t *)text, 0x20, NULL);
+        Screen_DrawBox(41, 26, 45, 28, 27);             /* ...InputBox */
+        for (i = 0; i < len; i++)                       /* F_DrawStringInput */
+            Screen_PutChar(42 + i, 27, (uint8_t)buf[i], 0x02);
+        if (focus == 3)
+            Screen_SetAttr(42 + len, 27, 0x30);         /* F_PreStringInput */
+        draw_button_style(35, 29, 44, 31, 8, " Cancel", 0, focus == 4);
+        Screen_Update();
+
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return 0; }
+        if (key == ITK_ESC)
+            return 0;
+        if (key == ITK_MOUSE) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 35, 29, 44, 31))
+                return 0;
+            if (mouse_in(&m, 41, 26, 45, 28))
+                focus = 3;
+            continue;
+        }
+        if (focus == 3) {                               /* F_PostStringInput */
+            if (key == ITK_DOWN || key == ITK_TAB) { focus = 4; continue; }
+            if (key == ITK_BACKSPACE) {
+                if (len > 0)
+                    buf[--len] = 0;
+                continue;
+            }
+            if (key == ITK_ENTER) {                     /* F_Return1 */
+                for (i = 0, n = 0; i < len; i++) {      /* GetSampleNumber */
+                    if (buf[i] < '0' || buf[i] > '9')
+                        return 0;
+                    n = n * 10 + (buf[i] - '0');
+                }
+                return n;
+            }
+            if (key >= 32 && key < 127) {
+                if (len < 3) {
+                    buf[len++] = (char)key;
+                    buf[len] = 0;
+                }
+                continue;
+            }
+        } else {                                        /* Cancel button */
+            if (key == ITK_UP) { focus = 3; continue; }
+            if (key == ITK_ENTER)
+                return 0;
+        }
+        switch (key) {                                  /* OKCancelList */
+        case 'o': case 'O': case 'y': case 'Y':
+            for (i = 0, n = 0; i < len; i++) {
+                if (buf[i] < '0' || buf[i] > '9')
+                    return 0;
+                n = n * 10 + (buf[i] - '0');
+            }
+            return n;
+        case 'c': case 'C': case 'n': case 'N':
+            return 0;
+        default:
+            break;
+        }
+    }
+}
+
+/* O1_ResizeSampleList (IT_I.ASM I_ResizeSampleNoInt): ResizeSampleBox
+ * (26,22)-(54,32) style 3, "Resize Sample" (attr 23h) and "New Length",
+ * ResizeSampleInputBox (41,26)-(49,28) style 27 around a type-18
+ * F_Draw5Num field: 7 digits in attr 02h at (42,27) with the 30h digit
+ * cursor (NumberPos, reset by F_Reset5NumInputPos), and the Cancel
+ * button. ESC&ReturnList: Esc = cancel, Enter = OK. Returns the new
+ * length, or -1. */
+static long resize_dialog(uint32_t len)
+{
+    static const uint8_t text[] =
+        "   Resize Sample\015\015\015\376\040New Length";
+    int focus = 3, pos = 0;
+    uint32_t v = len;
+
+    for (;;) {
+        int key;
+        char d[8];
+
+        if (v > 9999999u)
+            v = 9999999u;
+        snprintf(d, sizeof(d), "%07lu", (unsigned long)v);
+        draw_screen();
+        Screen_DrawBox(26, 22, 54, 32, 3);              /* ResizeSampleBox */
+        Screen_DrawStringCtl(31, 24, text, 0x23, NULL);
+        Screen_DrawBox(41, 26, 49, 28, 27);             /* ...InputBox */
+        Screen_DrawString(42, 27, d, 0x02);             /* F_Draw5Num */
+        if (focus == 3)
+            Screen_SetAttr(42 + pos, 27, 0x30);         /* F_Pre5Num */
+        draw_button_style(35, 29, 44, 31, 8, " Cancel", 0, focus == 4);
+        Screen_Update();
+
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return -1; }
+        if (key == ITK_ESC)
+            return -1;
+        if (key == ITK_MOUSE) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 35, 29, 44, 31))
+                return -1;
+            if (m.y == 27 && m.x >= 42 && m.x <= 48) {
+                focus = 3;
+                pos = m.x - 42;
+            }
+            continue;
+        }
+        if (focus == 4) {                               /* Cancel button */
+            if (key == ITK_UP) { focus = 3; continue; }
+            if (key == ITK_ENTER)
+                return -1;
+            continue;
+        }
+        switch (key) {                                  /* F_Post5Num */
+        case ITK_ENTER: return (long)v;
+        case ITK_LEFT: case ITK_BACKSPACE:
+            if (pos > 0) pos--;
+            break;
+        case ITK_RIGHT:
+            if (pos < 6) pos++;
+            break;
+        case ITK_DOWN: case ITK_TAB:
+            focus = 4;
+            break;
+        case '+': if (v < 9999999u) v++; break;
+        case '-': if (v > 0) v--; break;
+        default:
+            if (key >= '0' && key <= '9') {
+                d[pos] = (char)key;
+                v = (uint32_t)strtoul(d, NULL, 10);
+                if (pos < 6) pos++;
+            }
+            break;
+        }
+    }
+}
+
 /* numeric prompt (GetNumberInput / O1_*List): returns -1 on cancel */
 static long prompt_number(const char *title, unsigned long def,
                           unsigned long maxv)
@@ -2367,9 +2531,7 @@ static void smp_op_resize(int interpolate)
 
     if (!smp_has_data(s))
         return;
-    nl = prompt_number(interpolate ? "Resize sample to (interpolated)"
-                                   : "Resize sample to (no interpolation)",
-                       s->Length, 9999999);
+    nl = resize_dialog(s->Length);      /* O1_ResizeSampleList */
     if (nl <= 0)
         return;
     is16 = (s->Flags & 2) != 0;
@@ -2717,10 +2879,10 @@ static void smp_op_remove_slot(void)    /* Alt-Del: I_RemoveSample */
 
 static void smp_op_swap(void)           /* Alt-S: I_SwapSamples */
 {
-    long n = prompt_number("Swap current sample with", 0, 99);
+    long n = number_dialog(32, "Swap sample with:\015\015   Sample");
     sample_t t;
 
-    if (n <= 0 || (int)n - 1 == ListSel)
+    if (n <= 0 || n > 99 || (int)n - 1 == ListSel)
         return;
     stop_song();
     ed_lock();
@@ -2736,10 +2898,10 @@ static void smp_op_swap(void)           /* Alt-S: I_SwapSamples */
 
 static void smp_op_exchange(void)       /* Alt-X: I_ExchangeSamples */
 {
-    long n = prompt_number("Exchange current sample with", 0, 99);
+    long n = number_dialog(30, "Exchange sample with:\015\015\377\005 Sample");
     sample_t t;
 
-    if (n <= 0 || (int)n - 1 == ListSel)
+    if (n <= 0 || n > 99 || (int)n - 1 == ListSel)
         return;
     stop_song();
     ed_lock();
@@ -2751,9 +2913,9 @@ static void smp_op_exchange(void)       /* Alt-X: I_ExchangeSamples */
 
 static void smp_op_replace(void)        /* Alt-R: I_ReplaceSample */
 {
-    long n = prompt_number("Replace all uses of current with", 0, 99);
+    long n = number_dialog(30, "Replace sample with:\015\015\377\005 Sample");
 
-    if (n <= 0 || (int)n - 1 == ListSel)
+    if (n <= 0 || n > 99 || (int)n - 1 == ListSel)
         return;
     if (Song.Header.Flags & ITF_INSTRUMENTS)
         nst_remap(3, ListSel + 1, (int)n);
@@ -3235,10 +3397,10 @@ static void ins_op_wipe(void)
 
 static void ins_op_swap(void)           /* Alt-S: I_SwapInstruments */
 {
-    long n = prompt_number("Swap current instrument with", 0, 99);
+    long n = number_dialog(29, "Swap instrument with:\015\015  Instrument");
     instrument_t t;
 
-    if (n <= 0 || (int)n - 1 == ListSel)
+    if (n <= 0 || n > 99 || (int)n - 1 == ListSel)
         return;
     stop_song();
     ed_lock();
@@ -3252,10 +3414,10 @@ static void ins_op_swap(void)           /* Alt-S: I_SwapInstruments */
 
 static void ins_op_exchange(void)       /* Alt-X: I_ExchangeInstruments */
 {
-    long n = prompt_number("Exchange current instrument with", 0, 99);
+    long n = number_dialog(28, "Exchange instrument with:\015\015   Instrument");
     instrument_t t;
 
-    if (n <= 0 || (int)n - 1 == ListSel)
+    if (n <= 0 || n > 99 || (int)n - 1 == ListSel)
         return;
     stop_song();
     ed_lock();
@@ -3267,9 +3429,9 @@ static void ins_op_exchange(void)       /* Alt-X: I_ExchangeInstruments */
 
 static void ins_op_replace(void)        /* Alt-R: I_ReplaceInstrument */
 {
-    long n = prompt_number("Replace all uses of current with", 0, 99);
+    long n = number_dialog(28, "Replace instrument with:\015\015   Instrument");
 
-    if (n <= 0 || (int)n - 1 == ListSel)
+    if (n <= 0 || n > 99 || (int)n - 1 == ListSel)
         return;
     if (Song.Header.Flags & ITF_INSTRUMENTS)
         pattern_remap_ins(3, ListSel + 1, (int)n);
@@ -3277,9 +3439,9 @@ static void ins_op_replace(void)        /* Alt-R: I_ReplaceInstrument */
 
 static void ins_op_copy(void)           /* Alt-P: I_CopyInstrument */
 {
-    long n = prompt_number("Copy instrument from", 0, 99);
+    long n = number_dialog(31, " Copy instrument:\015\015Instrument");
 
-    if (n <= 0 || (int)n - 1 == ListSel)
+    if (n <= 0 || n > 99 || (int)n - 1 == ListSel)
         return;
     ed_lock();
     Song.Ins[ListSel] = Song.Ins[n - 1];
