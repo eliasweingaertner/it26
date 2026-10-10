@@ -1,8 +1,6 @@
 # Round 2: modal dialogs and menus on an empty song, opened from the
 # pattern editor (main menu + submenus, quit/new song confirmations,
-# Pattern Editor Options). it26 has no New Song dialog yet (Ctrl-N clears
-# at once), so on the port the Esc after it opens the main menu; a second
-# @port Esc closes it again.
+# Pattern Editor Options).
 mask 9,62,9,79
 mask 6,62,7,79
 @dos waittext Continue
@@ -61,8 +59,6 @@ stable
 capture mo_confirm_new
 key esc
 stable
-@port key esc
-@port stable
 key f2
 stable
 capture mo_pe_options

@@ -12572,6 +12572,144 @@ static void new_song(void)
     FileSaveName[0] = 0;
 }
 
+/* ---- New Song dialog (#42): O1_NewSongList (IT_OBJ1.ASM 6616) and
+ * F_NewSong (IT_F.ASM 4966). Keep/Clear for patterns, samples,
+ * instruments and the order list are "one of selection" buttons on
+ * ButtonVariables 3..6, which default to Clear and keep their setting
+ * from one Ctrl-N to the next; focus starts on OK. ---- */
+static int NewSongClear[4] = { 1, 1, 1, 1 };    /* ButtonVariables 3..6 */
+
+static const uint8_t NewSongText2[] =
+    "   Patterns\015\015\015\377\004 Samples\015\015\015"
+    "Instruments\015\015\015 Order List";
+
+/* object 3..12: Up, Down, Left, Right links (Tab = Right, Shift-Tab =
+ * Left, F_PostButtonObject); -1 = 0FFFFh, no move */
+static const signed char NewSongLinks[10][4] = {
+    { -1,  5,  4,  4 }, {  4,  6,  3,  3 },     /* Keep/Clear Patterns */
+    {  3,  7,  6,  6 }, {  4,  8,  5,  5 },     /* Samples */
+    {  5,  9,  8,  8 }, {  6, 10,  7,  7 },     /* Instruments */
+    {  7, 11, 10, 10 }, {  8, 12,  9,  9 },     /* Order List */
+    {  9, -1, 12, 12 }, {  9, -1, 11, 11 },     /* OK, Cancel */
+};
+
+static void new_song_draw(int focus)
+{
+    int i;
+
+    draw_screen();
+    Screen_DrawBox(21, 20, 58, 38, 3);                  /* NewSongBox */
+    Screen_DrawString(36, 21, "New Song", 0x23);
+    Screen_DrawStringCtl(23, 24, NewSongText2, 0x20, NULL);
+    for (i = 0; i < 4; i++) {
+        int y = 23 + i * 3;
+        draw_button_style(34, y, 43, y + 2, 8, "  Keep",
+                          !NewSongClear[i], focus == 3 + i * 2);
+        draw_button_style(44, y, 54, y + 2, 8, "  Clear",
+                          NewSongClear[i], focus == 4 + i * 2);
+    }
+    draw_button_style(27, 35, 38, 37, 8, "    OK", 0, focus == 11);
+    draw_button_style(40, 35, 51, 37, 8, "  Cancel", 0, focus == 12);
+}
+
+/* returns 1 for OK, 0 for Cancel / Esc */
+static int new_song_dialog(void)
+{
+    int focus = 11;                     /* CX = 11: the OK button */
+
+    for (;;) {
+        int key, dir = -1;
+
+        new_song_draw(focus);
+        Screen_Update();
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (key) {
+        case ITK_QUIT: Running = 0; return 0;
+        case ITK_ESC:  return 0;        /* ESCReturnList */
+        case ITK_UP:    dir = 0; break;
+        case ITK_DOWN:  dir = 1; break;
+        case ITK_LEFT: case ITK_SHIFT_TAB: dir = 2; break;
+        case ITK_RIGHT: case ITK_TAB:      dir = 3; break;
+        case ITK_ENTER:
+            if (focus == 11) return 1;
+            if (focus == 12) return 0;
+            NewSongClear[(focus - 3) / 2] = (focus - 3) & 1;
+            break;
+        case ITK_MOUSE: {
+            it_mouse_t m;
+            int i;
+            Screen_GetMouse(&m);
+            for (i = 0; i < 4; i++) {
+                int y = 23 + i * 3;
+                if (mouse_in(&m, 34, y, 43, y + 2))
+                    { NewSongClear[i] = 0; focus = 3 + i * 2; }
+                if (mouse_in(&m, 44, y, 54, y + 2))
+                    { NewSongClear[i] = 1; focus = 4 + i * 2; }
+            }
+            if (mouse_in(&m, 27, 35, 38, 37)) return 1;
+            if (mouse_in(&m, 40, 35, 51, 37)) return 0;
+            break; }
+        default: break;
+        }
+        if (dir >= 0 && NewSongLinks[focus - 3][dir] >= 0)
+            focus = NewSongLinks[focus - 3][dir];
+    }
+}
+
+/* F_NewSong after OK: clear only what is set to Clear */
+static void new_song_selected(void)
+{
+    int i;
+
+    stop_song();                        /* Music_Stop */
+    ed_lock();
+    if (NewSongClear[1]) {              /* Music_ReleaseAllSamples +
+                                           Music_ClearAllSampleNames */
+        for (i = 0; i < MAX_SAMPLES - 1; i++) {
+            free(Song.Smp[i].Data);
+            Song.Smp[i].Data = NULL;
+            Music_InitSample(&Song.Smp[i]);
+        }
+    }
+    if (NewSongClear[2])
+        Music_ClearAllInstruments();
+    if (NewSongClear[3]) {              /* song name, time, pannings,
+                                           channel volumes, orders */
+        memset(Song.Header.SongName, 0, sizeof(Song.Header.SongName));
+        Song.Header.Reserved = 0;
+        for (i = 0; i < 64; i++) {
+            Song.Header.ChnlPan[i] = 32;
+            Song.Header.ChnlVol[i] = 64;
+        }
+        memset(Song.Orders, 255, sizeof(Song.Orders));
+        Music_InitMuteTable();
+        msg_reset();                    /* Msg_ResetMessage */
+    }
+    if (NewSongClear[0]) {              /* Music_ReleaseAllPatterns */
+        for (i = 0; i < MAX_PATTERNS; i++) {
+            free(Song.Patterns[i].PackedData);
+            Song.Patterns[i].PackedData = NULL;
+            Song.Patterns[i].Rows = 0;
+            Song.Patterns[i].DataLength = 0;
+        }
+    }
+    ed_unlock();
+    if (NewSongClear[0] || NewSongClear[3]) {   /* D_ClearFileName,
+                                                   D_ResetTimer */
+        FileNameDisp[0] = 0;
+        FileSaveName[0] = 0;
+        Save_LoadTime = time(NULL);
+    }
+    if (NewSongClear[0]) {              /* PE_ResetOrderPattern */
+        PEOrder = 0;
+        CurChan = CurCol = 0;
+        CurInstr = 1;
+        CurPattern = Song.Orders[0] <= 199 ? Song.Orders[0] : 0;
+    }
+    load_pattern(CurPattern);
+}
+
 /* ited.cfg: directories + octave/edit step, written by the F12 "Save
  * all Preferences" button */
 static void audio_pref_line(const char *line);
@@ -12720,7 +12858,12 @@ static int act_message_editor(void)
 { Screen_DefineHiASCII(); Screen = SCR_MESSAGE; return 1; }
 
 static int act_file_load(void)  { file_requester(); return 1; }
-static int act_file_new(void)   { new_song(); status("New song."); return 1; }
+static int act_file_new(void)                   /* F_NewSong (#42) */
+{
+    if (new_song_dialog())
+        new_song_selected();
+    return 1;
+}
 static int act_file_save(void)     { quick_save(); return 1; }
 static int act_file_save_as(void)  { save_requester(); return 1; }
 static int act_file_shell(void) { status("No DOS to shell to."); return 1; }
@@ -16625,7 +16768,7 @@ int main(int argc, char **argv)
                 char name0[27];
                 uint16_t ord0 = Song.Header.OrdNum, pat0 = Song.Header.PatNum;
                 memcpy(name0, Song.Header.SongName, sizeof(name0));
-                act_file_new();
+                new_song();
                 dlg_fake("testdata/itdemo.it");
                 handle_global(ITK_CTRL_SHIFT_F9);
                 if (memcmp(name0, Song.Header.SongName, sizeof(name0)) ||
