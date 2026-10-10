@@ -1,5 +1,7 @@
 # it26 vs IT 2.14: second comparison round (modals, song variables, more screens)
 
+> Rerun after the fixes for #41-#51: see [RERUN.md](RERUN.md).
+
 Run: 2026-10-11. IT 2.14 (`IT /S0`) under QEMU + FreeDOS vs it26 master
 `2593f41` (plus the main menu fix, G1), remote backend. Same setup as the
 [first round](../2026-10-10/FINDINGS.md). Left image = IT 2.14, right = it26.
