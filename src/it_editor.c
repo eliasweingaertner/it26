@@ -1679,12 +1679,62 @@ static void draw_pattern(void)
                        15 + (CurRow - TopRow), 0x30);
     }
 
-    /* channel notch at the bottom edge under the cursor channel */
-    if (NumChansEdit > 0 &&
-        CurChan >= LeftChan && CurChan < LeftChan + NumChansEdit) {
-        int x = defx0 + 14 * (CurChan - LeftChan);
-        for (i = 0; i < 3; i++)
-            Screen_PutChar(x + i, 47, 0xA9, 0x23);
+    /* the bottom edge, row 47 (PE_PrePatternEdit 2926..3106, #34) */
+    if (NumChansEdit > 0) {
+        int ch, dx = 1, cl = CurCol;
+        /* multichannel 'M's (char 172) over the visible channels */
+        for (ch = 0; ch < NumChansEdit && LeftChan + ch < 64; ch++)
+            if (MultiChannelInfo[LeftChan + ch])
+                Screen_PutChar(defx0 + 3 + 14 * ch, 47, 172,
+                               Screen_GetAttr(defx0 + 3 + 14 * ch, 47));
+        /* the edit mask under the cursor channel -- or under every
+         * channel the block covers while a template is on */
+        if (Template && ClipData && ClipChans > 0) {
+            dx = NumChansEdit + LeftChan - CurChan;
+            if (dx > ClipChans)
+                dx = ClipChans;
+        }
+        if (CurChan >= LeftChan && CurChan < LeftChan + NumChansEdit) {
+            int x = defx0 + 14 * (CurChan - LeftChan);
+            for (ch = 0; ch < dx; ch++, x += 14) {
+                /* note group A9h (AAh when the cursor is elsewhere), then
+                 * instrument / volume / command groups per EditMask */
+                uint8_t g = cl ? 0xAA : 0xA9;
+                for (i = 0; i < 3; i++) Screen_PutChar(x + i, 47, g, 0x23);
+                if (EditMask & 1)
+                    for (i = 4; i < 6; i++) Screen_PutChar(x + i, 47, g, 0x23);
+                if (EditMask & 2)
+                    for (i = 7; i < 9; i++) Screen_PutChar(x + i, 47, g, 0x23);
+                if (EditMask & 4)
+                    for (i = 10; i < 13; i++) Screen_PutChar(x + i, 47, g, 0x23);
+                if (cl == 0) {                  /* cursor on the note */
+                    for (i = 0; i < 3; i++)
+                        Screen_PutChar(x + i, 47, 0xAB, 0x23);
+                    continue;
+                }
+                /* the cursor's own cells: ABh where the mask is on (the
+                 * octave always), A9h otherwise; first channel only */
+                if (cl == 1)
+                    Screen_PutChar(x + 2, 47, 0xAB, 0x23);
+                else if (cl <= 3) {
+                    g = (EditMask & 1) ? 0xAB : 0xA9;
+                    Screen_PutChar(x + 4, 47, g, 0x23);
+                    Screen_PutChar(x + 5, 47, g, 0x23);
+                } else if (cl <= 5) {
+                    g = (EditMask & 2) ? 0xAB : 0xA9;
+                    Screen_PutChar(x + 7, 47, g, 0x23);
+                    Screen_PutChar(x + 8, 47, g, 0x23);
+                } else if (cl == 6) {
+                    Screen_PutChar(x + 10, 47, (EditMask & 4) ? 0xAB : 0xA9,
+                                   0x23);
+                } else {
+                    g = (EditMask & 4) ? 0xAB : 0xA9;
+                    Screen_PutChar(x + 11, 47, g, 0x23);
+                    Screen_PutChar(x + 12, 47, g, 0x23);
+                }
+                break;
+            }
+        }
     }
 }
 

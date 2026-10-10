@@ -1,0 +1,29 @@
+# Pattern editor: the edit-mask markers on row 47 (PE_PrePatternEdit)
+# for each cursor column -- note, octave, instrument, volume, command,
+# command value (#34).
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key f2
+stable
+capture pe_cursor_note
+key right
+stable
+capture pe_cursor_octave
+key right
+stable
+capture pe_cursor_instrument
+key right
+key right
+stable
+capture pe_cursor_volume
+key right
+key right
+stable
+capture pe_cursor_command
+key right
+stable
+capture pe_cursor_value
