@@ -20,22 +20,22 @@ changes rather than port bugs. Checked: the copyright year and
 `IT_OBJ1.ASM:2478`). Everything else should be checked against the ASM the
 same way before it is fixed.
 
-| # | Finding | Kind | Confidence |
-|---|---|---|---|
-| F1 | F2 → F9 → F2 opens Pattern Editor Options | behaviour | **confirmed bug** |
-| F2 | Load Module file list: separator column missing, titles shifted | layout | high |
-| F3 | Load Module file info: Format, Size alignment, Date/Time empty | content | high |
-| F4 | Load Module filename mask shows only `*.IT` | content | high |
-| F5 | Section titles off by one column ("Pattern Edit" wording is 2.17 source) | layout | high (centering) |
-| F6 | Copyright `1995-1997` vs `1995-2000` | text | **2.17 source, not a bug** |
-| F7 | Pattern editor: column markers under channel 1 incomplete | layout | high |
-| F8 | F3 sample info panel colours | colour | medium |
-| F9 | F3 header says "Instrument" for an instrument-mode song; IT says "Sample" | behaviour | high |
-| F10 | F4 colour differences (note column, Filename field) | colour | medium |
-| F11 | F11 order list shifted one column; empty song shows `000` instead of `---` | layout/content | high |
-| F12 | F12 Song Name field colour | colour | medium |
-| F13 | Help lacks "Ctrl-D DOS Shell" | text | intentional (commit 9c8bbf6) |
-| F14 | No load-progress screen; after loading IT shows an empty body, port the pattern editor | behaviour | **confirmed** (DOSBox + QEMU) |
+| # | Finding | Kind | Confidence | Issue |
+|---|---|---|---|---|
+| F1 | F2 → F9 → F2 opens Pattern Editor Options | behaviour | **confirmed bug** | #29 |
+| F2 | Load Module file list: separator column missing, titles shifted | layout | high | #30 |
+| F3 | Load Module file info: Format, Size alignment, Date/Time empty | content | high | #31 |
+| F4 | Load Module filename mask shows only `*.IT` | content | high | #32 |
+| F5 | Section titles off by one column ("Pattern Edit" wording is 2.17 source) | layout | high (centering) | #33 |
+| F6 | Copyright `1995-1997` vs `1995-2000` | text | **2.17 source, not a bug** | not filed |
+| F7 | Pattern editor: column markers under channel 1 incomplete | layout | high | #34 |
+| F8 | F3 sample info panel colours | colour | medium | #35 |
+| F9 | F3 header says "Instrument" for an instrument-mode song; IT says "Sample" | behaviour | high | #36 |
+| F10 | F4 colour differences (note column, Filename field) | colour | medium | #37 |
+| F11 | F11 order list shifted one column; empty song shows `000` instead of `---` | layout/content | high | #38 |
+| F12 | F12 Song Name field colour | colour | medium | #39 |
+| F13 | Help lacks "Ctrl-D DOS Shell" | text | intentional (commit 9c8bbf6) | not filed |
+| F14 | No load-progress screen; after loading IT shows an empty body, port the pattern editor | behaviour | **confirmed** (DOSBox + QEMU) | #40 |
 
 Not findings: differences caused by the environment, which the scripts mask
 or which are listed here so they don't get filed. These are the clock and
@@ -65,6 +65,8 @@ switches back.
 
 Script: `tests/f2_after_f9.hds`
 
+Issue: #29
+
 <!-- crit:F1 -->
 **Crit:** 
 <!-- /crit:F1 -->
@@ -80,6 +82,8 @@ whole list width.
 ![F2](img/f02_file_list.png)
 
 Cells: rows 13–44, cols 2–41 (`out/it_screens/report.md#01_load_module`).
+
+Issue: #30
 
 <!-- crit:F2 -->
 **Crit:** 
@@ -98,6 +102,8 @@ For CHRIS31B.IT:
 
 ![F3](img/f03_file_info.png)
 
+Issue: #31
+
 <!-- crit:F3 -->
 **Crit:** 
 <!-- /crit:F3 -->
@@ -107,6 +113,8 @@ For CHRIS31B.IT:
 IT 2.14: `*.IT, *.XM, *.S3M, *.MTM, *.669, *.MOD`. it26: `*.IT`. Row 46.
 
 ![F4](img/f04_filename_mask.png)
+
+Issue: #32
 
 <!-- crit:F4 -->
 **Crit:** 
@@ -125,6 +133,8 @@ and only the centering is a finding.
 
 ![F5 pattern](img/f05_title_pattern.png)
 ![F5 samples](img/f05_title_samples.png)
+
+Issue: #33
 
 <!-- crit:F5 -->
 **Crit:** 
@@ -151,6 +161,8 @@ loaded.
 
 ![F7](img/f07_pe_row47.png)
 
+Issue: #34
+
 <!-- crit:F7 -->
 **Crit:** 
 <!-- /crit:F7 -->
@@ -162,6 +174,8 @@ fields of the right-hand panel (rows 13, 15, 18, cols 60–75). They're subtle
 in the screenshot; the per-cell attributes are in the report.
 
 ![F8](img/f08_f3_info_colours.png)
+
+Issue: #35
 
 <!-- crit:F8 -->
 **Crit:** 
@@ -175,6 +189,8 @@ JEFF93.IT loaded, then F3. IT 2.14's header shows **`Sample 01:Strings`**
 
 ![F9](img/f09_f3_header_label.png)
 
+Issue: #36
+
 <!-- crit:F9 -->
 **Crit:** 
 <!-- /crit:F9 -->
@@ -186,6 +202,8 @@ cells of instrument 04) and the Filename field at row 47.
 
 ![F10](img/f10_f4_colours.png)
 ![F10 filename](img/f10_f4_colours_filename.png)
+
+Issue: #37
 
 <!-- crit:F10 -->
 **Crit:** 
@@ -201,6 +219,8 @@ On an empty song:
 
 ![F11](img/f11_order_list.png)
 
+Issue: #38
+
 <!-- crit:F11 -->
 **Crit:** 
 <!-- /crit:F11 -->
@@ -210,6 +230,8 @@ On an empty song:
 Colour-only, row 16 cols 16–39.
 
 ![F12](img/f12_f12_songname.png)
+
+Issue: #39
 
 <!-- crit:F12 -->
 **Crit:** 
@@ -258,6 +280,8 @@ the pattern editor.
 
 Capturing the progress window in a script needs the polling approach, not
 `stable` (QEMU loads JEFF93.IT in well under 100 ms).
+
+Issue: #40
 
 <!-- crit:F14 -->
 **Crit:** 
