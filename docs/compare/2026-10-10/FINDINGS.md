@@ -1,5 +1,7 @@
 # it26 vs IT 2.14: findings from the automated comparison
 
+> Rerun after the fixes for #29-#40: see [RERUN.md](RERUN.md).
+
 First run: 2026-10-10. IT 2.14 (`IT /S0`) under QEMU + FreeDOS vs it26
 master `dc4f7c9` plus the remote backend, Release build, `ITED_REMOTE=1 ITED_NOBANNER=1`. Both sides got the
 same keystrokes from `tests/compare/*.hds`. Left image = IT 2.14, right = it26.

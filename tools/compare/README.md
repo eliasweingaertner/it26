@@ -61,6 +61,9 @@ waittext Drifting Onwards  # regex on the text screen
 mask 9,62,9,79             # row0,col0,row1,col1, ignored in every capture
 ```
 
+`tests/compare/it_play_jeff93.hds` has no port side: it is for `run`
+(`--cmd "IT /S5" --audio x.wav`), to record IT 2.14's output.
+
 ## The port side: ITED_REMOTE
 
 `src/it_screen_remote.c` is a `screen_backend_t` with no window. It reads
