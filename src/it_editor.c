@@ -385,6 +385,12 @@ typedef struct widget_t {
     int  (*ckey)(int key);         /* returns nonzero if consumed */
     void (*cclick)(const it_mouse_t *m);
     void (*cdrag)(const it_mouse_t *m); /* NULL = no drag tracking */
+    /* the original object's links, when the screen sets them (#50):
+     * Up, Down, Tab, Shift-Tab, Left, Right as widget indices, -1 = no
+     * link (0FFFFh: the focus stays); without them navigation goes by
+     * geometry (nav_move) */
+    uint8_t has_links;
+    int8_t  link[6];
 } widget_t;
 
 #define MAX_WIDGETS 48
@@ -793,6 +799,24 @@ static int widgets_key(int key)
             dig[Num3Pos] = key - '0';
             thumb_set(w, dig[0] * 100 + dig[1] * 10 + dig[2]);
             if (Num3Pos < 2) Num3Pos++;
+            return 1;
+        }
+    }
+
+    if (w->has_links) {
+        int to = -2;
+        switch (key) {
+        case ITK_UP:        to = w->link[0]; break;
+        case ITK_DOWN:      to = w->link[1]; break;
+        case ITK_TAB:       to = w->link[2]; break;
+        case ITK_SHIFT_TAB: to = w->link[3]; break;
+        case ITK_LEFT:  if (w->type != WT_THUMB) to = w->link[4]; break;
+        case ITK_RIGHT: if (w->type != WT_THUMB) to = w->link[5]; break;
+        default: break;
+        }
+        if (to != -2) {
+            if (to >= 0 && to < NW)
+                FocusIdx[Screen] = to;
             return 1;
         }
     }
@@ -4586,6 +4610,40 @@ static void draw_vars(void)
     wtext(13, 44, DirInstr, 64);
 
     wbutton(27, 46, 52, 48, "  Save all Preferences", act_save_prefs);
+
+    /* O1_ConfigureITList's object links (IT_OBJ1.ASM, objects 14..31 and
+     * 10 = LinkCommandGToggle), renumbered to the widgets above: inputs,
+     * bars and toggles link Up/Down/Tab/Shift-Tab, the buttons
+     * Up/Down/Left/Right with Tab = Right and Shift-Tab = Left
+     * (F_PostButtonObject). "Save all Preferences" has none but Up, so
+     * Tab stays on it (#50). */
+    {
+        static const int8_t links[18][6] = {
+            { -1,  1,  1, -1, -2, -2 },     /* Song Name */
+            {  0,  2,  2,  0, -2, -2 },     /* Initial Tempo */
+            {  1,  3,  3,  1, -2, -2 },     /* Initial Speed */
+            {  2,  4,  4,  2, -2, -2 },     /* Global Volume */
+            {  3,  5,  5,  3, -2, -2 },     /* Mixing Volume */
+            {  4,  6,  6,  4, -2, -2 },     /* Separation */
+            {  5,  7,  7,  5, -2, -2 },     /* Old Effects */
+            {  6,  8,  8,  6, -2, -2 },     /* Compatible Gxx */
+            {  7, 10,  9,  9,  9,  9 },     /* Instruments */
+            {  7, 11,  8,  8,  8,  8 },     /* Samples */
+            {  8, 12, 11, 11, 11, 11 },     /* Stereo */
+            {  9, 13, 10, 10, 10, 10 },     /* Mono */
+            { 10, 14, 13, 13, 13, 13 },     /* Linear */
+            { 11, 14, 12, 12, 12, 12 },     /* Amiga */
+            { 12, 15, 15, 12, -2, -2 },     /* Module directory */
+            { 14, 16, 16, 14, -2, -2 },     /* Sample directory */
+            { 15, 17, 17, 15, -2, -2 },     /* Instrument directory */
+            { 16, -1, -1, -1, -1, -1 },     /* Save all Preferences */
+        };
+        int i;
+        for (i = 0; i < 18 && i < NW; i++) {
+            W[i].has_links = 1;
+            memcpy(W[i].link, links[i], sizeof(links[i]));
+        }
+    }
 
     widgets_draw();
 }
