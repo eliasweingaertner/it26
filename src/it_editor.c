@@ -600,9 +600,10 @@ static void widget_draw(const widget_t *w, int focused)
                           thumb_get(w), focused ? 0x03 : 0x02);
         break;
     case WT_TOGGLE:
-        /* F_DrawToggle: "On"/"Off" attr 02h; focus (F_PreToggle)
-         * hilights just the word (2 or 3 cells) in 30h */
-        Screen_DrawString(w->x0, w->y0, toggle_get(w) ? "On " : "Off", 0x02);
+        /* F_DrawToggle: "On"/"Off" attr 02h, two or three cells (the
+         * box colour stays after "On"); focus (F_PreToggle) hilights
+         * just the word in 30h */
+        Screen_DrawString(w->x0, w->y0, toggle_get(w) ? "On" : "Off", 0x02);
         if (focused)
             Screen_DrawString(w->x0, w->y0,
                               toggle_get(w) ? "On" : "Off", 0x30);
@@ -623,22 +624,19 @@ static void widget_draw(const widget_t *w, int focused)
             w->cdraw(focused);
         break;
     case WT_TEXT: {
+        /* F_DrawStringInput (IT_F.ASM 2977): the text up to its end in
+         * colour 2, characters from 226 up as spaces; the rest of the
+         * field keeps the box colour (#35 #37 #39). F_PreStringInput:
+         * 30h on the cell after the text. */
         int i, len = 0;
         while (len < w->tmax && w->text[len])
             len++;
-        for (i = 0; i < w->tmax; i++) {
-            uint8_t c = (i < len) ? (uint8_t)w->text[i] : ' ';
-            if (c < 32)
-                c = ' ';
-            Screen_PutChar(w->x0 + i, w->y0, c, 0x02);
+        for (i = 0; i < len; i++) {
+            uint8_t c = (uint8_t)w->text[i];
+            Screen_PutChar(w->x0 + i, w->y0, c >= 226 ? ' ' : c, 0x02);
         }
-        if (focused) {
-            int cx = (len < w->tmax) ? len : w->tmax - 1;
-            uint8_t c = (cx < len) ? (uint8_t)w->text[cx] : ' ';
-            if (c < 32)
-                c = ' ';
-            Screen_PutChar(w->x0 + cx, w->y0, c, 0x30);
-        }
+        if (focused)
+            Screen_SetAttr(w->x0 + len, w->y0, 0x30);
         break; }
     case WT_LIST:
         break;                     /* the screen draws its own lists */
@@ -2841,7 +2839,7 @@ static void smpfield_cdraw(int focused)
              * the right when the loop is on, colour 2 */
             uint8_t on = f->kind == 1 ? 0x10 : 0x20;
             uint8_t pp = f->kind == 1 ? 0x40 : 0x80;
-            drawf(64, f->y, 0x02, "%-12s", "");
+            /* no padding: the box colour stays after the words (#35) */
             if (!(s->Flags & on)) {
                 drawf(64, f->y, a, "Off");
             } else {
