@@ -984,8 +984,12 @@ static void draw_chrome(const char *title)
     nums[0] = free_mem_k();
     nums[1] = 0;                          /* FreeEMS: none in this port */
     Screen_DrawStringCtl(2, 1, HeaderMsg1, 0x20, NULL);
+    /* Glbl_GetHeaderMode (IT_G.ASM 645): the sample list and the Load
+     * Sample screen (modes 3 / 13) always show the sample (#36) */
+    int smpview = (Screen == SCR_SAMPLES);
     Screen_DrawStringCtl(38, 3,
-        (Song.Header.Flags & ITF_INSTRUMENTS) ? HeaderMsg2 : HeaderMsg3,
+        ((Song.Header.Flags & ITF_INSTRUMENTS) && !smpview) ? HeaderMsg2
+                                                             : HeaderMsg3,
         0x20, NULL);
     Screen_DrawStringCtl(2, 4, HeaderMsg4, 0x20, nums);
 
@@ -1013,7 +1017,7 @@ static void draw_chrome(const char *title)
     } else {
         const char *name = "";
         drawf(50, 3, 0x05, "%02d", CurInstr % 100);
-        if (Song.Header.Flags & ITF_INSTRUMENTS) {
+        if ((Song.Header.Flags & ITF_INSTRUMENTS) && !smpview) {
             if (CurInstr <= MAX_INSTRUMENTS)
                 name = Song.Ins[CurInstr - 1].InstrumentName;
         } else {
