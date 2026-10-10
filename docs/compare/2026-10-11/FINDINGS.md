@@ -35,21 +35,21 @@ clock, 2.17 wording, host paths):
 
 ## Findings
 
-| # | Finding | Kind | Status |
+| # | Finding | Kind | Status / issue |
 |---|---|---|---|
-| G1 | Main menu opens on "View Patterns" instead of "File Menu..."; submenus forget their position | behaviour | **fixed locally** (067eebe) |
-| G2 | Parent menu item drawn highlighted while its submenu is open | colour (visible) | open |
-| G3 | Ctrl-N clears the song at once; IT asks with the New Song dialog (Keep/Clear per part, OK/Cancel) | behaviour, **data loss** | open |
-| G4 | F11 on the order list: the Channel Volume page is missing | missing screen | open |
-| G5 | Ctrl-F12 Palette Configuration is missing | missing screen | open |
-| G6 | F3 Alt-X / Alt-S / Alt-R / Alt-F: generic number prompt instead of IT's dialogs | layout | open |
-| G7 | F3 "Delete sample?" and "Sample Amplification %" one column off | layout | open |
-| G8 | Block commands without a block: status line instead of the "No block is marked" dialog | behaviour | open |
-| G9 | Ctrl-Backspace with nothing to undo: no Undo dialog; the dialog's layout differs too | behaviour/layout | open |
-| G10 | Alt-N prints "Multichannel enabled/disabled for this channel"; IT toggles silently | text | open (minor) |
-| G11 | F12: Tab on "Save all Preferences" wraps to Song Name; IT stays (no Tab link) | navigation | open |
-| G12 | F12 / menus: cells after button and menu labels in the wrong colour (spaces) | colour (invisible) | open (minor) |
-| G13 | F10 Filename pre-filled with the loaded name; IT clears it (`D_ClearFileSpecifier`) | behaviour | documented port choice (HANDOFF) |
+| G1 | Main menu opens on "View Patterns" instead of "File Menu..."; submenus forget their position | behaviour | **fixed locally** (not pushed yet) |
+| G2 | Parent menu item drawn highlighted while its submenu is open | colour (visible) | #41 |
+| G3 | Ctrl-N clears the song at once; IT asks with the New Song dialog (Keep/Clear per part, OK/Cancel) | behaviour, **data loss** | #42 |
+| G4 | F11 on the order list: the Channel Volume page is missing | missing screen | #43 |
+| G5 | Ctrl-F12 Palette Configuration is missing | missing screen | #44 |
+| G6 | F3 Alt-X / Alt-S / Alt-R / Alt-F: generic number prompt instead of IT's dialogs | layout | #45 |
+| G7 | F3 "Delete sample?" and "Sample Amplification %" one column off | layout | #46 |
+| G8 | Block commands without a block: status line instead of the "No block is marked" dialog | behaviour | #47 |
+| G9 | Ctrl-Backspace with nothing to undo: no Undo dialog; the dialog's layout differs too | behaviour/layout | #48 |
+| G10 | Alt-N prints "Multichannel enabled/disabled for this channel"; IT toggles silently | text | #49 (minor) |
+| G11 | F12: Tab on "Save all Preferences" wraps to Song Name; IT stays (no Tab link) | navigation | #50 |
+| G12 | F12 / menus: cells after button and menu labels in the wrong colour (spaces) | colour (invisible) | #51 (minor) |
+| G13 | F10 Filename pre-filled with the loaded name; IT clears it (`D_ClearFileSpecifier`) | behaviour | kept: deliberate port convenience (decided 2026-10-11) |
 | G14 | Ctrl-F1 shows the port's key-press table, not IT's "Keyboard Information" | screen | documented (HANDOFF: layout not ported) |
 
 Not findings: the F10 "IT215" button (2.17 source, behind `IF DDCOMPRESS`;
@@ -65,7 +65,7 @@ Edit Options" (2.17 wording), directory entries and drives (environment).
 the object they were left on (`M_Object1List`, `IT_M.ASM` 638). it26
 opened the main menu on "View Patterns", so Esc, Enter left the menu
 instead of opening the File menu, and the submenus always started on
-their first item. Fixed in 067eebe (local).
+their first item. Fixed locally (not pushed yet).
 
 ![G1](img/g01_main_menu_before_fix.png)
 
@@ -77,6 +77,9 @@ its focus highlight. it26 keeps it highlighted (pressed bevel, text 23h).
 
 ![G2](img/g02_menu_parent.png)
 
+Issue: #41
+
+
 ## G3 — Ctrl-N: no New Song dialog
 
 `F_NewSong` (`IT_F.ASM` 4966) runs `O1_NewSongList` (`IT_OBJ1.ASM` 6616):
@@ -85,6 +88,9 @@ OK, and only clears what was chosen. it26's Ctrl-N (and File > New...)
 calls `new_song()` directly: everything is cleared without asking.
 
 ![G3](img/g03_ctrl_n.png)
+
+Issue: #42
+
 
 ## G4 — F11 Channel Volume page missing
 
@@ -95,6 +101,9 @@ anywhere.
 
 ![G4](img/g04_f11_volumes.png)
 
+Issue: #43
+
+
 ## G5 — Ctrl-F12 Palette Configuration missing
 
 `Glbl_Ctrl_F12` (`IT_G.ASM` 630) opens `O1_ConfigurePaletteList`: the
@@ -103,6 +112,9 @@ colours with RGB sliders and the predefined palettes. it26 has no Ctrl-F12 key c
 fixed palette.
 
 ![G5](img/g05_palette.png)
+
+Issue: #44
+
 
 ## G6 — F3 dialogs: Exchange, Swap, Replace, Resize
 
@@ -116,12 +128,18 @@ all uses of current with", "Resize sample to (no interpolation)") with an input 
 ![G6 exchange](img/g06_f3_exchange.png)
 ![G6 resize](img/g06_f3_resize.png)
 
+Issue: #45
+
+
 ## G7 — F3 dialog texts one column off
 
 "Delete sample?" starts at column 34 in IT, 33 in it26; "Sample
 Amplification %" at 29 in IT, 30 in it26 (row 27).
 
 ![G7](img/g07_f3_delete.png)
+
+Issue: #46
+
 
 ## G8 — "No block is marked" is a dialog in IT
 
@@ -130,6 +148,9 @@ Amplification %" at 29 in IT, 30 in it26 (row 27).
 prints "No block is marked." in the status line (seen with Alt-J).
 
 ![G8](img/g08_no_block.png)
+
+Issue: #47
+
 
 ## G9 — Undo dialog
 
@@ -142,12 +163,18 @@ that point.)
 
 ![G9](img/g09_undo.png)
 
+Issue: #48
+
+
 ## G10 — Alt-N status text
 
 `PEFunction_ToggleMultiChannel` toggles silently; a second Alt-N in a
 row opens "Multichannel Selection" (the port has that dialog). it26 also
 prints "Multichannel enabled/disabled for this channel", which is not in
 the source.
+
+Issue: #49
+
 
 ## G11 — F12 Tab order
 
@@ -158,6 +185,9 @@ Other screens may differ in the same way; only F12 was checked.
 
 ![G11](img/g11_f12_tab.png)
 
+Issue: #50
+
+
 ## G12 — Colours of blank cells (invisible)
 
 After the focus has passed the F12 radio buttons, the cells after
@@ -166,12 +196,15 @@ menus, the cell after "(F9)" / "(Ctrl-N)" and the end of the previously
 selected main menu item likewise. All spaces on the same background, so
 nothing shows on screen.
 
+Issue: #51
+
+
 ## G13 — F10 Filename
 
 `Glbl_F10` calls `D_ClearFileSpecifier`: the Filename field starts
 empty. it26 fills in the loaded file name (or `UNTITLED.IT`), as
 described in HANDOFF ("editable filename primed from the loaded name").
-A convenience; keep or drop.
+Kept as a deliberate convenience (decided 2026-10-11); not filed.
 
 ## G14 — Ctrl-F1
 
