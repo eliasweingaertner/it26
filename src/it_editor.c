@@ -79,7 +79,7 @@ void Music_FreeIT(void);
 
 enum { SCR_HELP, SCR_PATTERN, SCR_SAMPLES, SCR_INSTRUMENTS,
        SCR_ORDER, SCR_VARS, SCR_INFO, SCR_MESSAGE, SCR_KEYS,
-       SCR_DRIVER, SCR_COUNT };
+       SCR_DRIVER, SCR_EMPTY, SCR_COUNT };
 
 /* ---- editor state ---- */
 static int      Screen = SCR_PATTERN;
@@ -6376,6 +6376,7 @@ static void draw_screen(void)
         "Info Page (F5)", "Message Editor (Shift-F9)",   /* DisplayHeader,
                                                         IT_OBJ1.ASM 6580 */
         "Keyboard (Ctrl-F1)", "Miniaudio Driver (Shift-F5)",
+        "",                             /* O1_EmptyList: NoText */
     };
 
     Screen_Clear(0x20);
@@ -6400,6 +6401,7 @@ static void draw_screen(void)
     case SCR_HELP:        draw_help(); break;
     case SCR_KEYS:        NW = 0; draw_keys(); break;
     case SCR_DRIVER:      draw_driver(); break;
+    case SCR_EMPTY:       NW = 0; break;
     case SCR_INFO:        NW = 0; draw_info(); break;
     case SCR_MESSAGE:     NW = 0; draw_message(); break;
     }
@@ -9917,6 +9919,7 @@ static const uint8_t SearchText[] =
 static const uint8_t FileText[] = " Filename\015Directory";
 
 static int do_load_named(const char *path);
+static int load_module_screen(const char *path);
 
 static int ReqSave;                     /* 0 = load (F9), 1 = save (F10) */
 
@@ -10594,7 +10597,7 @@ static void req_activate_file(int *done)
             req_do_save(done);
         } else if (ReqLibMode) {
             lib_open_source(ReqFiles[FSel].name, done);
-        } else if (do_load_named(ReqFiles[FSel].name)) {
+        } else if (load_module_screen(ReqFiles[FSel].name)) {
             *done = 1;
         } else {
             status("Can't load %s.", ReqFiles[FSel].name);
@@ -10767,7 +10770,7 @@ static void file_requester_run_(int save)
                     req_scan();
                 } else if (ReqLibMode) {
                     lib_open_source(ReqName, &done);
-                } else if (do_load_named(ReqName)) {
+                } else if (load_module_screen(ReqName)) {
                     done = 1;
                 } else {
                     status("Can't load %s.", ReqName);
@@ -12142,6 +12145,63 @@ static void quick_save(void)
         status("Unable to save file");
 }
 
+/* ---- Load Module screen (O1_LoadITList and its siblings, IT_OBJ1.ASM
+ * 1423): while loading, the body is a LoadBox with the format line and
+ * the loader's progress log (D_LoadIT, IT_D_RM.INC 2360); afterwards
+ * F_GotoEmptyList shows O1_EmptyList -- the header over an empty body,
+ * no title -- until a global key (#40). ---- */
+static void load_progress_draw(int row, int what, int n)
+{
+    static const char *const msg[] = {      /* IT_DISK.ASM 397 */
+        "File Header", "Instrument %d", "Sample Header %d", "Sample %d",
+        "Pattern %d",
+    };
+    drawf(4, row, 5, msg[what], n);
+    Screen_Update();
+}
+
+static const char *load_format_title(const char *path) /* Load*ModuleText */
+{
+    uint8_t h[0x30];
+    size_t n;
+    FILE *fp = fopen(path, "rb");
+
+    if (!fp)
+        return NULL;
+    memset(h, 0, sizeof(h));
+    n = fread(h, 1, sizeof(h), fp);
+    fclose(fp);
+    (void)n;
+    if (!memcmp(h, "IMPM", 4))                  return "Impulse Tracker Module";
+    if (!memcmp(h, "Extended Module: ", 17))    return "Fast Tracker II Module";
+    if (!memcmp(h + 0x2C, "SCRM", 4))           return "Scream Tracker III Module";
+    if (!memcmp(h, "MTM", 3))                   return "MultiTracker Module";
+    if ((h[0] == 'i' && h[1] == 'f') || (h[0] == 'J' && h[1] == 'N'))
+        return "Composer 669 Module";
+    return "MOD Format Module";
+}
+
+static int load_module_screen(const char *path)    /* D_PostFileLoadWindow */
+{
+    const char *fmt = load_format_title(path);
+    int ok;
+
+    if (fmt) {
+        Screen_Clear(0x20);
+        draw_chrome("Load Module (F9)");
+        Screen_DrawBox(1, 12, 78, 48, 27);      /* LoadBox */
+        Screen_DrawString(3, 14, fmt, 0x02);
+        fill(3, 15, (int)strlen(fmt), 129, 0x02);
+        Screen_Update();
+        Load_Progress = load_progress_draw;
+    }
+    ok = do_load_named(path);
+    Load_Progress = NULL;
+    if (ok)
+        Screen = SCR_EMPTY;                     /* F_GotoEmptyList */
+    return ok;
+}
+
 static int do_load_named(const char *path)
 {
     /* stop_song leaves all slave channels off, so the mixer touches no
@@ -12266,7 +12326,7 @@ static void act_dialog_open_module(void)
         status("Can't change to %s.", dir);
         return;
     }
-    if (do_load_named(base)) {          /* as the F9 requester's Enter */
+    if (load_module_screen(base)) {     /* as the F9 requester's Enter */
         dialog_set_names(&r, base);
     } else {
         status("Can't load %s.", path_base(r.display));

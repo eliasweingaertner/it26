@@ -259,6 +259,13 @@ static int DecompressIT16(reader_t *r, int16_t *dst, uint32_t length,
  * Exported for the sample/instrument library (it_ris.c).
  * ---------------------------------------------------------------- */
 int (*Load_StereoChoice)(void);         /* returns 64 left / 192 right */
+void (*Load_Progress)(int row, int what, int n);
+
+static void load_progress(int row, int what, int n)
+{
+    if (Load_Progress)
+        Load_Progress(row, what, n);
+}
 
 int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
 {
@@ -530,6 +537,7 @@ int Music_LoadIT(const char *path)
     SetDefaultMIDIDataArea();
 
     /* song header */
+    load_progress(16, LOAD_HEADER, 0);
     if (!rd_read(r, &Song.Header, sizeof(songheader_t)) ||
         Song.Header.ID != 0x4D504D49u /* "IMPM" */) {
         free(filedata);
@@ -586,6 +594,7 @@ int Music_LoadIT(const char *path)
     for (i = 0; i < MAX_INSTRUMENTS - 1; i++)
         Music_InitInstrument(&Song.Ins[i]);
     for (i = 0; i < Song.Header.InsNum; i++) {
+        load_progress(17, LOAD_INSTRUMENT, i + 1);
         if (insoffs[i] == 0 || !rd_seek(r, insoffs[i]))
             continue;
 
@@ -603,11 +612,14 @@ int Music_LoadIT(const char *path)
     for (i = 0; i < Song.Header.SmpNum; i++) {
         sample_t *s = &Song.Smp[i];
 
+        load_progress(18, LOAD_SHEADER, i + 1);
         if (smpoffs[i] == 0 || !rd_seek(r, smpoffs[i]))
             continue;
         if (!rd_read(r, s, 0x50))
             goto fail;
         s->Data = NULL;
+        if (s->Flags & 1)
+            load_progress(19, LOAD_SAMPLE, i + 1);
 
         if (!(s->Flags & 1) || s->Length == 0)
             continue;
@@ -687,6 +699,7 @@ int Music_LoadIT(const char *path)
     for (i = 0; i < Song.Header.PatNum; i++) {
         uint16_t length, rows;
 
+        load_progress(20, LOAD_PATTERN, i);     /* 0-based, as D_LoadIT */
         if (patoffs[i] == 0 || !rd_seek(r, patoffs[i]))
             continue;
 

@@ -46,6 +46,11 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s);
 /* stereo Left/Right requester hook (O1_StereoSampleList; feature 013):
  * returns 64 = left, 192 = right; NULL = left (headless paths). */
 extern int (*Load_StereoChoice)(void);
+/* load-progress hook (D_LoadIT's log, IT_D_RM.INC 2360): the editor
+ * draws "<what> n" at (4,row); NULL = silent (headless paths) */
+enum { LOAD_HEADER, LOAD_INSTRUMENT, LOAD_SHEADER, LOAD_SAMPLE,
+       LOAD_PATTERN };
+extern void (*Load_Progress)(int row, int what, int n);
 /* pre-2.00 instrument conversion, shared with the library loaders */
 void Load_OldInstrument(const uint8_t *src, instrument_t *in);
 
