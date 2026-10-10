@@ -4283,7 +4283,7 @@ static void draw_order(void)
 
             if (PlayMode == 2 && idx == (int)CurrentOrder)
                 na = 0x23;                      /* PE_ShowOrder */
-            draw3num(1, 15 + i, idx, na);
+            draw3num(2, 15 + i, idx, na);   /* the object's x (#38) */
             if (o == 255)
                 memcpy(val, "---", 4);
             else if (o == 254)
@@ -12427,8 +12427,9 @@ static void song_defaults(void)
     /* pristine SongData values (IT_MDATA.ASM line 9: Flags = 9 --
      * stereo + linear slides, sample mode; pans all 32) */
     Song.Header.Flags = ITF_STEREO | ITF_LINEAR_SLIDES;
+    /* SongData's orders are 256 x 0FFh: a new song's order list is
+     * empty ("---" everywhere), order 0 included (#38) */
     memset(Song.Orders, 255, sizeof(Song.Orders));
-    Song.Orders[0] = 0;
     for (i = 0; i < 64; i++) {
         Song.Header.ChnlPan[i] = 32;
         Song.Header.ChnlVol[i] = 64;
