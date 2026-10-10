@@ -738,6 +738,14 @@ Setup (QEMU, venv, `IT214_DIR`) is in `tools/compare/README.md`. Findings:
 `docs/compare/<date>/FINDINGS.md`. The reference is the 2.14 binary, so
 check a difference against the 2.17 ASM before treating it as a bug.
 
+Scripts: `it_screens` (screen tour), `f2_after_f9` (#29), `pe_markers`
+(#34), `header_modes` (#36); `it_play_jeff93` is DOS-only (`run`, audio).
+The first run (2026-10-10) found #29-#40; all fixed, see
+`docs/compare/2026-10-10/RERUN.md` for what still differs and why (clock,
+memory, drives/paths, 2.17 wording, Ctrl-D left out) and the open F15
+(Load Sample list order). After an editor change that touches a screen,
+rerun the matching script; a new comparison gets its own dated folder.
+
 ---
 
 ## 5. File map
