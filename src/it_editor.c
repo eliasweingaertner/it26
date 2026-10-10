@@ -13310,7 +13310,12 @@ typedef struct menudef_t {
     int n;
 } menudef_t;
 
-static void menu_draw(const menudef_t *d, int sel)
+/* parent = 1: the menu under an open submenu (#41). Only the active
+ * object list gets F_PreButtonObject's focus highlight; the original
+ * leaves the parent as it was when Enter opened the submenu: that item
+ * still pressed (ButtonType0, down while its function runs), its label
+ * in 20h like every other item. */
+static void menu_draw_ex(const menudef_t *d, int sel, int parent)
 {
     int i;
 
@@ -13319,7 +13324,13 @@ static void menu_draw(const menudef_t *d, int sel)
     Screen_DrawString(d->tx, d->ty, d->title, 0x23);
     for (i = 0; i < d->n; i++)
         draw_button_style(d->ix0, d->iy + 3*i, d->ix1, d->iy + 2 + 3*i,
-                          28, d->items[i].text, 0, i == sel);
+                          28, d->items[i].text, parent && i == sel,
+                          !parent && i == sel);
+}
+
+static void menu_draw(const menudef_t *d, int sel)
+{
+    menu_draw_ex(d, sel, 0);
 }
 
 static int run_menu(const menudef_t *d, void (*under)(void), int *psel)
@@ -13576,7 +13587,7 @@ static const menudef_t MainMenuDef = {
 static void menu_under_main(void)
 {
     draw_screen();
-    menu_draw(&MainMenuDef, MainMenuSel);
+    menu_draw_ex(&MainMenuDef, MainMenuSel, 1);  /* parent of a submenu */
 }
 
 static void main_menu(void)
