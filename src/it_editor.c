@@ -83,6 +83,9 @@ enum { SCR_HELP, SCR_PATTERN, SCR_SAMPLES, SCR_INSTRUMENTS,
 
 /* ---- editor state ---- */
 static int      Screen = SCR_PATTERN;
+static int      FileMode = 0;            /* CurrentMode of a modal file
+                                           screen (9/10/13/15), 0 = none;
+                                           Glbl_GetHeaderMode, #36 */
 static editcell_t Grid[MAX_PATROWS * 64];
 static uint16_t  CurPattern = 0;
 static uint16_t  CurRows = 64;
@@ -203,6 +206,7 @@ static int       BaseOctave = 4;
 static int       EditStep = 1;
 static int       CurInstr = 1;
 static int       ListSel = 0;             /* sample/instrument/order index */
+static uint8_t   NoteSampleNumber = 1;    /* SampleNumber (IT_I.ASM)       */
 static int       Running = 1;
 static char      FileNameDisp[20] = "";   /* header File Name field */
 /* feature 016: the real file name Ctrl-S saves to after a system-dialog
@@ -985,12 +989,16 @@ static void draw_chrome(const char *title)
     nums[1] = 0;                          /* FreeEMS: none in this port */
     Screen_DrawStringCtl(2, 1, HeaderMsg1, 0x20, NULL);
     /* Glbl_GetHeaderMode (IT_G.ASM 645): the sample list and the Load
-     * Sample screen (modes 3 / 13) always show the sample (#36) */
-    int smpview = (Screen == SCR_SAMPLES);
-    Screen_DrawStringCtl(38, 3,
-        ((Song.Header.Flags & ITF_INSTRUMENTS) && !smpview) ? HeaderMsg2
-                                                             : HeaderMsg3,
-        0x20, NULL);
+     * Sample screen (modes 3 / 13) show "Sample" with LastInstrument, the
+     * instrument list (mode 4) "Sample" with SampleNumber, every other
+     * mode follows the song's instrument mode (#36) */
+    int hmode = FileMode ? FileMode
+              : (Screen == SCR_SAMPLES) ? 3
+              : (Screen == SCR_INSTRUMENTS) ? 4 : 0;
+    int hnum = (hmode == 4) ? NoteSampleNumber : CurInstr;
+    int hins = (hmode == 3 || hmode == 13 || hmode == 4) ? 0
+             : (Song.Header.Flags & ITF_INSTRUMENTS) != 0;
+    Screen_DrawStringCtl(38, 3, hins ? HeaderMsg2 : HeaderMsg3, 0x20, NULL);
     Screen_DrawStringCtl(2, 4, HeaderMsg4, 0x20, nums);
 
     /* ---- live values, PE_FillHeader positions, attr 5 ---- */
@@ -1011,18 +1019,18 @@ static void draw_chrome(const char *title)
     Screen_PutChar(50, 5, (uint8_t)('0' + BaseOctave), 0x05);
 
     /* instrument/sample number + name */
-    if (CurInstr <= 0) {
+    if (hnum <= 0) {
         drawf(50, 3, 0x05, "..");
         fill(53, 3, 25, '.', 0x05);
     } else {
         const char *name = "";
-        drawf(50, 3, 0x05, "%02d", CurInstr % 100);
-        if ((Song.Header.Flags & ITF_INSTRUMENTS) && !smpview) {
-            if (CurInstr <= MAX_INSTRUMENTS)
-                name = Song.Ins[CurInstr - 1].InstrumentName;
+        drawf(50, 3, 0x05, "%02d", hnum % 100);
+        if (hins) {
+            if (hnum <= MAX_INSTRUMENTS)
+                name = Song.Ins[hnum - 1].InstrumentName;
         } else {
-            if (CurInstr <= MAX_SAMPLES)
-                name = Song.Smp[CurInstr - 1].SampleName;
+            if (hnum <= MAX_SAMPLES)
+                name = Song.Smp[hnum - 1].SampleName;
         }
         draw_itname(53, 3, name, 25, 0x05);
     }
@@ -3145,7 +3153,6 @@ static int NodeHeld = 0;           /* Enter "grabs" the node            */
 static int NoteWinTop = 0;         /* note-translation window scroll    */
 static int NoteWinSel = 0;         /* CurrentNote 0..119                */
 static int NotePos = 0;            /* cursor column 0..3                */
-static uint8_t NoteSampleNumber = 1; /* SampleNumber (IT_I.ASM)         */
 static int IdxTabBtn, IdxEnvOn, IdxNNACut, IdxLeftList; /* focus links  */
 
 #define ENVELOPEGRANULARITY 50
@@ -6379,6 +6386,10 @@ static void draw_screen(void)
         draw_info();
         return;
     }
+    /* the F3/F4 list cursor is LastInstrument in the original */
+    if (!FileMode && (Screen == SCR_SAMPLES || Screen == SCR_INSTRUMENTS)
+        && ListSel >= 0)
+        CurInstr = ListSel + 1;
     draw_chrome(titles[Screen]);
     switch (Screen) {
     case SCR_PATTERN:     NW = 0; draw_pattern(); break;
@@ -10423,6 +10434,7 @@ static int PendingGlobalKey = 0, PendingHelpContext = 1;
 static int FromFileScreen = 0;          /* handle_global runs a key a file
                                            screen handed back (#29) */
 static void handle_global(int key);
+static void sample_to_instrument(void);
 static void help_open(int context);
 
 static void bg_keep(void) { }          /* leave the screen as drawn */
@@ -10598,7 +10610,18 @@ static void req_enter_dir(const char *name)
         status("Can't change to %s.", name);
 }
 
+static void file_requester_run_(int save);
+
 static void file_requester_run(int save)
+{
+    int keep = FileMode;
+
+    FileMode = save ? 10 : 9;
+    file_requester_run_(save);
+    FileMode = keep;
+}
+
+static void file_requester_run_(int save)
 {
     int done = 0;
 
@@ -11512,7 +11535,18 @@ static void ls_draw_focus(void)
 }
 
 /* the shared screen loop; view = 1 for the Sample Library (Ctrl-F3) */
+static void load_sample_screen_run_(int view);
+
 static void load_sample_screen_run(int view)
+{
+    int keep = FileMode;
+
+    FileMode = 13;
+    load_sample_screen_run_(view);
+    FileMode = keep;
+}
+
+static void load_sample_screen_run_(int view)
 {
     /* thumbbar objects 25..29: x=63, rows, ranges; 28/29 are the scaled
      * 8-cell bars */
@@ -11965,7 +11999,18 @@ static int li_enter(void)
     return 0;
 }
 
+static void load_instrument_screen_run_(int view, const char *module);
+
 static void load_instrument_screen_run(int view, const char *module)
+{
+    int keep = FileMode;
+
+    FileMode = 15;
+    load_instrument_screen_run_(view, module);
+    FileMode = keep;
+}
+
+static void load_instrument_screen_run_(int view, const char *module)
 {
     LiView = view;
     LiFocus = 5;
@@ -12603,7 +12648,8 @@ static void menu_under_screen(void) { draw_screen(); }
 static void menu_under_main(void);
 
 /* ---- menu item actions ---- */
-static int act_view_patterns(void) { Screen = SCR_PATTERN; return 1; }
+static int act_view_patterns(void)
+{ sample_to_instrument(); Screen = SCR_PATTERN; return 1; }
 static int act_view_orders(void)   { Screen = SCR_ORDER;   return 1; }
 static int act_view_vars(void)     { Screen = SCR_VARS;    return 1; }
 static int act_help(void)          { help_open(help_context_of(Screen)); return 1; }
@@ -12681,12 +12727,39 @@ static int act_pb_driver(void)
 static int act_pb_length(void)
 { status("Calculate Length not ported yet."); return 1; }
 
+/* Glbl_SampleToInstrument (IT_G.ASM 934): leaving the sample list of an
+ * instrument-mode song, LastInstrument becomes the first instrument
+ * whose note table uses that sample (#36) */
+static void sample_to_instrument(void)
+{
+    int i, k;
+
+    if (Screen != SCR_SAMPLES || FileMode || FromFileScreen
+        || !(Song.Header.Flags & ITF_INSTRUMENTS))
+        return;
+    for (i = 0; i < 99; i++)
+        for (k = 0; k < 120; k++)
+            if (Song.Ins[i].NoteSampleTable[k * 2 + 1] == (uint8_t)CurInstr) {
+                CurInstr = i + 1;
+                return;
+            }
+}
+
+static void glbl_f4(void)               /* Glbl_F4: init SampleNumber */
+{
+    sample_to_instrument();
+    NoteSampleNumber = (uint8_t)CurInstr;
+    if (CurInstr == 0)
+        CurInstr = 1;
+    Screen = SCR_INSTRUMENTS;
+    ListSel = CurInstr - 1;
+}
+
 static int act_smp_list(void)
 { Screen = SCR_SAMPLES; ListSel = CurInstr - 1; return 1; }
 static int act_smp_lib(void)           /* Sample Library (Ctrl-F3) */
 { Screen = SCR_SAMPLES; load_sample_screen_run(1); return 1; }
-static int act_ins_list(void)
-{ Screen = SCR_INSTRUMENTS; ListSel = CurInstr - 1; return 1; }
+static int act_ins_list(void) { glbl_f4(); return 1; }
 static int act_ins_lib(void)           /* Instrument Library (Ctrl-F4) */
 { Screen = SCR_INSTRUMENTS; load_instrument_screen_run(1, NULL); return 1; }
 
@@ -12892,6 +12965,7 @@ static void handle_global(int key)
          * (F9/F10, Load Sample/Instrument, libraries) comes from that
          * screen's mode -- Glbl_F9 sets CurrentMode 9 -- even though the
          * port's modal screen left Screen as it was (#29) */
+        sample_to_instrument();
         if (Screen != SCR_PATTERN || FromFileScreen) {
             Screen_DefineSmallNumbers();
             Screen = SCR_PATTERN;
@@ -12900,7 +12974,7 @@ static void handle_global(int key)
         }
         return;
     case ITK_F3:  Screen = SCR_SAMPLES; ListSel = CurInstr-1; return;
-    case ITK_F4:  Screen = SCR_INSTRUMENTS; ListSel = CurInstr-1; return;
+    case ITK_F4:  glbl_f4(); return;
     case ITK_F11:                       /* Glbl_F11: the order cursor is
                                            the pattern editor's Order,
                                            so it is where G left it

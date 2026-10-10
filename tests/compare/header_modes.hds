@@ -1,0 +1,39 @@
+# Header label + number per screen on an instrument-mode song
+# (Glbl_GetHeaderMode, #36): F4, F3 -> F4 with another sample selected
+# (Glbl_SampleToInstrument), F9, Load Sample (F3 Enter), F2.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f4
+stable
+capture hm_f4
+key f3
+stable
+key down
+key down
+key down
+stable
+capture hm_f3_sample4
+key f4
+stable
+capture hm_f4_after_f3
+key f2
+stable
+capture hm_f2
+key f3
+stable
+key enter
+stable 800
+capture hm_load_sample
+key esc
+stable
+key f9
+stable
+capture hm_f9
