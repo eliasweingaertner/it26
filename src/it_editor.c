@@ -1054,10 +1054,16 @@ static void draw_chrome(const char *title)
               secs / 3600, (secs / 60) % 60, secs % 60);
     }
 
-    /* ---- dotted title line (row 11), F_DrawInfoLine ---- */
-    {
+    /* ---- dotted title line (row 11), F_DrawInfoLine (IT_F.ASM 2443):
+     * (78 - len) / 2 dots, space, title, space, the rest dots; an empty
+     * title is 78 dots (#33: the port had one dot fewer in front) ---- */
+    if (!title[0]) {
+        int i;
+        for (i = 0; i < 78; i++)
+            Screen_PutChar(1 + i, 11, 154, 0x21);
+    } else {
         int len = (int)strlen(title);
-        int n1 = (78 - len) / 2 - 1;
+        int n1 = (78 - len) / 2;
         int n2 = 78 - n1 - len - 2;
         int x = 1, i;
 
