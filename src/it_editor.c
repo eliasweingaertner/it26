@@ -3829,8 +3829,10 @@ static void notewin_cdraw(int focused)
         uint8_t sm = ins->NoteSampleTable[note * 2 + 1];
         uint8_t a = 0x02;
 
-        if (note == NoteWinSel)
-            a |= 0xE0;                     /* row hilight (+0E0h) */
+        if (focused && note == NoteWinSel)
+            a |= 0xE0;                     /* row hilight (+0E0h): from
+                                              I_PreNoteWindow, so only
+                                              while focused (#37) */
 
         Screen_PutChar(32, y, (uint8_t)NoteNameChars[(note%12)*2],   a);
         Screen_PutChar(33, y, (uint8_t)NoteNameChars[(note%12)*2+1], a);
