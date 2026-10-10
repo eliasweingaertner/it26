@@ -7732,23 +7732,52 @@ static void pe_alt_l(void)                  /* mark track / widen */
     BlockBottom = (int)CurRows - 1;
 }
 
+/* One-button message dialogs of the pattern editor (#47):
+ * O1_NoBlockMarkedList, O1_NoBlockDataList, O1_OverlapBlockList,
+ * O1_SwapOutOfRangeList (IT_OBJ1.ASM): NBMBox (25,25)-(54,32) style 3,
+ * the list's text on row 27 at its own x, and OKButton (35,29)-(44,31)
+ * "   OK" with the focus (CX = 2). Enter, Esc or a click closes it. */
+static void ok_dialog(int tx, const char *text)
+{
+    for (;;) {
+        int key;
+
+        draw_screen();
+        Screen_DrawBox(25, 25, 54, 32, 3);              /* NBMBox */
+        Screen_DrawString(tx, 27, text, 0x20);
+        draw_button_style(35, 29, 44, 31, 8, "   OK", 0, 1);
+        Screen_Update();
+
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return; }
+        if (key == ITK_ENTER || key == ITK_ESC)
+            return;
+        if (key == ITK_MOUSE) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (mouse_in(&m, 35, 29, 44, 31))
+                return;
+        }
+    }
+}
+
 /* ==== block operations (IT_PE.ASM 6038..8538) ====
  * All operate on the unpacked Grid (row*64+chan stride) and commit
- * once at the end, matching the ASM handler bodies 1:1. The
- * no-block-marked / no-clipboard paths flash the original's status
- * strings. Cell fields use the editcell accessors above. */
+ * once at the end, matching the ASM handler bodies 1:1. Cell fields use
+ * the editcell accessors above. */
 static int block_marked(void)
 {
-    if (!BlockMark) {
-        status("No block is marked.");
+    if (!BlockMark) {                   /* PEFunction_NoBlockMarkedMessage */
+        ok_dialog(31, "No block is marked");
         return 0;
     }
     return 1;
 }
 static int clip_present(void)
 {
-    if (!ClipData) {
-        status("No block data in memory.");
+    if (!ClipData) {                    /* O1_NoBlockDataList */
+        ok_dialog(30, "No data in clipboard");
         return 0;
     }
     return 1;
@@ -7903,11 +7932,11 @@ static void pe_block_swap(void)             /* Alt-Y (6430), type 17 */
         CurRow + h - 1 < BlockTop || CurRow > BlockBottom) {
         /* no overlap -- ok */
     } else {
-        status("Cursor overlaps the marked block.");
+        ok_dialog(30, "Swap blocks overlap");      /* O1_OverlapBlockList */
         return;
     }
     if (CurChan + w > 64 || CurRow + h > (int)CurRows) {
-        status("Swap block is out of range.");
+        ok_dialog(30, "Out of pattern range");     /* O1_SwapOutOfRangeList */
         return;
     }
     snapshot_undo(17);
