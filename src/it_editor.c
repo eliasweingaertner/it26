@@ -9373,10 +9373,7 @@ static void handle_pattern_key(int key)
             pe_multichannel_menu();         /* 2*Alt-N */
             return;
         }
-        status(MultiChannelInfo[CurChan]
-               ? "Multichannel enabled for this channel"
-               : "Multichannel disabled for this channel");
-        return;
+        return;                             /* toggled silently (#49) */
     case ITK_ALT_A + ('I' - 'A'):           /* ToggleTemplate (8660) */
         if (PEConfig & 4) {                 /* fast volume amplify */
             if (block_marked())
