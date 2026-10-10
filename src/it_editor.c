@@ -9550,9 +9550,15 @@ static void act_save_prefs(void)
 #define REQ_MAXFILES 1024
 #define REQ_MAXDIRS  256
 typedef struct reqfile_t {
-    char name[64];
-    char songname[27];
-    long size;
+    char     name[64];
+    char     songname[27];
+    long     size;
+    /* the original's file record (D_LoadModuleFiles / IT_D_INF.INC):
+     * +23 type (FormatNames index), +22 MOD channels, +0/+2 DOS time /
+     * date of the directory entry */
+    int      type;
+    uint8_t  chans;
+    uint16_t dtime, ddate;
 } reqfile_t;
 
 static reqfile_t ReqFiles[REQ_MAXFILES];
@@ -9561,7 +9567,8 @@ static char      ReqDrives[26];
 static int       ReqNF, ReqND, ReqNDrv;
 static int       ReqFocus;          /* 0 files, 1 dirs, 2 drives, 3 name */
 static int       FSel, FTop, DSel, DTop, VSel;
-static char      ReqName[26] = "*.IT";
+/* FileSpecifier, 64 characters (FileNamePrompt), FileSpecifierDefault */
+static char      ReqName[65] = "*.IT, *.XM, *.S3M, *.MTM, *.669, *.MOD";
 
 static int req_file_cmp(const void *a, const void *b)
 {
@@ -9587,20 +9594,83 @@ static int has_it_ext(const char *name)
     return Import_KnownExt(name);   /* .IT/.S3M/.XM/.MOD/.MTM/.669 */
 }
 
+/* D_GetSongNameModuleType (IT_D_INF.INC 3): the FormatNames type and
+ * the song name, from the file's first bytes. Kept 1:1, including the
+ * MTM case falling through to type 1 ("Unknown module format") after
+ * copying its name -- the original has no Ret there. */
 static void req_read_songname(reqfile_t *f)
 {
+    uint8_t h[1084];
+    size_t n;
     FILE *fp = fopen(f->name, "rb");
-    char hdr[30];
 
-    f->songname[0] = 0;
+    memset(f->songname, 0, sizeof(f->songname));
+    f->type = 1;
+    f->chans = 0;
     if (!fp)
         return;
-    if (fread(hdr, 1, 30, fp) == 30 && !memcmp(hdr, "IMPM", 4)) {
-        memcpy(f->songname, hdr + 4, 26);
-        f->songname[26] = 0;
-    }
+    memset(h, 0, sizeof(h));                /* D_LoadFileHeader clears */
+    n = fread(h, 1, sizeof(h), fp);
     fclose(fp);
+    (void)n;
+
+    if (!memcmp(h, "IMPM", 4)) {
+        int cmwt = h[0x2A] | (h[0x2B] << 8);
+        f->type = cmwt > 0x217 ? 3 : cmwt < 0x214 ? 2 : 7;
+        memcpy(f->songname, h + 4, 25);
+        return;
+    }
+    if (!memcmp(h + 44, "SCRM", 4)) {
+        f->type = 4;
+        memcpy(f->songname, h, 25);
+        return;
+    }
+    if (!memcmp(h, "Extended Module: ", 17)) {
+        f->type = 5;
+        memcpy(f->songname, h + 17, 20);
+        return;
+    }
+    if (!memcmp(h, "if", 2) || !memcmp(h, "JN", 2)) {
+        f->type = 6;
+        memcpy(f->songname, h + 2, 25);
+        return;
+    }
+    {
+        const uint8_t *m = h + 1080;
+        int t = 0;
+        if (!memcmp(m, "M.K.", 4))      t = 9;
+        else if (!memcmp(m, "M!K!", 4)) t = 10;
+        else if (!memcmp(m, "4CHN", 4)) t = 11;
+        else if (!memcmp(m, "6CHN", 4)) t = 12;
+        else if (!memcmp(m, "8CHN", 4)) t = 13;
+        else if (m[2] == 'C' && m[3] == 'H' && m[0] >= '0' && m[0] <= '9' &&
+                 m[1] >= '0' && m[1] <= '9') {
+            t = 17;
+            f->chans = (uint8_t)((m[0] - '0') * 10 + (m[1] - '0'));
+        }
+        else if (!memcmp(m, "FLT4", 4)) t = 14;
+        else if (h[471] == 0x78)        t = 16;
+        if (t) {
+            f->type = t;
+            memcpy(f->songname, h, 20);
+            return;
+        }
+    }
+    if (!memcmp(h, "MTM", 3))
+        memcpy(f->songname, h + 4, 20);     /* ... then type 1 (sic) */
+    f->type = 1;
 }
+
+/* FormatNames (IT_DISK.ASM 523) */
+static const char *const ReqFormatNames[19] = {
+    "Unchecked", "Unknown module format", "Impulse Tracker",
+    "Impulse Tracker ?.??", "Scream Tracker 3", "Fast Tracker 2 Module",
+    "Composer 669 Module", "Compressed Impulse Tracker", "",
+    "Amiga-NewTracker", "Amiga-ProTracker", "4 Channel MOD",
+    "6 Channel MOD", "8 Channel MOD", "4 Channel Startrekker",
+    "8 Channel Startrekker", "Old Amiga-MOD format ? ", NULL /* %d */,
+    "MultiTracker Module"
+};
 
 static void req_scan(void)
 {
@@ -9621,8 +9691,14 @@ static void req_scan(void)
                 } else if (has_it_ext(fd.cFileName) &&
                            ReqNF < REQ_MAXFILES) {
                     reqfile_t *f = &ReqFiles[ReqNF++];
+                    FILETIME lt;
+                    WORD dd = 0, dt = 0;
                     snprintf(f->name, sizeof(f->name), "%s", fd.cFileName);
                     f->size = (long)fd.nFileSizeLow;
+                    if (FileTimeToLocalFileTime(&fd.ftLastWriteTime, &lt))
+                        FileTimeToDosDateTime(&lt, &dd, &dt);
+                    f->ddate = dd;
+                    f->dtime = dt;
                     req_read_songname(f);
                 }
             } while (FindNextFileA(h, &fd));
@@ -9653,9 +9729,15 @@ static void req_scan(void)
                                  "%.*s", (int)sizeof(ReqDirs[0]) - 1, e->d_name);
                 } else if (has_it_ext(e->d_name) && ReqNF < REQ_MAXFILES) {
                     reqfile_t *f = &ReqFiles[ReqNF++];
+                    struct tm tmv, *t;
                     snprintf(f->name, sizeof(f->name),
                              "%.*s", (int)sizeof(f->name) - 1, e->d_name);
                     f->size = (long)st.st_size;
+                    t = localtime_r(&st.st_mtime, &tmv);
+                    f->ddate = t ? (uint16_t)(((t->tm_year + 1900 - 1980) << 9) |
+                                              ((t->tm_mon + 1) << 5) | t->tm_mday) : 0;
+                    f->dtime = t ? (uint16_t)((t->tm_hour << 11) |
+                                              (t->tm_min << 5) | (t->tm_sec / 2)) : 0;
                     req_read_songname(f);
                 }
             }
@@ -9767,6 +9849,17 @@ static int do_load_named(const char *path);
 
 static int ReqSave;                     /* 0 = load (F9), 1 = save (F10) */
 
+static void req_draw_string(int x, int y, const char *s, int focused)
+{
+    int i;
+    for (i = 0; s[i]; i++) {
+        uint8_t c = (uint8_t)s[i];
+        Screen_PutChar(x + i, y, c >= 226 ? ' ' : c, 0x02);
+    }
+    if (focused)
+        Screen_SetAttr(x + i, y, 0x30);
+}
+
 static void draw_file_requester(void)
 {
     int i;
@@ -9785,42 +9878,97 @@ static void draw_file_requester(void)
     Screen_DrawStringCtl(44, 37, SearchText, 0x20, NULL);
     Screen_DrawStringCtl(3, 46, FileText, 0x20, NULL);
 
-    /* files (left box, 31 rows): name + song name columns */
+    /* D_DrawFileWindow (IT_DISK.ASM 1762): 31 rows from (3,13) -- file
+     * name (12 cells, colour by type with FileColours on), the 2A8h
+     * divider at column 15 on every row, the song name from column 16
+     * (25 cells, colour 2 + FileColours) */
     if (FSel < FTop) FTop = FSel;
     if (FSel >= FTop + 31) FTop = FSel - 30;
     if (FTop < 0) FTop = 0;
-    for (i = 0; i < 31 && FTop + i < ReqNF; i++) {
-        int idx = FTop + i;
-        uint8_t a = (idx == FSel) ? (ReqFocus == 0 ? 0x30 : 0x20) : 0x03;
-        drawf(3, 13 + i, a, "%-13.13s ", ReqFiles[idx].name);
-        drawf(17, 13 + i, a, "%-23.23s", ReqFiles[idx].songname);
+    for (i = 0; i < 31; i++) {
+        int idx = FTop + i, k;
+        if (idx < ReqNF) {
+            const reqfile_t *f = &ReqFiles[idx];
+            int t = f->type;
+            uint8_t a = t == 0 ? 6 : t == 1 ? 7 : (t <= 3 || t == 7) ? 3
+                      : t <= 8 ? 5 : 2;            /* FileColours = 1 */
+            int end = 0;
+            for (k = 0; k < 12; k++) {
+                uint8_t c = end ? 0 : (uint8_t)f->name[k];
+                if (!c)
+                    end = 1;
+                Screen_PutChar(3 + k, 13 + i, c, a);
+            }
+        }
+        Screen_PutChar(15, 13 + i, 0xA8, 0x02);     /* 2A8h */
+        if (idx < ReqNF)
+            for (k = 0; k < 25; k++) {
+                uint8_t c = (uint8_t)ReqFiles[idx].songname[k];
+                Screen_PutChar(16 + k, 13 + i, c >= 226 ? ' ' : c, 0x03);
+            }
     }
     if (ReqNF == 0)
-        Screen_DrawString(3, 13, ReqLibMode ? "No files."
-                                            : "(no .it modules here)", 0x03);
+        Screen_DrawString(3, 13, "No files.", 0x07);   /* NoFilesMsg */
+    for (i = 0; i < 13; i++)                    /* the Search string */
+        Screen_PutChar(51 + i, 37, 0, 0x05);
+    if (ReqFocus == 0) {                        /* D_PreFileWindow */
+        int y = 13 + FSel - FTop;
+        if (ReqNF)
+            for (i = 0; i < 38; i++)
+                Screen_SetAttr(3 + i, y, i == 12 ? 0x32 : 0x30);
+        Screen_SetAttr(51, 37, 0x60);           /* CurrentSearchPos 0 */
+    }
 
-    /* directories (middle box, 21 rows) */
+    /* D_DrawDirectoryWindow: 21 rows from (44,13), colour 5; "No dirs." */
     if (DSel < DTop) DTop = DSel;
     if (DSel >= DTop + 21) DTop = DSel - 20;
     if (DTop < 0) DTop = 0;
-    for (i = 0; i < 21 && DTop + i < ReqND; i++) {
-        int idx = DTop + i;
-        uint8_t a = (idx == DSel) ? (ReqFocus == 1 ? 0x30 : 0x20) : 0x03;
-        drawf(44, 13 + i, a, "%-12.12s", ReqDirs[idx]);
-    }
+    for (i = 0; i < 21 && DTop + i < ReqND; i++)
+        Screen_DrawString(44, 13 + i, ReqDirs[DTop + i], 0x05);
+    if (ReqND == 0)
+        Screen_DrawString(44, 13, "No dirs.", 0x07);
+    if (ReqFocus == 1 && ReqND)                 /* D_PreDirectoryWindow */
+        for (i = 0; i < 12; i++)
+            Screen_SetAttr(44 + i, 13 + DSel - DTop, 0x30);
 
-    /* drives (right box) */
+    /* D_DrawDriveWindow: "Drive X:" from (59,13), colour 5 */
     if (VSel >= ReqNDrv) VSel = ReqNDrv ? ReqNDrv - 1 : 0;
-    for (i = 0; i < 21 && i < ReqNDrv; i++) {
-        uint8_t a = (i == VSel) ? (ReqFocus == 2 ? 0x30 : 0x20) : 0x05;
-        drawf(59, 13 + i, a, "Drive %c:", ReqDrives[i]);
-    }
+    for (i = 0; i < 21 && i < ReqNDrv; i++)
+        drawf(59, 13 + i, 0x05, "Drive %c:", ReqDrives[i]);
+    if (ReqFocus == 2 && ReqNDrv)               /* D_PreDriveWindow */
+        for (i = 0; i < 8; i++)
+            Screen_SetAttr(59 + i, 13 + VSel, 0x30);
 
-    /* file info */
+    /* the file info box (D_DrawFileWindow12..): format, size, date and
+     * time of the current file, all in colour 5 from column 51 */
     if (ReqNF && FSel < ReqNF) {
-        drawf(52, 40, 0x05, "%-25.25s",
-              ReqLibMode ? req_sniff_format() : "Impulse Tracker");
-        drawf(58, 41, 0x05, "%09ld", ReqFiles[FSel].size);
+        const reqfile_t *f = &ReqFiles[FSel];
+        if (ReqLibMode) {
+            Screen_DrawString(51, 40, req_sniff_format(), 0x05);
+        } else if (f->type >= 0 && f->type < 19) {
+            if (f->type == 17)                  /* ChannelXX */
+                drawf(51, 40, 0x05, "%d Channel MOD", f->chans);
+            else
+                Screen_DrawString(51, 40, ReqFormatNames[f->type], 0x05);
+        }
+        if ((unsigned long)f->size / 65536UL < 10000UL)
+            drawf(51, 41, 0x05, "%09ld", f->size);
+        {
+            static const char *const mon[16] = {
+                "", "January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November",
+                "December", "", "", "" };
+            const char *m = mon[(f->ddate >> 5) & 15];
+            int x = 51 + (int)strlen(m), h = f->dtime >> 11, pm = 0;
+            Screen_DrawString(51, 42, m, 0x05);
+            Screen_PutChar(x, 42, 0, 0x05);     /* the string's 0 is stored */
+            drawf(x + 1, 42, 0x05, "%d, %d", f->ddate & 31,
+                  ((f->ddate >> 9) & 0x7F) + 1980);
+            if (h >= 12) { pm = 1; h -= 12; }
+            if (h == 0) h = 12;
+            drawf(51, 43, 0x05, "%d:%02d%cm", h, (f->dtime >> 5) & 63,
+                  pm ? 'p' : 'a');
+        }
     }
 
     /* save-format radio buttons (O1_SaveModuleList objects 17..20:
@@ -9835,19 +9983,17 @@ static void draw_file_requester(void)
                               ReqFocus == 4 && SaveFormat == fmtof[i]);
     }
 
-    /* filename input + current directory */
-    {
-        int len = (int)strlen(ReqName);
-        drawf(13, 46, 0x02, "%-25.25s", ReqName);
-        if (ReqFocus == 3)
-            Screen_PutChar(13 + (len < 25 ? len : 24), 46,
-                           (uint8_t)(len < 25 ? ' ' : ReqName[24]), 0x30);
-    }
+    /* FileNamePrompt (13,46) / SongDirectoryPrompt (13,47): string
+     * inputs, F_DrawStringInput -- the text in colour 2 (characters from
+     * 226 up as spaces), the rest of the field keeps the box colour;
+     * F_PreStringInput puts the 30h cursor after the text */
+    req_draw_string(13, 46, ReqName, ReqFocus == 3);
     {
         char cwd[256] = "";
         if (!getcwd(cwd, sizeof(cwd)))  /* on failure keep the "" fallback */
             cwd[0] = '\0';
-        drawf(13, 47, 0x05, "%-64.64s", cwd);
+        cwd[64] = 0;                    /* SongDirectory: 64 characters */
+        req_draw_string(13, 47, cwd, 0);
     }
 }
 
@@ -10543,7 +10689,8 @@ static void file_requester_run(int save)
                 } else {
                     status("Can't load %s.", ReqName);
                 }
-            } else if (key >= 32 && key < 127 && len < 25) {
+            } else if (key >= 32 && key < 127 &&
+                       len < (int)sizeof(ReqName) - 1) {    /* 64 */
                 ReqName[len] = (char)key;
                 ReqName[len + 1] = 0;
             }
@@ -10558,7 +10705,7 @@ static void file_requester(void)        /* F9 (load) */
 
 static void save_requester(void)        /* F10 (Glbl_F10 / mode 10) */
 {
-    char keep[26];
+    char keep[sizeof(ReqName)];
 
     memcpy(keep, ReqName, sizeof(keep));
     file_requester_run(1);
