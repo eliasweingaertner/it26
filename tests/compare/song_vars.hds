@@ -1,0 +1,49 @@
+# Round 2: F12 Song Variables, empty song and JEFF93.IT, walking the
+# focus through the objects.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key f12
+stable
+capture sv_empty
+key down
+stable
+capture sv_empty_down1
+key down
+stable
+capture sv_empty_down2
+key down
+key down
+key down
+stable
+capture sv_empty_down5
+key down
+key down
+key down
+stable
+capture sv_empty_down8
+key down
+key down
+key down
+stable
+capture sv_empty_down11
+key f9
+stable
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f12
+stable
+capture sv_jeff93
+key tab
+stable
+capture sv_jeff93_tab1
+key tab
+key tab
+key tab
+stable
+capture sv_jeff93_tab4

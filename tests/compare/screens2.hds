@@ -1,0 +1,53 @@
+# Round 2: screens not compared in round 1, with JEFF93.IT loaded:
+# F11 twice (channel volumes), message editor, keyboard and palette
+# configuration, F10 save, sample/instrument libraries, Load Instrument.
+# Each screen is left with F2: Esc would open the main menu.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f11
+stable
+capture s2_orders
+key f11
+stable
+capture s2_channel_volumes
+key shift-f9
+stable
+capture s2_message
+key ctrl-f1
+stable
+capture s2_keyboard
+key f2
+stable
+key ctrl-f12
+stable
+capture s2_palette
+key f10
+stable
+capture s2_save_module
+key f2
+stable
+key ctrl-f3
+stable 800
+capture s2_sample_library
+key f2
+stable
+key ctrl-f4
+stable 800
+capture s2_instrument_library
+key f2
+stable
+key f4
+stable
+key enter
+stable 800
+capture s2_load_instrument
+key f2
+stable

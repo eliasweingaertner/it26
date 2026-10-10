@@ -1,0 +1,90 @@
+# Round 2: dialogs of the sample list, instrument list and pattern
+# editor with JEFF93.IT loaded (key tables IT_OBJ1.ASM 3376.., 6501..,
+# IT_PE.ASM 549..). Each dialog is captured, then cancelled with Esc.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f3
+stable
+key alt-d
+stable
+capture md_f3_delete
+key esc
+stable
+key alt-x
+stable
+capture md_f3_exchange
+key esc
+stable
+key alt-s
+stable
+capture md_f3_swap
+key esc
+stable
+key alt-f
+stable
+capture md_f3_resize
+key esc
+stable
+key alt-m
+stable
+capture md_f3_amplify
+key esc
+stable
+key alt-r
+stable
+capture md_f3_replace
+key esc
+stable
+key alt-y
+stable
+capture md_f3_c5speed
+key esc
+stable
+key f4
+stable
+key alt-d
+stable
+capture md_f4_delete
+key esc
+stable
+key alt-p
+stable
+capture md_f4_copy
+key esc
+stable
+key alt-s
+stable
+capture md_f4_swap
+key esc
+stable
+key f2
+stable
+key ctrl-f2
+stable
+capture md_pe_length
+key esc
+stable
+key alt-j
+stable
+capture md_pe_volume_amp
+key esc
+stable
+key ctrl-backspace
+stable
+capture md_pe_undo
+key esc
+stable
+key alt-n
+stable
+capture md_pe_multichannel
+key esc
+stable
+capture md_pe_after
