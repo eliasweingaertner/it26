@@ -1848,7 +1848,10 @@ static int confirm_box_bg(const char *text, int default_yes,
             Screen_DrawBox(20, 25, 60, 32, 3);
         else
             Screen_DrawBox(26, 25, 54, 32, 3);
-        tx = 40 - (int)strlen(text) / 2;
+        /* the Confirm*Text objects sit at 40 - (len-1)/2: "Delete
+         * sample?" at 34, "Delete instrument?" at 32, "Exit Impulse
+         * Tracker?" at 30 (#46) */
+        tx = 40 - ((int)strlen(text) - 1) / 2;
         Screen_DrawString(tx, 27, text, 0x20);
         draw_button_style(30, 29, 39, 31, 8, "   OK", 0, sel == 0);
         draw_button_style(41, 29, 50, 31, 8, " Cancel", 0, sel == 1);
@@ -10777,7 +10780,7 @@ static int lib_load_instrument_entry(const ilibent_t *e)
     LibUnused = RI_UnusedSamples();
 
     if (!(Song.Header.Flags & ITF_INSTRUMENTS) &&
-        confirm_box("Enable instrument mode?")) {   /* O1_EnableInstrumentMode */
+        confirm_box("Enable Instrument mode?")) {   /* O1_EnableInstrumentMode */
         ed_lock();
         Song.Header.Flags |= ITF_INSTRUMENTS;
         ed_unlock();
