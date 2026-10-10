@@ -1772,6 +1772,8 @@ static int max_order(void)
     return i > 0 ? i - 1 : 0;
 }
 static int PanSel;                              /* selected pan channel */
+static int OrderVolMode;        /* F11 page: 0 = panning (CurrentMode
+                                   11), 1 = channel volume (21, #43) */
 /* in-list name editing (feature 013; IT_I.ASM I_PostSampleList /
  * I_PostInstrumentWindow): F3 cursor position within the sample name
  * (25 = right stop = keyjazz mode); F4 uses a Spacebar-toggled edit
@@ -4256,6 +4258,9 @@ static void draw_instruments(void)
 static const uint8_t PanHeaderText[] =
     { 146, 0xFE, 0x30, 'L', ' ', ' ', ' ', 'M', ' ', ' ', ' ', 'R',
       0xFE, 0x23, 145, 0 };
+static const uint8_t VolHeaderText[] =      /* VolumeText1/2 */
+    { 146, 0xFE, 0x30, ' ', 'V', 'o', 'l', 'u', 'm', 'e', 's', ' ',
+      0xFE, 0x23, 145, 0 };
 
 static void draw_order(void)
 {
@@ -4314,8 +4319,10 @@ static void draw_order(void)
     /* channel panning columns */
     Screen_DrawBox(30, 14, 40, 47, 15);
     Screen_DrawBox(64, 14, 74, 47, 15);
-    Screen_DrawStringCtl(30, 14, PanHeaderText, 0x23, NULL);
-    Screen_DrawStringCtl(64, 14, PanHeaderText, 0x23, NULL);
+    Screen_DrawStringCtl(30, 14, OrderVolMode ? VolHeaderText
+                                              : PanHeaderText, 0x23, NULL);
+    Screen_DrawStringCtl(64, 14, OrderVolMode ? VolHeaderText
+                                              : PanHeaderText, 0x23, NULL);
 
     for (i = 0; i < 32; i++) {
         int c;
@@ -4328,6 +4335,12 @@ static void draw_order(void)
 
             drawf(bx - 11, 15 + i, sel ? 0x30 : 0x20,
                   "Channel %02d", chan + 1);
+            if (OrderVolMode) {         /* ChannelVol1..64: type 9, 0..64 */
+                draw_thumbbar(bx, 15 + i, 0, 64,
+                              Song.Header.ChnlVol[chan] & 0x7F,
+                              sel ? 0x03 : 0x02);
+                continue;
+            }
             /* Channel1..64 are type-9 objects (IT_OBJ1.ASM): an ordinary
              * F_DrawThumbBar over 0..64 -- the fine fractional thumb
              * glyphs and the 3-digit value in attr 21h, as on every other
@@ -6391,7 +6404,8 @@ static void draw_screen(void)
     if (!FileMode && (Screen == SCR_SAMPLES || Screen == SCR_INSTRUMENTS)
         && ListSel >= 0)
         CurInstr = ListSel + 1;
-    draw_chrome(titles[Screen]);
+    draw_chrome((Screen == SCR_ORDER && OrderVolMode)
+                ? "Order List and Channel Volume (F11)" : titles[Screen]);
     switch (Screen) {
     case SCR_PATTERN:     NW = 0; draw_pattern(); break;
     case SCR_SAMPLES:     draw_samples(); break;
@@ -9409,11 +9423,24 @@ static void order_list_lclick(int row, int mx, int mpx)
 /* F11 pan columns: Up/Down select channel, Left/Right slide the pan,
  * L/M/R hard positions, S surround, Space mute toggle (the original's
  * pan thumbbar keys) */
+static void vol_set(int chan, int v)        /* channel volume page */
+{
+    if (v < 0) v = 0;
+    if (v > 64) v = 64;
+    ed_lock();
+    Song.Header.ChnlVol[chan] = (uint8_t)v;
+    ed_unlock();
+}
+
 static void pan_adjust(int chan, int delta)
 {
     uint8_t pan = Song.Header.ChnlPan[chan];
     int p = pan & 0x7F;
 
+    if (OrderVolMode) {
+        vol_set(chan, Song.Header.ChnlVol[chan] + delta);
+        return;
+    }
     if (p > 64)                     /* leaving surround: re-centre */
         p = 32;
     p += delta;
@@ -9426,10 +9453,22 @@ static void pan_adjust(int chan, int delta)
 
 static void pan_set(int chan, int p)
 {
+    if (OrderVolMode) {
+        vol_set(chan, p);
+        return;
+    }
     ed_lock();
     Song.Header.ChnlPan[chan] =
         (uint8_t)((Song.Header.ChnlPan[chan] & 0x80) | p);
     ed_unlock();
+}
+
+static int pan_digit(int key)
+{
+    int v;                          /* the bars are type-9 thumbbars */
+    if (thumb_value_dialog(key, 0, 64, &v, draw_screen))
+        pan_set(PanSel, v);
+    return 1;
 }
 
 static int pan_col_lkey(int key, int base)
@@ -9452,16 +9491,19 @@ static int pan_col_lkey(int key, int base)
     case ITK_SHIFT_RIGHT: pan_adjust(PanSel,  4); return 1;
     case ITK_CTRL_LEFT:   pan_adjust(PanSel, -2); return 1;
     case ITK_CTRL_RIGHT:  pan_adjust(PanSel,  2); return 1;
+    default: break;
+    }
+    if (OrderVolMode)               /* the volume bars are plain 0..64
+                                       thumbbars: no L/M/R/S/mute */
+        return key >= '0' && key <= '9' ? pan_digit(key) : 0;
+    switch (key) {
     case 'l': case 'L': pan_set(PanSel, 0);   return 1;
     case 'm': case 'M': pan_set(PanSel, 32);  return 1;
     case 'r': case 'R': pan_set(PanSel, 64);  return 1;
     case 's': case 'S': pan_set(PanSel, 100); return 1;
     case '0': case '1': case '2': case '3': case '4':
-    case '5': case '6': case '7': case '8': case '9': {
-        int v;                      /* the pan bars are type-9 thumbbars */
-        if (thumb_value_dialog(key, 0, 64, &v, draw_screen))
-            pan_set(PanSel, v);
-        return 1; }
+    case '5': case '6': case '7': case '8': case '9':
+        return pan_digit(key);
     case ' ':
         ed_lock();
         Song.Header.ChnlPan[PanSel] ^= 0x80;
@@ -12851,7 +12893,8 @@ static void menu_under_main(void);
 /* ---- menu item actions ---- */
 static int act_view_patterns(void)
 { sample_to_instrument(); Screen = SCR_PATTERN; return 1; }
-static int act_view_orders(void)   { Screen = SCR_ORDER;   return 1; }
+static int act_view_orders(void)                /* Glbl_F11_2 */
+{ OrderVolMode = 0; Screen = SCR_ORDER; return 1; }
 static int act_view_vars(void)     { Screen = SCR_VARS;    return 1; }
 static int act_help(void)          { help_open(help_context_of(Screen)); return 1; }
 static int act_message_editor(void)
@@ -13187,6 +13230,11 @@ static void handle_global(int key)
                                            the pattern editor's Order,
                                            so it is where G left it
                                            (issue #14) */
+        /* F11 on the panning page (mode 11) switches to the channel
+         * volume page (mode 21); from anywhere else, mode 21 included,
+         * it opens the panning page (#43) */
+        OrderVolMode = (Screen == SCR_ORDER && !OrderVolMode &&
+                        !FromFileScreen);
         Screen = SCR_ORDER; ListSel = PEOrder; return;
     case ITK_F12: Screen = SCR_VARS; return;
     case ITK_F5: {                      /* Glbl_F5: info page; start the
