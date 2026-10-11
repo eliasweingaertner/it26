@@ -1,0 +1,35 @@
+# New Song dialog (#42): JEFF93.IT (instrument mode), Ctrl-N, keep only
+# Samples, OK; F12 shows instrument mode, speed and tempo kept (F_NewSong
+# never touches the song flags), the header Pattern 000/000.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f2
+stable
+key ctrl-n
+stable
+key up
+key up
+key up
+stable
+key enter
+stable
+capture ns_dialog_keep_samples
+key down
+key down
+key down
+key enter
+stable
+key f12
+stable
+capture ns_f12
+key f4
+stable
+capture ns_f4

@@ -13213,6 +13213,7 @@ static void new_song_selected(void)
             Song.Patterns[i].Rows = 0;
             Song.Patterns[i].DataLength = 0;
         }
+        Song.Header.PatNum = 1;         /* header: Pattern 000/000 */
     }
     ed_unlock();
     if (NewSongClear[0] || NewSongClear[3]) {   /* D_ClearFileName,
