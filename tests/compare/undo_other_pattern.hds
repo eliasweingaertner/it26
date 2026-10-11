@@ -1,0 +1,27 @@
+# Undo across patterns: in pattern 0, restore the "Pattern 1" entry --
+# PEFunction_PostUndoEnter decodes it into the current pattern, no
+# message (IT 2.14).
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f2
+stable
+key +
+stable
+key -
+stable
+key ctrl-backspace
+stable
+key down
+stable
+capture uo_list
+key enter
+stable
+capture uo_after

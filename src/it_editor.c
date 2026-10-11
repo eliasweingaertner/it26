@@ -8731,8 +8731,11 @@ static void pe_undo_requester(void)
         }
     }
     /* revert to slot `sel`: copy it out first (snapshot_undo may free
-     * the ring's oldest slot), push current state as Redo, restore */
-    if (UndoRing[sel].pattern == CurPattern) {
+     * the ring's oldest slot), push current state as Redo, restore.
+     * PEFunction_PostUndoEnter decodes the snapshot into the pattern
+     * being edited whatever pattern it was taken from -- no check, no
+     * message: restoring "Pattern 1" while in pattern 0 copies it in. */
+    {
         uint16_t wantrows = UndoRing[sel].rows;
         size_t nb = (size_t)wantrows * 64 * sizeof(editcell_t);
         editcell_t *want = (editcell_t *)malloc(nb);
@@ -8745,8 +8748,6 @@ static void pe_undo_requester(void)
         if (CurRow > (int)CurRows - 1) CurRow = (int)CurRows - 1;
         commit_current_pattern();
         free(want);
-    } else {
-        status("Undo is for another pattern.");
     }
 }
 
