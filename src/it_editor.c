@@ -1816,6 +1816,7 @@ static void draw_screen(void);
 static void stop_song(void);
 static void commit_current_pattern(void);
 static void load_pattern(uint16_t pat);
+static void pe_new_pattern(uint16_t pat);   /* NewPattern: load + undo */
 
 #define SMP_MAXBYTES 4177920u           /* I_ReMix size cap */
 #define SMP_PAD      32                 /* interpolator padding, as loader */
@@ -6251,7 +6252,7 @@ static void handle_info_key(int key)
         if (!playing)
             return;
         commit_current_pattern();
-        load_pattern(pat);
+        pe_new_pattern(pat);
         CurRow  = (row < CurRows) ? row : 0;
         CurChan = InfoCurChannel;
         Screen  = SCR_PATTERN;
@@ -7073,6 +7074,35 @@ static void snapshot_undo(uint8_t type)
     UndoRing[0] = s;
 }
 
+static void pe_clear_undo(void)         /* PE_ClearUndoBuffer */
+{
+    int i;
+
+    for (i = 0; i < 10; i++)
+        free(UndoRing[i].cells);
+    memset(UndoRing, 0, sizeof(UndoRing));
+}
+
+/* NewPattern (IT_PE.ASM ~8150): every pattern taken into the editor
+ * pushes an undo entry "Pattern n" with its state on arrival, so typed
+ * notes can be undone back to it (Ctrl-Backspace). Callers: pattern
+ * +/- and the 4-pattern / order steps (PEFunction_Next/LastPattern...,
+ * via PE_GotoPattern), the order list's G/Enter, play tracing
+ * (PE_DrawPatternEdit) and PE_ResetOrderPattern. Plain re-decodes keep
+ * using load_pattern. */
+static void pe_new_pattern(uint16_t pat)
+{
+    load_pattern(pat);
+    snapshot_undo(22);
+}
+
+/* PE_ResetOrderPattern's tail on load / New Song: NewPattern, then
+ * PE_ClearUndoBuffer -- the undo list starts empty for a new song */
+static void pe_reset_undo(void)
+{
+    pe_clear_undo();
+}
+
 /* ==== movement (PEFunction_* 3358..3752) ==== */
 static int pe_skip(void) { return EditStep ? EditStep : 1; }
 
@@ -7216,7 +7246,7 @@ static void pe_goto_pattern(int pat)
     if (pat < 0) pat = 0;
     if (pat > 199) pat = 199;
     commit_current_pattern();
-    load_pattern((uint16_t)pat);
+    pe_new_pattern((uint16_t)pat);              /* PE_GotoPattern */
     if (CurRow > (int)CurRows - 1) CurRow = (int)CurRows - 1;
 }
 static void pe_next_order(void)             /* NextOrderPattern (8364) */
@@ -9494,10 +9524,10 @@ static void handle_pattern_key(int key)
         commit_current_pattern();
         if (key == '-') {
             if (CurPattern > 0)
-                load_pattern(CurPattern - 1);
+                pe_new_pattern(CurPattern - 1);
         } else {
             if (CurPattern + 1 < MAX_PATTERNS)
-                load_pattern(CurPattern + 1);
+                pe_new_pattern(CurPattern + 1);
         }
         return;
     default: break;
@@ -9843,7 +9873,7 @@ static int order_list_lkey(int key)
         PEOrder = o;
         if (Song.Orders[o] < 200) {
             commit_current_pattern();
-            load_pattern(Song.Orders[o]);
+            pe_new_pattern(Song.Orders[o]);     /* PE_GotoPattern */
             Screen = SCR_PATTERN;
         }
         return 1;
@@ -12741,6 +12771,7 @@ static int do_load_named(const char *path)
         ed_unlock();
         CurPattern = 0; CurRow = CurChan = CurCol = 0; ListSel = 0;
         load_pattern(0);
+        pe_reset_undo();                /* PE_ResetOrderPattern */
         row_hilight_from_song();
         for (p = path; *p; p++)
             if (*p == '/' || *p == '\\')
@@ -13088,6 +13119,7 @@ static void new_song(void)
     ListSel = 0;
     CurInstr = 1;
     load_pattern(0);
+    pe_reset_undo();
     FileNameDisp[0] = 0;
     FileSaveName[0] = 0;
 }
@@ -13253,6 +13285,8 @@ static void new_song_selected(void)
         CurPattern = Song.Orders[0] <= 199 ? Song.Orders[0] : 0;
     }
     load_pattern(CurPattern);
+    if (NewSongClear[0])
+        pe_reset_undo();                /* PE_ClearUndoBuffer */
 }
 
 /* ited.cfg: directories + octave/edit step, written by the F12 "Save

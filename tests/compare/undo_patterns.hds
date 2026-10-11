@@ -1,0 +1,39 @@
+# Undo list entries "Pattern n" (NewPattern, IT_PE.ASM ~8150): load
+# JEFF93.IT (PE_ResetOrderPattern clears the list), step to pattern 1
+# and back, type a note, and undo it by restoring "Pattern 0".
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f2
+stable
+key ctrl-backspace
+stable
+capture un_after_load
+key esc
+stable
+key +
+stable
+key -
+stable
+key ctrl-backspace
+stable
+capture un_after_plus_minus
+key esc
+stable
+key down
+key down
+key q
+stable
+capture un_note_typed
+key ctrl-backspace
+stable
+key enter
+stable
+capture un_restored
