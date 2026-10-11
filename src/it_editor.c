@@ -6686,6 +6686,7 @@ static const uint8_t PresetPalettes[7][48] = {
 };
 
 static int PalFocus = 0;                /* O1_ConfigurePaletteList DW 53 */
+static int PalDrag = -1;                /* bar being mouse-dragged */
 static int global_brace_key(int key);   /* { } [ ] speed / volume */
 
 static void draw_palette(void)
@@ -6734,6 +6735,8 @@ static void palette_mouse(void)
     for (k = 0; k < 48; k++)
         if (thumb_hit(&m, PalThumbs[k].x, PalThumbs[k].y, 0, 63, &v)) {
             PalFocus = k;
+            PalDrag = k;                /* followed while held, like
+                                           every thumbbar */
             palette_set(k, v);
             return;
         }
@@ -13818,6 +13821,8 @@ static void handle_global(int key)
     case ITK_MOUSE:
         if (Screen == SCR_PATTERN)
             pattern_click();
+        else if (Screen == SCR_PALETTE)
+            palette_mouse();            /* its own objects (#44) */
         else
             widgets_mouse();
         return;
@@ -17793,6 +17798,16 @@ int main(int argc, char **argv)
                 W[DragIdx].cdrag(&m);
         }
         /* F11 pan bar drag (issue #8) */
+        if (PalDrag >= 0) {             /* palette bar drag (#44) */
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (!m.b || Screen != SCR_PALETTE) {
+                PalDrag = -1;
+            } else {
+                int v = m.px - (PalThumbs[PalDrag].x * 8 + 4);
+                palette_set(PalDrag, v);
+            }
+        }
         if (PanDragChan >= 0) {
             it_mouse_t m;
             Screen_GetMouse(&m);
