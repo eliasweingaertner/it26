@@ -13097,39 +13097,50 @@ static void new_song(void)
  * instruments and the order list are "one of selection" buttons on
  * ButtonVariables 3..6, which default to Clear and keep their setting
  * from one Ctrl-N to the next; focus starts on OK. ---- */
-static int NewSongClear[4] = { 1, 1, 1, 1 };    /* ButtonVariables 3..6 */
+/* [4] Variables: an extension (not in IT), default Keep, so an
+ * untouched dialog does what IT's does */
+static int NewSongClear[5] = { 1, 1, 1, 1, 0 }; /* ButtonVariables 3..6 */
 
 static const uint8_t NewSongText2[] =
     "   Patterns\015\015\015\377\004 Samples\015\015\015"
-    "Instruments\015\015\015 Order List";
+    "Instruments\015\015\015 Order List\015\015\015  Variables";
 
 /* object 3..12: Up, Down, Left, Right links (Tab = Right, Shift-Tab =
- * Left, F_PostButtonObject); -1 = 0FFFFh, no move */
-static const signed char NewSongLinks[10][4] = {
+ * Left, F_PostButtonObject); -1 = 0FFFFh, no move. 13/14 = the added
+ * Variables row between Order List and OK/Cancel. */
+static const signed char NewSongLinks[12][4] = {
     { -1,  5,  4,  4 }, {  4,  6,  3,  3 },     /* Keep/Clear Patterns */
     {  3,  7,  6,  6 }, {  4,  8,  5,  5 },     /* Samples */
     {  5,  9,  8,  8 }, {  6, 10,  7,  7 },     /* Instruments */
-    {  7, 11, 10, 10 }, {  8, 12,  9,  9 },     /* Order List */
-    {  9, -1, 12, 12 }, {  9, -1, 11, 11 },     /* OK, Cancel */
+    {  7, 13, 10, 10 }, {  8, 14,  9,  9 },     /* Order List */
+    { 13, -1, 12, 12 }, { 13, -1, 11, 11 },     /* OK, Cancel */
+    {  9, 11, 14, 14 }, { 10, 12, 13, 13 },     /* Variables (extension) */
 };
+
+/* button object -> NewSongClear index and Keep (0) / Clear (1) */
+static int new_song_var(int obj) { return obj >= 13 ? 4 : (obj - 3) / 2; }
+static int new_song_val(int obj) { return obj >= 13 ? obj - 13 : (obj - 3) & 1; }
 
 static void new_song_draw(int focus)
 {
     int i;
 
     draw_screen();
-    Screen_DrawBox(21, 20, 58, 38, 3);                  /* NewSongBox */
+    /* NewSongBox (21,20)-(58,38) and OK/Cancel on rows 35..37 in IT;
+     * three rows lower here for the added Variables row */
+    Screen_DrawBox(21, 20, 58, 41, 3);
     Screen_DrawString(36, 21, "New Song", 0x23);
     Screen_DrawStringCtl(23, 24, NewSongText2, 0x20, NULL);
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < 5; i++) {
         int y = 23 + i * 3;
+        int keep = i < 4 ? 3 + i * 2 : 13;
         draw_button_style(34, y, 43, y + 2, 8, "  Keep",
-                          !NewSongClear[i], focus == 3 + i * 2);
+                          !NewSongClear[i], focus == keep);
         draw_button_style(44, y, 54, y + 2, 8, "  Clear",
-                          NewSongClear[i], focus == 4 + i * 2);
+                          NewSongClear[i], focus == keep + 1);
     }
-    draw_button_style(27, 35, 38, 37, 8, "    OK", 0, focus == 11);
-    draw_button_style(40, 35, 51, 37, 8, "  Cancel", 0, focus == 12);
+    draw_button_style(27, 38, 38, 40, 8, "    OK", 0, focus == 11);
+    draw_button_style(40, 38, 51, 40, 8, "  Cancel", 0, focus == 12);
 }
 
 /* returns 1 for OK, 0 for Cancel / Esc */
@@ -13154,21 +13165,22 @@ static int new_song_dialog(void)
         case ITK_ENTER:
             if (focus == 11) return 1;
             if (focus == 12) return 0;
-            NewSongClear[(focus - 3) / 2] = (focus - 3) & 1;
+            NewSongClear[new_song_var(focus)] = new_song_val(focus);
             break;
         case ITK_MOUSE: {
             it_mouse_t m;
             int i;
             Screen_GetMouse(&m);
-            for (i = 0; i < 4; i++) {
+            for (i = 0; i < 5; i++) {
                 int y = 23 + i * 3;
+                int keep = i < 4 ? 3 + i * 2 : 13;
                 if (mouse_in(&m, 34, y, 43, y + 2))
-                    { NewSongClear[i] = 0; focus = 3 + i * 2; }
+                    { NewSongClear[i] = 0; focus = keep; }
                 if (mouse_in(&m, 44, y, 54, y + 2))
-                    { NewSongClear[i] = 1; focus = 4 + i * 2; }
+                    { NewSongClear[i] = 1; focus = keep + 1; }
             }
-            if (mouse_in(&m, 27, 35, 38, 37)) return 1;
-            if (mouse_in(&m, 40, 35, 51, 37)) return 0;
+            if (mouse_in(&m, 27, 38, 38, 40)) return 1;
+            if (mouse_in(&m, 40, 38, 51, 40)) return 0;
             break; }
         default: break;
         }
@@ -13194,6 +13206,18 @@ static void new_song_selected(void)
     }
     if (NewSongClear[2])
         Music_ClearAllInstruments();
+    if (NewSongClear[4]) {              /* Variables (extension): the F12
+                                           values of an empty song */
+        Song.Header.IS = 6;
+        Song.Header.IT = 125;
+        Song.Header.GV = 128;
+        Song.Header.MV = 48;
+        Song.Header.Sep = 128;
+        Song.Header.PWD = 0;
+        Song.Header.Flags = ITF_STEREO | ITF_LINEAR_SLIDES;  /* sample mode */
+        Music_InitStereo();
+        Music_InitTempo();
+    }
     if (NewSongClear[3]) {              /* song name, time, pannings,
                                            channel volumes, orders */
         memset(Song.Header.SongName, 0, sizeof(Song.Header.SongName));

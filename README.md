@@ -328,6 +328,11 @@ places where it deliberately or unavoidably differs.
 - **Ctrl-F2** pushes one undo snapshot of the current pattern before
   resizing; the original's resize isn't undoable.
 - **Replacing an instrument** asks "Replace instrument N?" first.
+- **New Song (Ctrl-N)** has an extra row, **Variables Keep / Clear**
+  (default Keep). Clear also resets the Song Variables (tempo, speed,
+  volumes, separation, effect and playback flags, sample mode) to an
+  empty song's values; IT keeps them whatever you choose. With Keep the
+  dialog does exactly what IT's does; the box is three rows taller.
 - **Ctrl-D (DOS Shell)** isn't offered, since there's no DOS to shell
   to; the help doesn't list it (#28). Ctrl-E redraws the screen, Ctrl-I
   reopens the audio device, Ctrl-M shows/hides the mouse pointer.
