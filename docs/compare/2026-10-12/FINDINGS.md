@@ -51,19 +51,19 @@ Pattern Editor Options.
 
 ## Findings
 
-| # | Finding | Kind |
-|---|---|---|
-| M1 | Buttons are clickable over their whole box in it26; in IT, normal buttons (box styles 8-15, 24-27) only inside, inset 7 pixels -- in practice the label row | hit area |
-| M2 | Pattern editor: IT 2.14 ignores the mouse; it26 moves the cursor to the clicked cell | extra behaviour |
-| M3 | F11 order list: IT ignores clicks; it26 moves the order cursor | extra behaviour |
-| M4 | F9 / F10 file screens: IT ignores clicks (no mouse events in `IT_DISK.ASM`); it26 selects files, drives, fields | extra behaviour |
-| M5 | F11: a click on a muted channel's slider unmutes it in IT and sets the pan; it26 keeps "Muted" | behaviour |
-| M6 | F11: the selected channel's label is 23h in IT, 30h in it26 (keyboard focus too) | colour |
-| M7 | Menus: a click doesn't move IT's keyboard focus (the previously focused item keeps its 23h label); it26 moves it to the clicked item | colour |
-| M8 | F12: changing the initial tempo updates it26's header (Speed/Tempo 006/192); IT's header keeps showing the current tempo | text |
-| M9 | "Initialise instruments?": IT's buttons are OK / No and the header still says "Sample" while asking; it26 has OK / Cancel and already "Instrument" | text |
-| M10 | F4 envelope: a click inserts a node at that point in IT; it26 changes another node (node 0 got the value) | behaviour |
-| M11 | F4 Panning page: a click to the right of the "Default Pan" toggle's text switches it in it26, not in IT | hit area |
+| # | Finding | Kind | Decision / status |
+|---|---|---|---|
+| M1 | Buttons are clickable over their whole box in it26; in IT, normal buttons (box styles 8-15, 24-27) only inside, inset 7 pixels -- in practice the label row | hit area | fixed (c727b82) |
+| M2 | Pattern editor: IT 2.14 ignores the mouse; it26 moves the cursor to the clicked cell | extra behaviour | kept, documented (README) |
+| M3 | F11 order list: IT ignores clicks; it26 moves the order cursor | extra behaviour | kept, documented (README) |
+| M4 | F9 / F10 file screens: IT ignores clicks (no mouse events in `IT_DISK.ASM`); it26 selects files, drives, fields | extra behaviour | kept, documented (README) |
+| M5 | F11: a click on a muted channel's slider unmutes it in IT and sets the pan; it26 keeps "Muted" | behaviour | fixed (94212c1) |
+| M6 | F11: the selected channel's label is 23h in IT, 30h in it26 (keyboard focus too) | colour | fixed (075e8c4) |
+| M7 | Menus: a click doesn't move IT's keyboard focus (the previously focused item keeps its 23h label); it26 moves it to the clicked item | colour | kept, documented (README) |
+| M8 | F12: changing the initial tempo updates it26's header (Speed/Tempo 006/192); IT's header keeps showing the current tempo | text | fixed (84e042b) |
+| M9 | "Initialise instruments?": IT's buttons are OK / No and the header still says "Sample" while asking; it26 has OK / Cancel and already "Instrument" | text | fixed (e018e28) |
+| M10 | F4 envelope: a click inserts a node at that point in IT; it26 changes another node (node 0 got the value) | behaviour | fixed (959f52e) |
+| M11 | F4 Panning page: "Default Pan" read On in it26 and Off in IT 2.14 (first taken for a toggle hit area; the click hit nothing on either side) | display | fixed (34c7d03): follows 2.14 |
 
 Not findings: the shifted envelope layout on F4's Volume / Panning /
 Pitch pages and the "Default Cutoff / Resonance" rows ("Carry" and the
@@ -156,9 +156,25 @@ three nodes).
 
 ![M10](img/m10_envelope_click.png)
 
-## M11 — Toggle hit area
+## M11 — "Default Pan" display (reclassified)
 
-On F4's Panning page a click at column 60 of the "Default Pan" row
-switches the toggle in it26; IT only reacts on the toggle's text.
+First filed as a toggle hit area; on a closer look the click hit nothing
+on either side. The difference is the value shown before the click:
+JEFF93.IT's instruments have DfP = A0h. Playback uses the instrument pan
+while bit 7 is clear (InitPlayInstrument: Test AL,80h / JNZ skip), so
+this pan isn't used, and IT 2.14 shows "Off". The 2.17 source's toggle
+shows the raw bit, "On". it26 now follows 2.14.
 
 ![M11](img/m11_toggle_area.png)
+
+---
+
+## Rerun after the decisions (2026-10-12)
+
+All 20 compare scripts rerun with both sides fresh (`build-compare/rerun3`).
+The mouse scripts match IT 2.14 apart from the kept extensions (M2 pattern
+editor, M3 order list, M4 file screens, M7 menu focus) and the 2.17
+layout of F4's envelope pages; the other scripts are unchanged from the
+round-2 rerun, except `new_song_keep.hds`, which now steps over it26's
+Variables row with an extra `@port` key. Selftest 20/20, determinism
+IDENTICAL.

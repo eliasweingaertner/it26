@@ -328,6 +328,13 @@ places where it deliberately or unavoidably differs.
 - **Ctrl-F2** pushes one undo snapshot of the current pattern before
   resizing; the original's resize isn't undoable.
 - **Replacing an instrument** asks "Replace instrument N?" first.
+- **Mouse where IT 2.14 has none:** a click into the pattern editor
+  moves the cursor to that cell, a click into the F11 order list moves
+  the order cursor, and the file screens (F9, F10, Load Sample, Load
+  Instrument) take clicks on files, directories, drives and fields. IT
+  2.14 ignores the mouse in all of these.
+- **Menus:** a mouse click on a menu item also moves the menu's keyboard
+  selection there; IT leaves the selection where it was.
 - **New Song (Ctrl-N)** has an extra row, **Variables Keep / Clear**
   (default Keep). Clear also resets the Song Variables (tempo, speed,
   volumes, separation, effect and playback flags, sample mode) to an

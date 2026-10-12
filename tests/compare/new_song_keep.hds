@@ -18,6 +18,8 @@ stable
 key up
 key up
 key up
+# it26's extra Variables row (extension) sits between Order List and OK
+@port key up
 stable
 key enter
 stable
@@ -25,6 +27,7 @@ capture ns_dialog_keep_samples
 key down
 key down
 key down
+@port key down
 key enter
 stable
 key f12
