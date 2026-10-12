@@ -357,6 +357,11 @@ static void status(const char *fmt, ...)
 enum { WT_BUTTON = 1, WT_THUMB, WT_TOGGLE, WT_TEXT, WT_LIST,
        WT_NUM3, WT_CUSTOM };
 
+/* set while "Initialise instruments?" is open: IT sets the instrument
+ * flag first but doesn't redraw the screen under the dialog -- header
+ * still "Sample", the clicked button without its focus highlight (M9) */
+static int HeaderAsSample;
+
 typedef struct widget_t {
     uint8_t type;
     int x0, y0, x1, y1;            /* hit box, inclusive cell coords */
@@ -659,7 +664,7 @@ static void widgets_draw(void)
     if (FocusIdx[Screen] >= NW)
         FocusIdx[Screen] = 0;
     for (i = 0; i < NW; i++)
-        widget_draw(&W[i], i == FocusIdx[Screen]);
+        widget_draw(&W[i], i == FocusIdx[Screen] && !HeaderAsSample);
 }
 
 /* directional focus movement; approximates the original per-object
@@ -1009,6 +1014,7 @@ static int count_active_channels(void)
     return n;
 }
 
+
 static void draw_chrome(const char *title)
 {
     int nums[2];
@@ -1026,8 +1032,8 @@ static void draw_chrome(const char *title)
               : (Screen == SCR_SAMPLES) ? 3
               : (Screen == SCR_INSTRUMENTS) ? 4 : 0;
     int hnum = (hmode == 4) ? NoteSampleNumber : CurInstr;
-    int hins = (hmode == 3 || hmode == 13 || hmode == 4) ? 0
-             : (Song.Header.Flags & ITF_INSTRUMENTS) != 0;
+    int hins = (hmode == 3 || hmode == 13 || hmode == 4 || HeaderAsSample)
+             ? 0 : (Song.Header.Flags & ITF_INSTRUMENTS) != 0;
     Screen_DrawStringCtl(38, 3, hins ? HeaderMsg2 : HeaderMsg3, 0x20, NULL);
     Screen_DrawStringCtl(2, 4, HeaderMsg4, 0x20, nums);
 
@@ -1873,8 +1879,19 @@ static int thumb_hit(const it_mouse_t *m, int barx, int bary, int min,
     return 1;
 }
 
+static int confirm_box_ex(const char *text, int default_yes,
+                          void (*bg)(void), const char *nolabel);
+
 static int confirm_box_bg(const char *text, int default_yes,
                           void (*bg)(void))
+{
+    return confirm_box_ex(text, default_yes, bg, " Cancel");
+}
+
+/* nolabel: the second button's text, " Cancel" (ConfirmOverWriteCancel-
+ * Button) or "   No" (ConfirmInitialiseNoButton, same place) */
+static int confirm_box_ex(const char *text, int default_yes,
+                          void (*bg)(void), const char *nolabel)
 {
     int sel = default_yes ? 0 : 1;
 
@@ -1898,7 +1915,7 @@ static int confirm_box_bg(const char *text, int default_yes,
         tx = 40 - ((int)strlen(text) - 1) / 2;
         Screen_DrawString(tx, 27, text, 0x20);
         draw_button_style(30, 29, 39, 31, 8, "   OK", 0, sel == 0);
-        draw_button_style(41, 29, 50, 31, 8, " Cancel", 0, sel == 1);
+        draw_button_style(41, 29, 50, 31, 8, nolabel, 0, sel == 1);
         Screen_Update();
 
         key = ed_get_key();
@@ -10106,8 +10123,18 @@ static void act_enable_instruments(void)
 {
     int s, n;
 
-    if (!confirm_box("Initialise instruments?"))
-        return;
+    /* F_SetControlInstrument (IT_F.ASM 4810): the flag is already set;
+     * O1_InitialiseInstrumentList asks with OK / No over the screen as
+     * it was, header still "Sample", focus on OK (CX = 3) (M9) */
+    {
+        int yes;
+        HeaderAsSample = 1;
+        yes = confirm_box_ex("Initialise instruments?", 1, draw_screen,
+                             "   No");
+        HeaderAsSample = 0;
+        if (!yes)
+            return;
+    }
 
     ed_lock();
     Music_ClearAllInstruments();
