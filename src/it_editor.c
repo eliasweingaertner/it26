@@ -10050,7 +10050,16 @@ static void pan_from_px(int chan, int bx, int mpx)
     int p = mpx - (bx * 8 + 4);
     if (p < 0) p = 0;
     if (p > 64) p = 64;
-    pan_set(chan, p);
+    if (OrderVolMode) {
+        pan_set(chan, p);
+        return;
+    }
+    /* the mouse writes the plain value (SetPanning, IT_F.ASM 1238): a
+     * click on a muted or surround channel's bar sets a pan of 0..64
+     * and so unmutes it (M5) */
+    ed_lock();
+    Song.Header.ChnlPan[chan] = (uint8_t)p;
+    ed_unlock();
 }
 
 static void pan_col_lclick(int row, int mx, int mpx, int base, int bx)
