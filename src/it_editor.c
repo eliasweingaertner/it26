@@ -10129,23 +10129,13 @@ static void act_enable_instruments(void)
  * Tempo by Music_Stop on every play). While stopped, mirror it into the
  * runtime Tempo so the header display stays consistent (as for Speed);
  * while playing, leave the live Txx-driven Tempo alone. */
-static void act_tempo_changed(void)
-{
-    ed_lock();
-    if (PlayMode == 0) {
-        Tempo = (uint8_t)Song.Header.IT;
-        Music_InitTempo();
-    }
-    ed_unlock();
-}
-
-static void act_speed_changed(void)
-{
-    ed_lock();
-    if (PlayMode == 0)
-        CurrentSpeed = Song.Header.IS;
-    ed_unlock();
-}
+/* Initial Tempo / Speed only set the song header (SetMusicVariables,
+ * IT_F.ASM: offsets 33h/32h get no follow-up, unlike Global Volume 30h
+ * and Mixing Volume 31h). The running tempo and speed, and the header
+ * line showing them, change at the next playback start, when Music_Stop
+ * reseeds them from the header (M8). */
+static void act_tempo_changed(void) { }
+static void act_speed_changed(void) { }
 
 /* Global Volume is the live mixing scalar (GlobalVolume); push the edit
  * straight into it so it takes effect while playing, not just on next
