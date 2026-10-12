@@ -95,8 +95,9 @@ def cmd_compare_run(a):
         a.dos_only = a.port_only = True
     if not a.port_only:
         shutil.rmtree(out / "dos", ignore_errors=True)
+        mouse = "C:\\CTMOUSE.EXE >NUL\n" if script.uses_mouse(text) else ""
         m = DosMachine(out / "_vm", data_dir=a.data,
-                       run_bat=f"@ECHO OFF\n{a.cmd}\n", memory=a.memory)
+                       run_bat=f"@ECHO OFF\n{mouse}{a.cmd}\n", memory=a.memory)
         try:
             m.start(timeout=120)
             m.wait_stable(quiet=1.0, timeout=30)

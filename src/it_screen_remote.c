@@ -18,6 +18,9 @@
  *                                   {"cols","rows","cursor","chars","attrs"}
  *                                   (hex, CP437) -> "@ok"
  *   shot <file.bmp>                 sync, then Screen_WriteBMP -> "@ok"
+ *   mouse <px> <py> <b>             pointer at logical pixel (0..639,
+ *                                   0..399), left button b (0/1); a press
+ *                                   queues ITK_MOUSE (no reply)
  *   quit                            deliver ITK_QUIT
  * Errors reply "@err <text>".
  */
@@ -160,6 +163,20 @@ static int write_dump(const char *path)
     return 1;
 }
 
+/* Mouse (compare harness): "mouse px py b" sets the pointer to logical
+ * pixel (px,py) of the 640x400 screen and the left button state. A
+ * press delivers ITK_MOUSE, like WM_LBUTTONDOWN in the Win32 backend;
+ * moves and the release only change the state the editor polls (drags,
+ * held buttons). */
+static it_mouse_t RmMouse;
+
+static void RM_Mouse(it_mouse_t *m)
+{
+    rm_lock(&Mutex);
+    *m = RmMouse;
+    rm_unlock(&Mutex);
+}
+
 /* Called from the editor's key loops (main thread). Returns 1 with an
  * event, or 0 = nothing pending, exactly like the pixel backends. */
 static int RM_KeyEvent(it_key_t *k)
@@ -207,6 +224,48 @@ static int RM_KeyEvent(it_key_t *k)
             return 1;
         }
 
+        if (!strncmp(line, "mouse ", 6)) {
+            long v[3];
+            char *p = line + 6, *end;
+            int i, press;
+            for (i = 0; i < 3; i++) {
+                v[i] = strtol(p, &end, 0);
+                if (end == p)
+                    break;
+                p = end;
+            }
+            rm_lock(&Mutex);
+            LineHead = (LineHead + 1) % RM_LINES;
+            if (i == 3) {
+                if (v[0] < 0) v[0] = 0;
+                if (v[0] > 639) v[0] = 639;
+                if (v[1] < 0) v[1] = 0;
+                if (v[1] > 399) v[1] = 399;
+                press = v[2] && !RmMouse.b;
+                RmMouse.px = (int)v[0];
+                RmMouse.py = (int)v[1];
+                RmMouse.x = RmMouse.px / 8;
+                RmMouse.y = RmMouse.py / 8;
+                RmMouse.b = v[2] ? 1 : 0;
+            } else {
+                press = 0;
+            }
+            rm_unlock(&Mutex);
+            if (i < 3) {
+                reply("@err mouse needs: px py buttons");
+                continue;
+            }
+            IdlePolls = 0;
+            if (press) {
+                k->scan = 0;
+                k->flags = ITKF_PRESSED;
+                k->ch = 0;
+                k->code = ITK_MOUSE;
+                return 1;
+            }
+            continue;
+        }
+
         if (!strcmp(line, "sync") || !strncmp(line, "dump ", 5) ||
             !strncmp(line, "shot ", 5)) {
             if (IdlePolls < RM_IDLE_POLLS) {    /* not idle yet: come back */
@@ -239,5 +298,5 @@ static int RM_KeyEvent(it_key_t *k)
 }
 
 const screen_backend_t Screen_BackendRemote = {
-    RM_Init, RM_UnInit, RM_Present, RM_Key, NULL, RM_KeyEvent
+    RM_Init, RM_UnInit, RM_Present, RM_Key, RM_Mouse, RM_KeyEvent
 };

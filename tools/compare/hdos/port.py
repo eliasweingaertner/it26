@@ -293,6 +293,35 @@ class PortMachine:
         for c in text:
             self.key("enter" if c == "\n" else "space" if c == " " else c)
 
+    # ---- mouse (same signatures as DosMachine) ---------------------------
+    # The remote backend takes absolute logical pixels (640x400); a press
+    # queues ITK_MOUSE, moves and the release update the polled state.
+
+    _mx = _my = 0
+    _mb = 0
+
+    def _mouse(self) -> None:
+        self._send(f"mouse {self._mx} {self._my} {self._mb}")
+        self.sync()
+
+    def mouse_to(self, px: int, py: int, home: bool = True, steps: int = 1) -> None:
+        x0, y0 = self._mx, self._my
+        for i in range(1, steps + 1):
+            self._mx = x0 + (px - x0) * i // steps
+            self._my = y0 + (py - y0) * i // steps
+            self._mouse()
+
+    def mouse_down(self) -> None:
+        self._mb = 1
+        self._mouse()
+
+    def mouse_up(self) -> None:
+        self._mb = 0
+        self._mouse()
+
+    def mouse_park(self) -> None:
+        pass                    # the port draws no pointer into the cells
+
     # ---- output ---------------------------------------------------------
 
     def screen(self) -> TextScreen:

@@ -61,6 +61,26 @@ waittext Drifting Onwards  # regex on the text screen
 mask 9,62,9,79             # row0,col0,row1,col1, ignored in every capture
 ```
 
+Mouse (left button; a cell is targeted at its centre pixel of the
+640x400 screen):
+
+```
+click 38 30                # move there, press, release
+clickpx 300 243            # the same at a logical pixel
+drag 31 23 22 23           # press, move with the button held, release
+mousemove 10 10 / mousedown / mouseup
+```
+
+A script with mouse commands gets CuteMouse loaded on the DOS side (it is
+downloaded with the FreeDOS image into `.work/cache` and put into the boot
+image's `C:\`). The pointer is parked bottom-right before every capture
+and cell (49,79) is masked, because IT 2.14 draws the pointer into the
+text screen. QEMU's mouse is relative: the harness pushes the pointer into
+the top-left corner, then steps at most 4 counts per packet (1 count = 1
+pixel across, 2 counts = 1 pixel down; bigger packets get accelerated).
+The port side takes absolute positions (`mouse px py b` in the remote
+backend).
+
 `tests/compare/it_play_jeff93.hds` has no port side: it is for `run`
 (`--cmd "IT /S5" --audio x.wav`), to record IT 2.14's output.
 

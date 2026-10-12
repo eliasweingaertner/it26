@@ -263,6 +263,61 @@ class DosMachine:
         self.qmp.cmd("input-send-event", events=[
             {"type": "btn", "data": {"button": button, "down": down}}])
 
+    # Absolute pointer positioning for scripts, on top of QEMU's relative
+    # PS/2 mouse and CuteMouse (loaded by RUN.BAT for mouse scripts).
+    # Measured against IT 2.14 (text mode, 640x400 logical pixels):
+    # 1 count = 1 pixel horizontally, 2 counts = 1 pixel vertically, and
+    # moves of up to 4 counts per packet stay linear -- bigger ones are
+    # accelerated. So: push the pointer into the top-left corner (moves
+    # clamp there), then step at most 4 counts at a time.
+    MOUSE_STEP = 4
+    MOUSE_DELAY = 0.005
+    _mpos = None                # (px, py) after a home, else unknown
+
+    def _mouse_counts(self, cx: int, cy: int) -> None:
+        while cx or cy:
+            sx = max(-self.MOUSE_STEP, min(self.MOUSE_STEP, cx))
+            sy = max(-self.MOUSE_STEP, min(self.MOUSE_STEP, cy))
+            self.mouse_move(sx, sy)
+            cx -= sx
+            cy -= sy
+            time.sleep(self.MOUSE_DELAY)
+
+    def mouse_home(self) -> None:
+        for _ in range(60):
+            self.mouse_move(-10, -10)
+            time.sleep(self.MOUSE_DELAY)
+        time.sleep(0.1)
+        self._mpos = (0, 0)
+
+    def mouse_to(self, px: int, py: int, home: bool = True, steps: int = 1) -> None:
+        """Pointer to logical pixel (px, py). home=False moves relative to
+        the last known position (for drags, where the button is held)."""
+        if home or self._mpos is None:
+            self.mouse_home()
+        x0, y0 = self._mpos
+        self._mouse_counts(px - x0, 2 * (py - y0))
+        self._mpos = (px, py)
+        time.sleep(0.1)
+
+    def mouse_down(self) -> None:
+        self.mouse_button("left", True)
+        time.sleep(0.15)
+
+    def mouse_up(self) -> None:
+        self.mouse_button("left", False)
+        time.sleep(0.15)
+
+    def mouse_park(self) -> None:
+        """IT draws its pointer into the text screen (a 3x3 block of
+        redefined characters): park it bottom-right before a capture, where
+        only cell (49,79) shows it -- the scripts mask that cell."""
+        for _ in range(80):
+            self.mouse_move(10, 10)
+            time.sleep(self.MOUSE_DELAY)
+        time.sleep(0.2)
+        self._mpos = None
+
     # ---- output ---------------------------------------------------------
 
     def read_mem(self, addr: int, size: int) -> bytes:

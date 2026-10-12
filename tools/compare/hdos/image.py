@@ -34,6 +34,12 @@ MEMORY = {
 
 FREEDOS_URL = ("https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/"
                "distributions/1.4/FD14-LiteUSB.zip")
+# CuteMouse, the FreeDOS mouse driver (int 33h on QEMU's PS/2 mouse); the
+# LiteUSB image doesn't include it. It sits in C:\ and is loaded only by
+# scripts that use the mouse (IT draws the pointer into the text screen)
+CTMOUSE_URL = ("https://www.ibiblio.org/pub/micro/pc-stuff/freedos/files/"
+               "repositories/1.4/base/ctmouse.zip")
+IMAGE_REV = 2          # bump when the boot image contents change
 
 PART_LBA = 63          # first partition starts at sector 63 (CHS-aligned)
 HEADS, SPT = 16, 63
@@ -84,10 +90,22 @@ def fetch_freedos() -> Path:
     return img
 
 
+def fetch_ctmouse() -> bytes:
+    """Download the CuteMouse package and return BIN/CTMOUSE.EXE."""
+    dest = CACHE / "ctmouse"
+    zpath = dest / "ctmouse.zip"
+    if not zpath.exists():
+        dest.mkdir(parents=True, exist_ok=True)
+        print(f"downloading {CTMOUSE_URL}")
+        urllib.request.urlretrieve(CTMOUSE_URL, zpath)
+    with zipfile.ZipFile(zpath) as z:
+        return z.read("BIN/CTMOUSE.EXE")
+
+
 def build_boot_image(memory: str = "ems", force: bool = False) -> Path:
     """Create images/boot-<memory>.img: FreeDOS that boots straight to
     D:\\RUN.BAT. `memory` picks the memory manager (see MEMORY)."""
-    out = IMAGES / f"boot-{memory}.img"
+    out = IMAGES / f"boot-{memory}-r{IMAGE_REV}.img"
     if out.exists() and not force:
         return out
     src = fetch_freedos()
@@ -99,6 +117,8 @@ def build_boot_image(memory: str = "ems", force: bool = False) -> Path:
         fs.writebytes("/fdconfig.sys",
                       _lines_crlf(FDCONFIG.format(memdev=MEMORY[memory])))
         fs.writebytes("/fdauto.bat", _lines_crlf(FDAUTO))
+        fs.create("/CTMOUSE.EXE")                 # new files need create()
+        fs.writebytes("/CTMOUSE.EXE", fetch_ctmouse())
         if fs.exists("/setup.bat"):
             fs.remove("/setup.bat")
     finally:
