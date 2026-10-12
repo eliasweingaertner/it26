@@ -1,0 +1,36 @@
+# Mouse in the pattern editor (JEFF93.IT): cells, channel header, row
+# numbers, a drag across cells.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f2
+stable
+capture mpe_start
+click 22 20
+stable
+capture mpe_click_ch2_note_row5
+click 40 25
+stable
+capture mpe_click_ch3_instr_row10
+click 55 30
+stable
+capture mpe_click_ch4_cmd_row15
+click 22 14
+stable
+capture mpe_click_ch2_header
+click 2 22
+stable
+capture mpe_click_rownumber
+drag 8 17 30 21
+stable
+capture mpe_drag_cells
+click 75 47
+stable
+capture mpe_click_row47

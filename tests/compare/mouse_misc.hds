@@ -1,0 +1,33 @@
+# Mouse on the F9 file screen and the button hit area (Alt-X dialog:
+# Cancel's border row vs its label row).
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+click 8 14
+stable
+capture mx_f9_click_file2
+click 30 13
+stable
+capture mx_f9_click_songname
+click 66 14
+stable
+capture mx_f9_click_drive
+key f9
+stable
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f3
+stable
+key alt-x
+stable
+click 40 29
+stable
+capture mx_cancel_border_row
+click 40 30
+stable
+capture mx_cancel_label_row

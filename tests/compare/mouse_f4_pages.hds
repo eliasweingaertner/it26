@@ -1,0 +1,42 @@
+# Mouse on F4's Volume / Panning pages (sliders, envelope) and in the
+# Pattern Editor Options dialog (JEFF93.IT).
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f4
+stable
+click 48 13
+stable
+drag 70 30 60 30
+stable
+capture mp4_drag_global_volume
+click 60 31
+stable
+capture mp4_click_fadeout
+click 60 47
+stable
+capture mp4_click_swing
+click 50 22
+stable
+capture mp4_click_envelope
+click 60 13
+stable
+capture mp4_panning_page
+click 60 30
+stable
+capture mp4_click_pan_slider
+key f2
+stable
+key f2
+stable
+capture mp4_pe_options
+click 44 22
+stable
+capture mp4_pe_options_click

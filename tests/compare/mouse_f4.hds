@@ -1,0 +1,41 @@
+# Mouse on F4 Instrument List (JEFF93.IT): list, NNA / DCT / DCA buttons,
+# note table, page buttons.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f4
+stable
+click 12 26
+stable
+capture mi_click_instr14
+click 60 22
+stable
+capture mi_click_nna_continue
+click 52 37
+stable
+capture mi_click_dct_note
+click 69 37
+stable
+capture mi_click_dca_note_off
+click 37 20
+stable
+capture mi_click_note_table
+click 48 13
+stable
+capture mi_click_page_volume
+click 60 13
+stable
+capture mi_click_page_panning
+click 71 13
+stable
+capture mi_click_page_pitch
+click 35 13
+stable
+capture mi_click_page_general

@@ -1,0 +1,49 @@
+# Mouse on F3 Sample List (JEFF93.IT): list, sliders, toggles, buttons.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f3
+stable
+click 10 15
+stable
+capture ms_click_sample3
+drag 46 16 40 16
+stable
+capture ms_drag_default_volume
+click 41 23
+stable
+capture ms_click_global_volume
+click 39 30
+stable
+capture ms_click_pan_toggle
+click 43 31
+stable
+capture ms_click_pan_bar
+click 70 37
+stable
+capture ms_click_wave_ramp
+click 60 39
+stable
+capture ms_click_wave_square
+click 70 39
+stable
+capture ms_click_wave_random
+drag 38 39 44 39
+stable
+capture ms_drag_vib_speed
+click 41 46
+stable
+capture ms_click_vib_depth
+click 63 46
+stable
+capture ms_click_vib_rate
+click 64 15
+stable
+capture ms_click_loop_field

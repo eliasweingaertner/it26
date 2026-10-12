@@ -1,0 +1,45 @@
+# Mouse in menus and dialogs: main menu items, a submenu item, Ctrl-Q
+# Cancel, New Song Keep/Clear buttons.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key f2
+stable
+key esc
+stable
+click 20 22
+stable
+capture mm_click_playback_menu
+key esc
+stable
+click 20 19
+stable
+capture mm_click_file_menu
+click 40 30
+stable
+capture mm_click_save_as
+key f2
+stable
+key ctrl-q
+stable
+click 45 30
+stable
+capture mm_quit_click_cancel
+key ctrl-n
+stable
+click 38 27
+stable
+capture mm_new_click_keep_samples
+click 49 27
+stable
+capture mm_new_click_clear_samples
+key esc
+stable
+key esc
+stable
+click 20 43
+stable
+capture mm_click_message_editor
