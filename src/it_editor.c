@@ -4542,7 +4542,10 @@ static void draw_order(void)
             int bx = c ? 65 : 31;
             uint8_t pan = Song.Header.ChnlPan[chan];
 
-            drawf(bx - 11, 15 + i, sel ? 0x30 : 0x20,
+            /* HiLightPanning (IT_F.ASM): the focused pan bar's label in
+             * 23h; the volume bars' pre-function (GetPanning) doesn't
+             * highlight it (M6) */
+            drawf(bx - 11, 15 + i, (sel && !OrderVolMode) ? 0x23 : 0x20,
                   "Channel %02d", chan + 1);
             if (OrderVolMode) {         /* ChannelVol1..64: type 9, 0..64 */
                 draw_thumbbar(bx, 15 + i, 0, 64,
