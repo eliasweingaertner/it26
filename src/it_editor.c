@@ -3966,59 +3966,108 @@ static int env_ckey(int key)               /* I_PostEnvelope key model */
     return 0;
 }
 
-/* mouse on the envelope canvas: select/drag the node under the pointer
- * (I_MouseEnvelopePress / I_MouseEnvelopeDrag, pixel-precise) */
-static int env_node_at(const it_mouse_t *m)
+/* mouse on the envelope canvas (M10): I_GetMouseNode, I_MouseEnvelope-
+ * Press / Drag / Released (IT_I.ASM 7293..7690). The canvas is the 32x8
+ * cells at ENVELOPELEFT 32, ENVELOPETOP 18; node pixels
+ *   x = 32*8 + 250*Tick/UpperLimit + 3,
+ *   y = 18*8 + 61*(64 - AmplitudeCompensate - Amplitude)/64 + 1. */
+static int EnvMouseHeld;                    /* MouseNodeHeld */
+static int EnvLowerTick, EnvUpperTick;      /* Lower/UpperTickLimit */
+
+static int env_node_at(const it_mouse_t *m)          /* I_GetMouseNode */
 {
     env_t *e = cur_env();
     int comp = env_compensate(e), i;
 
     for (i = 0; i < e->Num; i++) {
-        int xp = 32*8 + e->NodePoints[i].Tick * 250 / EnvUpperLimit + 3;
-        int yp = 18*8 + 61 * (64 - comp - e->NodePoints[i].Magnitude)
-                        / 64 + 1;
-        if (m->px >= xp - 3 && m->px <= xp + 3 &&
-            m->py >= yp - 3 && m->py <= yp + 3)
+        int xp = 250 * e->NodePoints[i].Tick / EnvUpperLimit + 32*8 + 2;
+        int yp = ((244 * (64 - comp - e->NodePoints[i].Magnitude)) >> 8)
+                 + 18*8;
+        if (m->px >= xp && m->py >= yp && m->px <= xp + 2 &&
+            m->py <= yp + 2)
             return i;
     }
     return -1;
 }
 
-static void env_cdrag(const it_mouse_t *m)
+static int env_tick_at(int px)          /* (MouseX-259)*UpperLimit/250 */
 {
-    env_t *e = cur_env();
-    int comp = env_compensate(e);
-    int cur = CurrentNode, t, v;
-
-    if (!e->Num)
-        return;
-    v = 64 - comp - (m->py - 18*8 - 1) * 64 / 61;
-    if (v + comp < 0)  v = -comp;
-    if (v + comp > 64) v = 64 - comp;
-    ed_lock();
-    e->NodePoints[cur].Magnitude = (int8_t)v;
-    ed_unlock();
-    if (cur > 0) {
-        t = (m->px - 32*8 - 3) * EnvUpperLimit / 250;
-        if (t < e->NodePoints[cur - 1].Tick + 1)
-            t = e->NodePoints[cur - 1].Tick + 1;
-        if (cur + 1 < e->Num && t > e->NodePoints[cur + 1].Tick - 1)
-            t = e->NodePoints[cur + 1].Tick - 1;
-        if (t > MAXENVELOPETICK)
-            t = MAXENVELOPETICK;
-        ed_lock();
-        e->NodePoints[cur].Tick = (uint16_t)t;
-        ed_unlock();
-    }
+    int t = px - (32*8 + 3);
+    if (t < 0)
+        t = 0;
+    return (t * EnvUpperLimit + 125) / 250;
 }
 
-static void env_cclick(const it_mouse_t *m)
+static int env_value_at(int py, int comp)            /* 64 - y*64/61 */
 {
-    int i = env_node_at(m);
-    if (i >= 0) {
-        CurrentNode = i;
-        env_selected(cur_env());
+    int y = py - 18*8;
+    if (y < 0)
+        y = 0;
+    if (y > 61)
+        y = 61;
+    return 64 - (y << 6) / 61 - comp;
+}
+
+static void env_cclick(const it_mouse_t *m)      /* I_MouseEnvelopePress */
+{
+    env_t *e = cur_env();
+    int i = env_node_at(m), k;
+
+    EnvMouseHeld = 0;
+    if (i < 0) {
+        /* not on a node: create one there, if fewer than 25 and no node
+         * has that tick */
+        int tick, num = e->Num;
+        if (num >= 25)
+            return;
+        tick = env_tick_at(m->px);
+        if (tick > MAXENVELOPETICK)
+            tick = MAXENVELOPETICK;
+        for (i = 0; i < num; i++) {
+            if (tick == e->NodePoints[i].Tick)
+                return;
+            if (tick < e->NodePoints[i].Tick)
+                break;
+        }
+        ed_lock();
+        e->Num++;
+        if (i <= e->LpB) e->LpB++;
+        if (i <= e->LpE) e->LpE++;
+        if (i <= e->SLB) e->SLB++;
+        if (i <= e->SLE) e->SLE++;
+        for (k = num; k > i; k--)
+            e->NodePoints[k] = e->NodePoints[k - 1];
+        e->NodePoints[i].Tick = (uint16_t)tick;
+        e->NodePoints[i].Magnitude =
+            (int8_t)env_value_at(m->py, env_compensate(e));
+        ed_unlock();
     }
+    CurrentNode = i;                    /* I_MouseEnvelopeNodeFound1 */
+    env_selected(e);
+    EnvLowerTick = EnvUpperTick = 0;    /* node 0 stays at tick 0 */
+    if (i > 0) {
+        EnvLowerTick = e->NodePoints[i - 1].Tick + 1;
+        EnvUpperTick = (i + 1 < e->Num) ? e->NodePoints[i + 1].Tick - 1
+                                        : MAXENVELOPETICK;
+    }
+    EnvMouseHeld = 1;
+}
+
+static void env_cdrag(const it_mouse_t *m)        /* I_MouseEnvelopeDrag */
+{
+    env_t *e = cur_env();
+    int t;
+
+    if (!EnvMouseHeld || CurrentNode >= e->Num)
+        return;
+    t = env_tick_at(m->px);
+    if (t < EnvLowerTick) t = EnvLowerTick;
+    if (t > EnvUpperTick) t = EnvUpperTick;
+    ed_lock();
+    e->NodePoints[CurrentNode].Tick = (uint16_t)t;
+    e->NodePoints[CurrentNode].Magnitude =
+        (int8_t)env_value_at(m->py, env_compensate(e));
+    ed_unlock();
 }
 
 static void env_cdraw(int focused)         /* I_DrawEnvelope */
