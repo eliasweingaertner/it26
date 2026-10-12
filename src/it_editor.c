@@ -13761,28 +13761,69 @@ static void main_menu(void)
 /* ===================================================================
  * Global key dispatch
  * =================================================================== */
+/* Mouse in the pattern editor -- an extension: IT 2.14's pattern editor
+ * registers no mouse events (IT_PE.ASM), so it ignores clicks and drags
+ * (README fidelity notes). A click puts the cursor on the cell; a drag
+ * with the button held marks the block from the pressed cell to the one
+ * under the pointer, like a Shift selection (the cursor follows). */
+static int PeDrag = 0, PeDragRow, PeDragChan;
+
+static int pattern_cell_at(const it_mouse_t *m, int *row, int *ch, int *off)
+{
+    if (NumChansEdit <= 0 || m->y < 15 || m->y > 46 ||
+        m->x < 5 + ViewWidth || m->x >= 5 + ViewWidth + 14 * NumChansEdit)
+        return 0;
+    *row = TopRow + (m->y - 15);
+    *ch  = LeftChan + (m->x - 5 - ViewWidth) / 14;
+    *off = (m->x - 5 - ViewWidth) % 14;
+    return *row < (int)CurRows && *ch < 64;
+}
+
 static void pattern_click(void)
 {
     it_mouse_t m;
+    int row, ch, off;
 
     Screen_GetMouse(&m);
-    if (NumChansEdit > 0 &&
-        m.y >= 15 && m.y <= 46 && m.x >= 5 + ViewWidth &&
-        m.x < 5 + ViewWidth + 14 * NumChansEdit) {
-        int row = TopRow + (m.y - 15);
-        int ch  = LeftChan + (m.x - 5 - ViewWidth) / 14;
-        int off = (m.x - 5 - ViewWidth) % 14;
-
-        if (row < (int)CurRows && ch < 64) {
-            /* 9 cursor columns at cell offsets 0..2 (note), 2
-             * (octave), 4, 5, 7, 8, 10, 11, 12 */
-            static const int colmap[14] =
-                { 0, 0, 1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 8, 8 };
-            CurRow = row;
-            CurChan = ch;
-            CurCol = colmap[off];
-        }
+    if (pattern_cell_at(&m, &row, &ch, &off)) {
+        /* 9 cursor columns at cell offsets 0..2 (note), 2 (octave),
+         * 4, 5, 7, 8, 10, 11, 12 */
+        static const int colmap[14] =
+            { 0, 0, 1, 2, 2, 3, 4, 4, 5, 6, 6, 7, 8, 8 };
+        CurRow = row;
+        CurChan = ch;
+        CurCol = colmap[off];
+        PeDrag = 1;                     /* anchor for a drag selection */
+        PeDragRow = row;
+        PeDragChan = ch;
     }
+}
+
+static void pattern_drag(void)          /* main loop, button held */
+{
+    it_mouse_t m;
+    int row, ch, off;
+
+    Screen_GetMouse(&m);
+    if (!m.b || Screen != SCR_PATTERN) {
+        PeDrag = 0;
+        return;
+    }
+    if (m.y < 15) m.y = 15;             /* keep to the visible rows */
+    if (m.y > 46) m.y = 46;
+    if (!pattern_cell_at(&m, &row, &ch, &off))
+        return;
+    if (row == PeDragRow && ch == PeDragChan && !BlockMark)
+        return;                         /* a click, not a drag (yet) */
+    if (row == CurRow && ch == CurChan && BlockMark)
+        return;
+    BlockMark = 1;
+    BlockTop    = PeDragRow < row ? PeDragRow : row;
+    BlockBottom = PeDragRow < row ? row : PeDragRow;
+    BlockLeft   = PeDragChan < ch ? PeDragChan : ch;
+    BlockRight  = PeDragChan < ch ? ch : PeDragChan;
+    CurRow = row;
+    CurChan = ch;
 }
 
 /* Glbl_LeftBrace/RightBrace (speed) and Glbl_Left/RightSquareBracket
@@ -17957,6 +17998,8 @@ int main(int argc, char **argv)
             else if (W[DragIdx].cdrag)
                 W[DragIdx].cdrag(&m);
         }
+        if (PeDrag)                     /* pattern drag-select */
+            pattern_drag();
         /* F11 pan bar drag (issue #8) */
         if (PalDrag >= 0) {             /* palette bar drag (#44) */
             it_mouse_t m;

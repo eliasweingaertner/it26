@@ -54,7 +54,7 @@ Pattern Editor Options.
 | # | Finding | Kind | Decision / status |
 |---|---|---|---|
 | M1 | Buttons are clickable over their whole box in it26; in IT, normal buttons (box styles 8-15, 24-27) only inside, inset 7 pixels -- in practice the label row | hit area | fixed (c727b82) |
-| M2 | Pattern editor: IT 2.14 ignores the mouse; it26 moves the cursor to the clicked cell | extra behaviour | kept, documented (README) |
+| M2 | Pattern editor: IT 2.14 ignores the mouse; it26 moves the cursor to the clicked cell | extra behaviour | kept, documented (README); extended by drag-to-select a block |
 | M3 | F11 order list: IT ignores clicks; it26 moves the order cursor | extra behaviour | kept, documented (README) |
 | M4 | F9 / F10 file screens: IT ignores clicks (no mouse events in `IT_DISK.ASM`); it26 selects files, drives, fields | extra behaviour | kept, documented (README) |
 | M5 | F11: a click on a muted channel's slider unmutes it in IT and sets the pan; it26 keeps "Muted" | behaviour | fixed (94212c1) |
