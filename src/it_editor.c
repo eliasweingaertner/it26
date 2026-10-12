@@ -552,9 +552,9 @@ static void thumb_from_px(widget_t *w, int mpx)
 
 static int toggle_get(const widget_t *w)
 {
-    if (w->v8)
-        return (*w->v8 & (uint8_t)w->bit) != 0;
-    return (*w->v16 & w->bit) != 0;
+    int on = w->v8 ? (*w->v8 & (uint8_t)w->bit) != 0
+                   : (*w->v16 & w->bit) != 0;
+    return w->neg ? !on : on;           /* neg: On while the bit is clear */
 }
 
 static void toggle_flip(widget_t *w)
@@ -4501,7 +4501,12 @@ static void draw_instruments(void)
                 "\377\011 Default Pan\015\377\013 Pan Value\015\015"
                 "\377\004 Pitch-Pan Center\015Pitch-Pan Separation\015"
                 "\377\013 Pan swing", 0x20, NULL);
-            wtoggle8(54, 42, &ins->DfP, 0x80);
+            /* Default Pan: the instrument pan is used while DfP bit 7 is
+             * CLEAR (InitPlayInstrument, IT_MUSIC.ASM: Test AL,80h / JNZ
+             * skip). The 2.17 source's toggle shows the raw bit, i.e. "On"
+             * for a pan that isn't used; IT 2.14 shows it the other way
+             * round, as playback reads it -- follow 2.14 (M11). */
+            wtoggle8(54, 42, &ins->DfP, 0x80)->neg = 1;
             wthumb(54, 43, 0, 64, &ins->DfP, 0x7F, 0);
             fill(54, 44, 9, 0x9A, 0x02);           /* PanBoxFiller */
             wcustom(54, 45, 56, 45, ppc_cdraw, ppc_ckey, NULL);
