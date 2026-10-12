@@ -55,3 +55,21 @@ New this round:
 - Selftest: 20/20 blocks.
 - Determinism (`test_pattern`, four modules): IDENTICAL, hashes
   unchanged.
+
+## After the manual retest (2026-10-12)
+
+Fixed or added after the rerun, each compared again against IT 2.14:
+
+| Commit | Change | Check |
+|---|---|---|
+| c5997e2 | Palette screen: mouse clicks and slider drags (#44) | manual (the harness sends no mouse) |
+| a15b41c | New Song with Patterns on Clear resets the header's pattern count (#42) | `new_song_keep.hds` matches |
+| ce447db | New Song: extra **Variables** Keep/Clear row (extension, default Keep) | `mo_confirm_new` now differs from row 35 down, by design (README fidelity notes) |
+| b0a8679 | Undo: "Pattern n" entry when a pattern is entered; list cleared on load (#48) | `undo_patterns.hds` matches |
+| d56bece | Undo: restoring another pattern's entry applies it, no message (#48) | `undo_other_pattern.hds` matches |
+
+Checked and left as IT does it: New Song keeps the song flags (instrument
+mode), speed and tempo; F12 Tab switches between the two buttons of a
+row (their Tab link is Right); channel volumes take effect at the next
+playback start; Alt-N only marks the channel with "M" on row 47.
+
