@@ -884,6 +884,9 @@ static int widgets_key(int key)
     return 0;
 }
 
+static int button_hit(const it_mouse_t *m, int x0, int y0, int x1, int y1,
+                      int style);
+
 static void widgets_mouse(void)
 {
     it_mouse_t m;
@@ -894,6 +897,9 @@ static void widgets_mouse(void)
         widget_t *w = &W[i];
         if (m.x < w->x0 || m.x > w->x1 || m.y < w->y0 || m.y > w->y1)
             continue;
+        if (w->type == WT_BUTTON &&
+            !button_hit(&m, w->x0, w->y0, w->x1, w->y1, w->style))
+            continue;                   /* on the border: IT ignores it */
         FocusIdx[Screen] = i;
         switch (w->type) {
         case WT_BUTTON: button_press(w); break;
@@ -1838,6 +1844,19 @@ static int mouse_in(const it_mouse_t *m, int x0, int y0, int x1, int y1)
     return m->x >= x0 && m->x <= x1 && m->y >= y0 && m->y <= y1;
 }
 
+/* F_DrawButtonObject's click rectangle (IT_F.ASM 733): pixels x0*8+w ..
+ * x1*8+7-w and y0*8+w .. y1*8+7-w, with w from ButtonWidth -- 7 for box
+ * styles 8-15 and 24-27 (the normal raised buttons), 0 for the rest
+ * (e.g. menu items). A click on a normal button's border rows misses. */
+static int button_hit(const it_mouse_t *m, int x0, int y0, int x1, int y1,
+                      int style)
+{
+    int w = ((style >= 8 && style <= 15) || (style >= 24 && style <= 27))
+            ? 7 : 0;
+    return m->px >= x0 * 8 + w && m->px <= x1 * 8 + 7 - w &&
+           m->py >= y0 * 8 + w && m->py <= y1 * 8 + 7 - w;
+}
+
 /* a click on a plain thumbbar at (barx,bary): 1 when it hit the bar,
  * *v = the pointer's value (thumb_from_px mapping: one logical pixel per
  * step from 4px into the bar) */
@@ -1894,8 +1913,8 @@ static int confirm_box_bg(const char *text, int default_yes,
         case ITK_MOUSE: {
             it_mouse_t m;
             Screen_GetMouse(&m);
-            if (mouse_in(&m, 30, 29, 39, 31)) return 1;     /* OK */
-            if (mouse_in(&m, 41, 29, 50, 31)) return 0;     /* Cancel */
+            if (button_hit(&m, 30, 29, 39, 31, 8)) return 1;     /* OK */
+            if (button_hit(&m, 41, 29, 50, 31, 8)) return 0;     /* Cancel */
             break; }
         default: break;
         }
@@ -1950,7 +1969,7 @@ static int number_dialog(int tx, const char *text)
         if (key == ITK_MOUSE) {
             it_mouse_t m;
             Screen_GetMouse(&m);
-            if (mouse_in(&m, 35, 29, 44, 31))
+            if (button_hit(&m, 35, 29, 44, 31, 8))
                 return 0;
             if (mouse_in(&m, 41, 26, 45, 28))
                 focus = 3;
@@ -2038,7 +2057,7 @@ static long resize_dialog(uint32_t len)
         if (key == ITK_MOUSE) {
             it_mouse_t m;
             Screen_GetMouse(&m);
-            if (mouse_in(&m, 35, 29, 44, 31))
+            if (button_hit(&m, 35, 29, 44, 31, 8))
                 return -1;
             if (m.y == 27 && m.x >= 42 && m.x <= 48) {
                 focus = 3;
@@ -6742,8 +6761,8 @@ static void palette_mouse(void)
             return;
         }
     for (k = 0; k < 7; k++)
-        if (mouse_in(&m, PalButtons[k].x0, PalButtons[k].y0,
-                     PalButtons[k].x1, PalButtons[k].y1)) {
+        if (button_hit(&m, PalButtons[k].x0, PalButtons[k].y0,
+                       PalButtons[k].x1, PalButtons[k].y1, 8)) {
             PalFocus = 48 + k;
             palette_preset(k);
             return;
@@ -7847,7 +7866,7 @@ static void ok_dialog(int tx, const char *text)
         if (key == ITK_MOUSE) {
             it_mouse_t m;
             Screen_GetMouse(&m);
-            if (mouse_in(&m, 35, 29, 44, 31))
+            if (button_hit(&m, 35, 29, 44, 31, 8))
                 return;
         }
     }
@@ -8406,8 +8425,8 @@ static int amp_dialog(const ampbox_t *b, int *val, int alt)
         if (key == ITK_MOUSE) {
             it_mouse_t m;
             Screen_GetMouse(&m);
-            if (mouse_in(&m, 30, 32, 39, 34)) { *val = AmpVal; return 1; }
-            if (mouse_in(&m, 40, 32, 49, 34)) return 0;
+            if (button_hit(&m, 30, 32, 39, 34, 8)) { *val = AmpVal; return 1; }
+            if (button_hit(&m, 40, 32, 49, 34, 8)) return 0;
             if (thumb_hit(&m, bar, 30, lo, hi, &v)) {
                 AmpFocus = 0;
                 AmpVal = v;
@@ -8997,7 +9016,7 @@ static void pe_set_pattern_length(void)
             it_mouse_t m;
             int i, v;
             Screen_GetMouse(&m);
-            if (mouse_in(&m, 35, 30, 44, 32)) {         /* OK */
+            if (button_hit(&m, 35, 30, 44, 32, 8)) {         /* OK */
                 pe_apply_pattern_length();
                 return;
             }
@@ -9124,12 +9143,12 @@ static void pe_options_dialog(void)
             it_mouse_t m;
             int i, hv;
             Screen_GetMouse(&m);
-            if (mouse_in(&m, 34, 40, 45, 42))              /* Done */
+            if (button_hit(&m, 34, 40, 45, 42, 8))              /* Done */
                 break;
-            if (mouse_in(&m, 39, 37, 50, 39)) {            /* Link */
+            if (button_hit(&m, 39, 37, 50, 39, 8)) {            /* Link */
                 focus = 19; CommandToValue = 1; continue;
             }
-            if (mouse_in(&m, 51, 37, 63, 39)) {            /* Split */
+            if (button_hit(&m, 51, 37, 63, 39, 8)) {            /* Split */
                 focus = 20; CommandToValue = 0; continue;
             }
             for (i = 0; i < 5; i++)
@@ -9260,7 +9279,7 @@ static void pe_multichannel_menu(void)
             it_mouse_t m;
             int c;
             Screen_GetMouse(&m);
-            if (mouse_in(&m, 35, 39, 44, 41)) return;
+            if (button_hit(&m, 35, 39, 44, 41, 8)) return;
             for (c = 0; c < 64; c++)
                 if (mouse_in(&m, 20 + 16 * (c / 16), 22 + c % 16,
                              22 + 16 * (c / 16), 22 + c % 16)) {
@@ -10662,10 +10681,8 @@ static int stereo_choice_prompt(void)
         case ITK_MOUSE: {
             it_mouse_t m;
             Screen_GetMouse(&m);
-            if (m.y >= 26 && m.y <= 28) {
-                if (m.x >= 30 && m.x <= 39) return 64;
-                if (m.x >= 40 && m.x <= 50) return 64 + 128;
-            }
+            if (button_hit(&m, 30, 26, 39, 28, 8)) return 64;
+            if (button_hit(&m, 40, 26, 50, 28, 8)) return 64 + 128;
             break; }
         default:
             break;
@@ -13207,13 +13224,13 @@ static int new_song_dialog(void)
             for (i = 0; i < 5; i++) {
                 int y = 23 + i * 3;
                 int keep = i < 4 ? 3 + i * 2 : 13;
-                if (mouse_in(&m, 34, y, 43, y + 2))
+                if (button_hit(&m, 34, y, 43, y + 2, 8))
                     { NewSongClear[i] = 0; focus = keep; }
-                if (mouse_in(&m, 44, y, 54, y + 2))
+                if (button_hit(&m, 44, y, 54, y + 2, 8))
                     { NewSongClear[i] = 1; focus = keep + 1; }
             }
-            if (mouse_in(&m, 27, 38, 38, 40)) return 1;
-            if (mouse_in(&m, 40, 38, 51, 40)) return 0;
+            if (button_hit(&m, 27, 38, 38, 40, 8)) return 1;
+            if (button_hit(&m, 40, 38, 51, 40, 8)) return 0;
             break; }
         default: break;
         }
