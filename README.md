@@ -323,6 +323,8 @@ places where it deliberately or unavoidably differs.
   there is no `CACHE.ITS` / `CACHE.ITI`, and saving an edited sample
   keeps its file format (the original always wrote ITS data, even under
   a `.WAV` name).
+- **Long folder names** on F9 / F10 show their first 12 characters (DOS
+  names never had more); the focused one scrolls through by itself.
 - **Ctrl-F1** opens a keypress table as in IT, but with the port's own
   layout (a scrolling event log) instead of the original's two hex grids.
 - **Ctrl-F2** pushes one undo snapshot of the current pattern before

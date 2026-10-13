@@ -1,0 +1,44 @@
+# F9 / F10: Left and Right move the focus between the file, folder and
+# drive lists (FileWindowKeys, DirectoryWindowKeys, DriveWindowKeys,
+# IT_DISK.ASM). The lists' contents differ between the two machines;
+# what counts is which list holds the highlight bar.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+stable 800
+key f9
+stable
+capture f9_files
+key right
+stable
+capture f9_r_folders
+key right
+stable
+capture f9_rr_drives
+key right
+stable
+capture f9_rrr_files
+key left
+stable
+capture f9_l_drives
+key left
+stable
+capture f9_ll_folders
+key f2
+stable
+key f10
+stable
+key tab
+stable
+key tab
+stable
+key tab
+stable
+capture f10_drives
+key right
+stable
+capture f10_r_next
+key right
+stable
+capture f10_rr_after_drives

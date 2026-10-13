@@ -10586,6 +10586,49 @@ static void req_draw_string(int x, int y, const char *s, int focused)
         Screen_SetAttr(x + i, y, 0x30);
 }
 
+/* Folder names longer than the 12-cell column (none on DOS): the focused
+ * one scrolls through by itself -- 1 s at the start, a character every
+ * 250 ms, 1 s at the end, then from the start again. Returns the first
+ * character to show, `ms` after the name got the focus. */
+static int req_scroll_off(int len, long long ms)
+{
+    long long n = len - 12, cycle, t;
+
+    if (n <= 0)
+        return 0;
+    cycle = 1000 + n * 250 + 1000;
+    t = ms % cycle;
+    if (t < 1000)
+        return 0;
+    t = (t - 1000) / 250 + 1;               /* a step per 250 ms */
+    return (int)(t < n ? t : n);
+}
+
+static long long now_ms(void)
+{
+#ifdef _WIN32
+    return (long long)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
+}
+
+/* IT's arrow keys between the three lists (FileWindowKeys,
+ * DirectoryWindowKeys, (Save)DriveWindowKeys, IT_DISK.ASM): objects 12
+ * files, 13 folders, 14 drives; on the save screen Right on the drives
+ * goes to the format buttons (SaveDriveWindow_Tab, object 18) */
+static int req_arrow_focus(int focus, int right, int save)
+{
+    switch (focus) {
+    case 0: return right ? 1 : 2;
+    case 1: return right ? 2 : 0;
+    case 2: return right ? (save ? 4 : 0) : 1;
+    default: return focus;
+    }
+}
+
 static void draw_file_requester(void)
 {
     int i;
@@ -10649,8 +10692,22 @@ static void draw_file_requester(void)
     if (DSel < DTop) DTop = DSel;
     if (DSel >= DTop + 21) DTop = DSel - 20;
     if (DTop < 0) DTop = 0;
-    for (i = 0; i < 21 && DTop + i < ReqND; i++)
-        Screen_DrawString(44, 13 + i, ReqDirs[DTop + i], 0x05);
+    {
+        static int scroll_sel = -1, scroll_focus = -1;
+        static long long scroll_t0;
+        if (DSel != scroll_sel || ReqFocus != scroll_focus) {
+            scroll_sel = DSel;              /* new focus: from the start */
+            scroll_focus = ReqFocus;
+            scroll_t0 = now_ms();
+        }
+        for (i = 0; i < 21 && DTop + i < ReqND; i++) { /* 12 cells: DOS
+                                               names never needed the cut */
+            const char *nm = ReqDirs[DTop + i];
+            if (ReqFocus == 1 && DTop + i == DSel)
+                nm += req_scroll_off((int)strlen(nm), now_ms() - scroll_t0);
+            drawf(44, 13 + i, 0x05, "%.12s", nm);
+        }
+    }
     if (ReqND == 0)
         Screen_DrawString(44, 13, "No dirs.", 0x07);
     if (ReqFocus == 1 && ReqND)                 /* D_PreDirectoryWindow */
@@ -11353,6 +11410,10 @@ static void file_requester_run_(int save)
         default: break;
         }
 
+        if ((key == ITK_LEFT || key == ITK_RIGHT) && ReqFocus <= 2) {
+            ReqFocus = req_arrow_focus(ReqFocus, key == ITK_RIGHT, ReqSave);
+            continue;
+        }
         if (ReqFocus == 0) {
             switch (key) {
             case ITK_UP:   if (FSel > 0) FSel--; break;
@@ -17602,6 +17663,70 @@ int main(int argc, char **argv)
 #endif
                 if (!do_load_named("testdata/itdemo.it"))  /* names reset */
                     DFAIL();
+            }
+
+            /* F9's folder list: a long name stops after 12 cells instead
+             * of running into the drive list (1706bb0 regression) */
+            {
+                const char *wd = "st_dlg_dirs";
+                const char *ld = "st_dlg_dirs/abcdefghijklMNOPQRST";
+                int j, row = -1;
+#ifdef _WIN32
+                _mkdir(wd);
+                _mkdir(ld);
+#else
+                mkdir(wd, 0777);
+                mkdir(ld, 0777);
+#endif
+                if (chdir(wd) == 0) {
+                    req_scan();
+                    draw_file_requester();
+                    for (j = 0; j < ReqND && j < 21; j++)
+                        if (!strcmp(ReqDirs[j], "abcdefghijklMNOPQRST"))
+                            row = 13 + j;
+                    if (row < 0 || Screen_GetCell(44, row).ch != 'a' ||
+                        Screen_GetCell(55, row).ch != 'l' ||
+                        Screen_GetCell(56, row).ch == 'M')
+                        DFAIL();
+                    /* focused: scrolls through, from the first character */
+                    if (row >= 0) {
+                        int kf = ReqFocus, ks = DSel;
+                        ReqFocus = 1;
+                        DSel = row - 13;
+                        draw_file_requester();
+                        if (Screen_GetCell(44, row).ch != 'a' ||
+                            Screen_GetCell(56, row).ch == 'M')
+                            DFAIL();
+                        ReqFocus = kf;
+                        DSel = ks;
+                    }
+                    if (req_scroll_off(20, 0) != 0 ||      /* 8 steps */
+                        req_scroll_off(20, 999) != 0 ||
+                        req_scroll_off(20, 1000) != 1 ||
+                        req_scroll_off(20, 1000 + 7 * 250) != 8 ||
+                        req_scroll_off(20, 3999) != 8 ||
+                        req_scroll_off(20, 4000) != 0 ||   /* cycle */
+                        req_scroll_off(12, 5000) != 0)
+                        DFAIL();
+                    /* IT's arrows between the lists, F9 and F10 */
+                    if (req_arrow_focus(0, 1, 0) != 1 ||
+                        req_arrow_focus(0, 0, 0) != 2 ||
+                        req_arrow_focus(1, 1, 0) != 2 ||
+                        req_arrow_focus(1, 0, 0) != 0 ||
+                        req_arrow_focus(2, 1, 0) != 0 ||
+                        req_arrow_focus(2, 0, 0) != 1 ||
+                        req_arrow_focus(2, 1, 1) != 4)
+                        DFAIL();
+                    cd_back(home);
+                } else
+                    DFAIL();
+#ifdef _WIN32
+                _rmdir(ld);
+                _rmdir(wd);
+#else
+                rmdir(ld);
+                rmdir(wd);
+#endif
             }
 
             /* US3: Ctrl-O on F3 / F4 = the library requester's load */
