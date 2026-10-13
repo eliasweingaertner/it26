@@ -1,5 +1,87 @@
 # Changelog
 
+## v0.8.0 — 2026-10-13
+
+**Classic IT, classic interface — with a twist.** it26 is no longer
+billed as a strict 1:1 port: the engine and the classic interface stay
+true to IT, and this release adds the first real extensions on top, on
+keys and mouse buttons IT 2.14 leaves unused. Thanks to **Esa Juhani
+Ruoho (@esaruoho)**, whose idea of a headless side-by-side comparison
+with the real IT 2.14 (#24) found most of the fixes below.
+
+### New
+
+- **Right-click block menu** in the pattern editor: Copy, Paste, Clear,
+  Transpose up/down, Transpose by… (any number of semitones),
+  Interpolate notes, Interpolate volume, Interpolate effect. Items with
+  an IT key do exactly what the key does and show it.
+- **Interpolate notes in a scale** (Ctrl-K, or the menu): fills the
+  marked block from its first to its last note with a run in a scale —
+  chromatic, major, natural/harmonic/melodic minor, dorian, mixolydian,
+  pentatonic major/minor, blues. A note lands on every edit-step row
+  (Alt-0…9) and the last row; the scale's notes are spread over them.
+  The key is suggested from the song: the block's instrument on the
+  unmuted channels, so muting the drum tracks keeps note-triggered drums
+  out of it.
+- **Mark a block with the mouse**: drag in the pattern editor.
+- **Hot-swap samples while the song plays**: loading a sample into a
+  slot that already has one keeps the song running; notes still on the
+  old sample stop, every later note plays the new one, and the
+  instruments using the slot keep using it. "Create host instrument?" is
+  only asked for an empty slot.
+- **Long folder names** on F9/F10 show their first 12 characters; the
+  focused one scrolls through by itself.
+- **New Song (Ctrl-N)** has an extra row, Variables Keep / Clear.
+- The **F1 help** lists the pattern editor's additions.
+
+### Closer to IT 2.14
+
+Three comparison rounds against the real IT 2.14 running in QEMU +
+FreeDOS — screens, dialogs and, new, the mouse on every screen:
+
+- **Screens and dialogs:** the Load Module screen as IT draws it (#30
+  #31 #32 #40), F11's second page with channel volumes (#43), the
+  Palette Configuration screen on Ctrl-F12 (#44), IT's dialogs for
+  Exchange / Swap / Replace / Copy / Resize (#45), "No block is marked"
+  and the other block messages as dialogs (#47), the Undo dialog (#48),
+  Ctrl-N opens the New Song dialog (#42).
+- **Layout and colours:** centred section titles (#33), the edit-mask
+  markers under the channels (#34), field colours (#35 #37 #39), the F11
+  order list column and `---` for a new song (#38), the F3 header on
+  instrument-mode songs (#36), confirm dialog texts (#46), menus (#41).
+- **Keys:** F2 after F9 returns to the pattern editor (#29); Alt-N
+  without a message (#49); F12 (#50) and F9/F10 move the focus as IT
+  links it — Tab, Shift-Tab, the arrows, the format buttons, the
+  editable Directory line; Esc on F9/F10 opens the main menu; the main
+  menu remembers its position.
+- **Mouse:** buttons react only inside their border, the F4 envelope
+  editor inserts / picks up / drags nodes as IT, a click on a muted
+  pan bar unmutes it, menu clicks.
+- **Sample fields:** Speed and the loop numbers on F3 and the Load
+  Sample screen are edited in place, digit by digit, as in IT (the
+  separate number box is gone); Enter there opens Load Sample.
+- **Undo:** a "Pattern n" entry when a pattern is entered, and restoring
+  another pattern's entry applies it.
+- F12's Initial Tempo/Speed take effect at the next play; "Initialise
+  instruments?" is OK / No over the unchanged screen; F4's Default Pan
+  shows On while the pan is used.
+
+### Fixes
+
+- **Loop on a sample without loop points** (Space on Loop) did nothing;
+  it now sets the loop end to the sample length, as IT.
+- Long folder names ran over the F9/F10 drive list.
+- New Song: clearing the patterns resets the pattern count (#42).
+
+### Notes
+
+- **Comparison harness** (`tools/compare`, #24): runs IT 2.14 headless
+  in QEMU + FreeDOS next to it26 and compares every screen cell by cell;
+  it now drives the mouse on both sides too. Reports in `docs/compare/`.
+- The README describes where it26 differs: "Classic IT, with a twist".
+
+**Full commit list:** https://github.com/eliasweingaertner/it26/compare/v0.7.0...v0.8.0
+
 ## v0.7.0 — 2026-10-05
 
 **The project is now called it26** (GitHub: `eliasweingaertner/it26`):
