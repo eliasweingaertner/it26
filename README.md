@@ -336,6 +336,17 @@ places where it deliberately or unavoidably differs.
   the order cursor, and the file screens (F9, F10, Load Sample, Load
   Instrument) take clicks on files, directories, drives and fields. IT
   2.14 ignores the mouse in all of these.
+- **Pattern editor block menu (right click):** Copy, Paste, Clear,
+  Transpose up/down, Transpose by... (a number of semitones), Interpolate
+  notes, Interpolate volume and effect. Items with an IT key do exactly
+  what that key does and show it. IT 2.14 has no right-click menu.
+- **Interpolate notes (Ctrl-K, or the menu):** fills the marked block
+  between its first and last note with a run in a scale (chromatic, major,
+  minor, modes, pentatonic, blues): a note on every edit-step row (Alt-0…9)
+  and the last row, the scale's notes spread over them. The key is
+  suggested from the song: the block's instrument on unmuted channels, so
+  muting the drum tracks keeps note-triggered drums out. Ctrl-K is unbound
+  in IT 2.14.
 - **Menus:** a mouse click on a menu item also moves the menu's keyboard
   selection there; IT leaves the selection where it was.
 - **New Song (Ctrl-N)** has an extra row, **Variables Keep / Clear**

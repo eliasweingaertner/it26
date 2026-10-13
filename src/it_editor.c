@@ -4872,6 +4872,12 @@ static const char PortHelpSmpMac[] =
     "\x05" "Cmd-O             Load sample into this slot (system dialog)";
 static const char PortHelpInsMac[] =
     "\x05" "Cmd-O             Load instrument into this slot (system dialog)";
+static const char PortHelpPeK[] =
+    "\x05" "Ctrl-K            Interpolate notes in a scale (block)";
+static const char PortHelpPeMenu[] =
+    "\x05" "Right click       Block menu: copy, transpose, interpolate";
+static const char PortHelpPeDrag[] =
+    "\x05" "Mouse drag        Mark block";
 static const char PortHelpDirMac[] =
     "\x05" "Cmd-O             Choose folder for a path field (system dialog)";
 
@@ -4892,10 +4898,12 @@ static const uint8_t *const *help_lines(int ctx)
         buf[n++] = (pk && *src == HLP_helpcontext1_181) ? HL(PortHelpPreview)
                                                          : *src;
     }
-    if (dlg) {
-        int mac = Screen_DialogModLabel() != NULL;
+    if (dlg || ctx == 1) {
         buf[n++] = HLP_newline;
         buf[n++] = HL(PortHelpHead);
+    }
+    if (dlg) {
+        int mac = Screen_DialogModLabel() != NULL;
         buf[n++] = HL(mac ? PortHelpOpenMac : PortHelpOpen);
         buf[n++] = HL(mac ? PortHelpSaveMac : PortHelpSave);
         if (ctx == 2)
@@ -4904,6 +4912,11 @@ static const uint8_t *const *help_lines(int ctx)
             buf[n++] = HL(mac ? PortHelpInsMac : PortHelpIns);
         else if (ctx == 5 && HelpReturnScreen == SCR_VARS)  /* shared ctx */
             buf[n++] = HL(mac ? PortHelpDirMac : PortHelpDir);
+    }
+    if (ctx == 1) {                     /* pattern editor: mouse + Ctrl-K */
+        buf[n++] = HL(PortHelpPeK);
+        buf[n++] = HL(PortHelpPeMenu);
+        buf[n++] = HL(PortHelpPeDrag);
     }
     buf[n] = NULL;
     return buf;
@@ -8746,7 +8759,7 @@ static void pe_play_current_row(void)  { }  /* T028 */
 /* undo type captions (IT_PE.ASM UndoBufferTypes 300..322) */
 /* UndoBufferType0..22 (IT_PE.ASM 300), with the 0FFh padding that lines
  * the key hints up in column 52; type 22 is "Pattern n" */
-static const char *UndoTypeName[23] = {
+static const char *UndoTypeName[26] = {
     "Empty",
     "Undo revert pattern data (Alt-BkSpace)",
     "Undo transposition up          (Alt-Q)",
@@ -8770,6 +8783,9 @@ static const char *UndoTypeName[23] = {
     "Replace deleted row(s)    (Alt-Delete)",
     "Redo                            (Undo)",
     "Pattern ",
+    "Undo block clear              (Menu)",     /* 23..25: context menu */
+    "Undo note interpolation       (Menu)",
+    "Undo transposition            (Menu)",
 };
 
 /* Ctrl-Backspace: pick a snapshot from the undo ring and revert to it
@@ -8795,7 +8811,7 @@ static void pe_undo_requester(void)
         Screen_DrawString(38, 22, "Undo", 0x23);
         for (i = 0; i < 10; i++) {
             int t = UndoRing[i].cells
-                  ? (UndoRing[i].type <= 22 ? UndoRing[i].type : 0) : 0;
+                  ? (UndoRing[i].type <= 25 ? UndoRing[i].type : 0) : 0;
             if (t == 22)
                 drawf(21, 24 + i, 0x02, "Pattern %d", UndoRing[i].pattern);
             else
@@ -9385,6 +9401,8 @@ static void pe_mute_next(void)
     if (CurChan < 63) { CurCol = 0; CurChan++; }
 }
 
+static int ctx_interp_notes(void);
+
 static void handle_pattern_key(int key)
 {
     /* position-dispatched bindings go before the character switch */
@@ -9462,6 +9480,7 @@ static void handle_pattern_key(int key)
     case ITK_ALT_BACKSPACE: pe_restore_data(); return;
     case ITK_ALT_A + ('K' - 'A'): pe_alt_k(); return;
     case 0x0A: pe_toggle_fast_volume(); return;         /* Ctrl-J */
+    case 0x0B: ctx_interp_notes(); return;  /* Ctrl-K: port extension */
     case 0x16:                          /* Ctrl-V: PE_ToggleDefaultVolume */
         PEDefaultVolume ^= 1;
         status(PEDefaultVolume ? "Default volumes enabled"
@@ -13819,6 +13838,499 @@ static void main_menu(void)
     run_menu(&MainMenuDef, menu_under_screen, &MainMenuSel);
 }
 
+/* ---- pattern editor context menu (extension, right click) ----------
+ * Not in IT: a menu in IT's menu style at the pointer with the block
+ * commands people reach for most, each the same function as its Alt
+ * key (and so with the same "No block is marked" dialog and undo
+ * entries). A right click outside the marked block first moves the
+ * cursor to the clicked cell, so Paste lands there. */
+static int ctx_copy(void)      { pe_block_copy();  return 1; }
+static int ctx_paste(void)     { pe_block_paste(); return 1; }
+static int ctx_semi_up(void)   { pe_semi(1); return 1; }
+static int ctx_semi_down(void) { pe_semi(0); return 1; }
+static int ctx_interp_vol(void){ pe_alt_k(); return 1; }
+static int ctx_interp_fx(void)
+{
+    if (block_marked())
+        pe_slide_commands();
+    return 1;
+}
+
+static int ctx_clear(void)              /* the block's cells emptied, the
+                                           clipboard left alone */
+{
+    int r, c;
+
+    if (!block_marked())
+        return 1;
+    snapshot_undo(23);
+    for (r = BlockTop; r <= BlockBottom; r++)
+        for (c = BlockLeft; c <= BlockRight; c++)
+            cell_clear(&Grid[r * 64 + c]);
+    commit_current_pattern();
+    return 1;
+}
+
+/* ---- Interpolate notes (context menu extension, Ctrl-K): a run in
+ * scale steps between the block's top and bottom note of each channel.
+ * A note goes on every Step rows from the top (Step starts at the edit
+ * step, Alt-0..9) and on the last row; the scale's notes between the
+ * two endpoints are spread evenly over those rows -- repeated when there
+ * are more rows than notes, skipped when there are fewer. Endpoints stay
+ * as written. The key defaults to the one detected from the song
+ * (Krumhansl-Schmuckler key profiles). ---- */
+static const struct { const char *name; uint16_t mask; } InterpScales[] = {
+    { "Chromatic",        0x0FFF },
+    { "Major",            0x0AB5 },   /* 0 2 4 5 7 9 11 */
+    { "Natural minor",    0x05AD },   /* 0 2 3 5 7 8 10 */
+    { "Harmonic minor",   0x09AD },   /* 0 2 3 5 7 8 11 */
+    { "Melodic minor",    0x0AAD },   /* 0 2 3 5 7 9 11 */
+    { "Dorian",           0x06AD },   /* 0 2 3 5 7 9 10 */
+    { "Mixolydian",       0x06B5 },   /* 0 2 4 5 7 9 10 */
+    { "Pentatonic major", 0x0295 },   /* 0 2 4 7 9 */
+    { "Pentatonic minor", 0x04A9 },   /* 0 3 5 7 10 */
+    { "Blues",            0x04E9 },   /* 0 3 5 6 7 10 */
+};
+enum { INTERP_NSCALES = (int)(sizeof(InterpScales) / sizeof(InterpScales[0])) };
+static const char *const InterpRoots[12] = {
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+static int InterpScale = 1, InterpRoot = 0, InterpStep = 1;
+
+/* the rows that get a note: 0, Step, 2*Step, ... and the last row h */
+static int interp_slots(int h, int step)
+{
+    return h / step + 1 + (h % step ? 1 : 0);
+}
+
+static char InterpSource[16];           /* "(ins 03)", shown by the root */
+
+/* pitch-class histograms per instrument (sample in sample mode) over the
+ * order list's patterns -- the current one from the live Grid -- on the
+ * unmuted channels only, so muting the drum tracks keeps them out. A note
+ * without an instrument counts for the channel's last one. */
+static void interp_histograms(double hist[100][12])
+{
+    static uint8_t seen[MAX_PATTERNS];
+    uint8_t last[64];
+    int o, r, c;
+
+    memset(hist, 0, sizeof(double) * 100 * 12);
+    memset(seen, 0, sizeof(seen));
+    memset(last, 0, sizeof(last));
+    for (o = -1; o < 256; o++) {
+        const editcell_t *g;
+        int pat, rows;
+        if (o < 0) {
+            pat = CurPattern;           /* always, in the list or not */
+        } else {
+            pat = Song.Orders[o];
+            if (pat == 0xFF)
+                break;
+            if (pat >= 200 || pat == (int)CurPattern)
+                continue;
+        }
+        if (pat >= MAX_PATTERNS || seen[pat])
+            continue;
+        seen[pat] = 1;
+        if (pat == (int)CurPattern) {
+            g = Grid;
+            rows = (int)CurRows;
+        } else {
+            rows = Pattern_Unpack((uint16_t)pat, OpGrid);
+            g = OpGrid;
+        }
+        for (r = 0; r < rows; r++)
+            for (c = 0; c < 64; c++) {
+                const editcell_t *e = &g[r * 64 + c];
+                if (Song.Header.ChnlPan[c] & 0x80)
+                    continue;
+                if ((e->mask & CM_INS) && e->ins >= 1 && e->ins <= 99)
+                    last[c] = e->ins;
+                if ((e->mask & CM_NOTE) && e->note >= 1 && e->note <= 120)
+                    hist[last[c]][(e->note - 1) % 12] += 1.0;
+            }
+    }
+}
+
+/* Krumhansl-Schmuckler: the major / natural minor key whose profile
+ * correlates best; 0 when there are too few notes or no clear key */
+static int interp_key_of(const double h[12], int *root, int *minor)
+{
+    static const double maj[12] = { 6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
+                                    2.52, 5.19, 2.39, 3.66, 2.29, 2.88 };
+    static const double min[12] = { 6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
+                                    2.54, 4.75, 3.98, 2.69, 3.34, 3.17 };
+    double n = 0, best = -1e9;
+    int i, k;
+
+    for (i = 0; i < 12; i++)
+        n += h[i];
+    if (n < 8)
+        return 0;
+    for (k = 0; k < 24; k++) {
+        const double *prof = k < 12 ? maj : min;
+        double mh = n / 12, mp = 0, sxy = 0, sxx = 0, syy = 0, corr;
+        for (i = 0; i < 12; i++) mp += prof[i];
+        mp /= 12;
+        for (i = 0; i < 12; i++) {
+            double x = h[(i + k) % 12] - mh, y = prof[i] - mp;
+            sxy += x * y; sxx += x * x; syy += y * y;
+        }
+        corr = (sxx > 0 && syy > 0) ? sxy / sqrt(sxx * syy) : -1;
+        if (corr > best) {
+            best = corr;
+            *root = k % 12;
+            *minor = k >= 12;
+        }
+    }
+    return best >= 0.5;
+}
+
+/* the key for the block: from the top note's instrument, else from all
+ * instruments that are not drum-like (80% or more of their notes on one
+ * pitch class); 0 when neither gives a clear key */
+static int interp_detect_key(int *root, int *minor)
+{
+    static double hist[100][12];
+    double h[12] = { 0 };
+    const editcell_t *t = &Grid[BlockTop * 64 + BlockLeft];
+    int ins = 0, r, i, k;
+
+    for (r = BlockTop; r >= 0 && !ins; r--) {   /* the top note's instrument */
+        const editcell_t *e = &Grid[r * 64 + BlockLeft];
+        if ((e->mask & CM_INS) && e->ins >= 1 && e->ins <= 99)
+            ins = e->ins;
+    }
+    if (!ins && (t->mask & CM_NOTE))
+        ins = CurInstr;
+    interp_histograms(hist);
+    if (ins >= 1 && ins <= 99 && interp_key_of(hist[ins], root, minor)) {
+        snprintf(InterpSource, sizeof(InterpSource), "(%s %02d)",
+                 (Song.Header.Flags & ITF_INSTRUMENTS) ? "ins" : "smp", ins);
+        return 1;
+    }
+    for (k = 0; k < 100; k++) {
+        double n = 0, top = 0;
+        for (i = 0; i < 12; i++) {
+            n += hist[k][i];
+            if (hist[k][i] > top)
+                top = hist[k][i];
+        }
+        if (n >= 4 && top >= 0.8 * n)
+            continue;                   /* drum-like */
+        for (i = 0; i < 12; i++)
+            h[i] += hist[k][i];
+    }
+    if (interp_key_of(h, root, minor)) {
+        snprintf(InterpSource, sizeof(InterpSource), "(no drums)");
+        return 1;
+    }
+    return 0;
+}
+
+static void interp_draw(int focus)
+{
+    static const char *const labels[3] = { "Scale", "Root", "Step" };
+    const char *vals[3];
+    char rhythm[32], root[24];
+    int i, n = interp_slots(BlockBottom - BlockTop, InterpStep);
+
+    snprintf(rhythm, sizeof(rhythm), "%d row%s (%d notes)", InterpStep,
+             InterpStep == 1 ? "" : "s", n);
+    vals[0] = InterpScales[InterpScale].name;
+    snprintf(root, sizeof(root), "%-4s%s", InterpRoots[InterpRoot],
+             InterpSource);
+    vals[1] = root;
+    vals[2] = rhythm;
+
+    draw_screen();
+    Screen_DrawBox(18, 20, 61, 35, 3);
+    Screen_DrawString(32, 21, "Interpolate notes", 0x23);
+    for (i = 0; i < 3; i++) {
+        int y = 23 + i * 3;
+        Screen_DrawString(30 - (int)strlen(labels[i]), y, labels[i], 0x20);
+        Screen_DrawBox(31, y - 1, 56, y + 1, 27);
+        fill(32, y, 24, ' ', 0x02);
+        Screen_DrawString(33, y, vals[i], 0x02);
+        Screen_PutChar(32, y, '<', focus == i ? 0x23 : 0x21);
+        Screen_PutChar(55, y, '>', focus == i ? 0x23 : 0x21);
+        if (focus == i)
+            for (int x = 33; x < 33 + (int)strlen(vals[i]); x++)
+                Screen_SetAttr(x, y, 0x30);
+    }
+    draw_button_style(26, 31, 36, 33, 8, "    OK", 0, focus == 3);
+    draw_button_style(42, 31, 53, 33, 8, "  Cancel", 0, focus == 4);
+}
+
+static int interp_dialog(void)
+{
+    int focus = 3;                      /* OK: Enter takes the defaults */
+
+    for (;;) {
+        int key, d = 0;
+
+        interp_draw(focus);
+        Screen_Update();
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return 0; }
+        if (key == ITK_ESC)
+            return 0;
+        if (key == ITK_MOUSE) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (button_hit(&m, 26, 31, 36, 33, 8)) return 1;
+            if (button_hit(&m, 42, 31, 53, 33, 8)) return 0;
+            if (m.x >= 31 && m.x <= 56 && m.y >= 22 && m.y <= 30 &&
+                (m.y - 23) % 3 == 0) {
+                focus = (m.y - 23) / 3;
+                d = (m.x <= 43) ? -1 : 1;   /* left half back, right on */
+            } else
+                continue;
+        }
+        switch (key) {
+        case ITK_UP: case ITK_SHIFT_TAB: focus = (focus + 4) % 5; continue;
+        case ITK_DOWN: case ITK_TAB:     focus = (focus + 1) % 5; continue;
+        case ITK_LEFT:  d = -1; break;
+        case ITK_RIGHT: d = 1; break;
+        case ITK_ENTER:
+            return focus != 4;
+        default: break;
+        }
+        if (!d || focus > 2) {
+            if (focus > 2 && d)
+                focus = focus == 3 ? 4 : 3;
+            continue;
+        }
+        if (focus == 0)
+            InterpScale = (InterpScale + d + INTERP_NSCALES) % INTERP_NSCALES;
+        else if (focus == 1) {
+            InterpRoot = (InterpRoot + d + 12) % 12;
+            InterpSource[0] = 0;        /* chosen by hand now */
+        }
+        else {
+            int hmax = BlockBottom - BlockTop;  /* 1..h: at least the ends */
+            InterpStep += d;
+            if (InterpStep < 1) InterpStep = hmax;
+            if (InterpStep > hmax) InterpStep = 1;
+        }
+    }
+}
+
+static int ctx_interp_notes(void)
+{
+    int c, h, done = 0, total = 0, root, minor;
+    uint16_t mask;
+
+    if (!block_marked())
+        return 1;
+    h = BlockBottom - BlockTop;
+    if (h < 2)
+        return 1;
+    InterpStep = pe_skip();             /* the edit step (Alt-0..9) */
+    if (InterpStep > h)
+        InterpStep = h;
+    InterpSource[0] = 0;
+    if (interp_detect_key(&root, &minor)) {
+        InterpRoot = root;
+        if (InterpScale == 1 || InterpScale == 2)
+            InterpScale = minor ? 2 : 1;
+    } else {
+        const editcell_t *t = &Grid[BlockTop * 64 + BlockLeft];
+        if ((t->mask & CM_NOTE) && t->note >= 1 && t->note <= 120) {
+            InterpRoot = (t->note - 1) % 12;
+            snprintf(InterpSource, sizeof(InterpSource), "(top note)");
+        }
+    }
+    if (!interp_dialog())
+        return 1;
+    mask = InterpScales[InterpScale].mask;
+
+    for (c = BlockLeft; c <= BlockRight; c++) {
+        editcell_t *top = &Grid[BlockTop * 64 + c];
+        editcell_t *bot = &Grid[BlockBottom * 64 + c];
+        int run[128], k = 0, n0, n1, dir, p, r, m;
+        uint8_t used[MAX_PATROWS];
+
+        if (!(top->mask & CM_NOTE) || !(bot->mask & CM_NOTE) ||
+            top->note < 1 || top->note > 120 ||
+            bot->note < 1 || bot->note > 120)
+            continue;
+        n0 = top->note;
+        n1 = bot->note;
+        dir = n1 >= n0 ? 1 : -1;
+        run[k++] = n0;                  /* the run: n0, scale notes, n1 */
+        for (p = n0 + dir; p != n1; p += dir)
+            if (mask >> ((p - 1 - InterpRoot + 120) % 12) & 1)
+                run[k++] = p;
+        if (n1 != n0)
+            run[k++] = n1;
+        if (k < 2)
+            continue;
+        if (!done) {
+            snapshot_undo(24);
+            done = 1;
+        }
+        memset(used, 0, sizeof(used));
+        for (r = 0; r <= h; r += InterpStep)
+            used[r] = 1;
+        used[h] = 1;
+        m = interp_slots(h, InterpStep);
+        for (p = 0, r = 0; r <= h; r++) {
+            editcell_t *d = &Grid[(BlockTop + r) * 64 + c];
+            int idx;
+            if (!used[r]) {             /* rows between: no note */
+                if (r > 0 && r < h)
+                    d->mask &= (uint8_t)~(CM_NOTE | CM_INS);
+                continue;
+            }
+            idx = m > 1 ? (p * (k - 1) + (m - 1) / 2) / (m - 1) : 0;
+            p++;
+            if (r == 0 || r == h)
+                continue;               /* endpoints stay as written */
+            d->note = (uint8_t)run[idx];
+            d->mask |= CM_NOTE;
+            if ((top->mask & CM_INS) && !(d->mask & CM_INS)) {
+                d->ins = top->ins;
+                d->mask |= CM_INS;
+            }
+        }
+        total += m;
+    }
+    if (done) {
+        commit_current_pattern();
+        status("Interpolated in %s %s, %d notes", InterpRoots[InterpRoot],
+               InterpScales[InterpScale].name, total);
+    } else {
+        status("Interpolate notes: the block's first and last row need notes");
+    }
+    return 1;
+}
+
+/* "Transpose by" input: a signed number of semitones, -119..119 */
+static int transpose_dialog(int *out)
+{
+    char buf[5] = "";
+    int len = 0, focus = 0;             /* 0 input, 1 OK, 2 Cancel */
+
+    for (;;) {
+        int key, i;
+
+        draw_screen();
+        Screen_DrawBox(26, 23, 54, 32, 3);
+        Screen_DrawString(31, 25, "Transpose by semitones", 0x20);
+        Screen_DrawBox(36, 26, 43, 28, 27);
+        for (i = 0; i < len; i++)
+            Screen_PutChar(37 + i, 27, (uint8_t)buf[i], 0x02);
+        if (focus == 0)
+            Screen_SetAttr(37 + len, 27, 0x30);
+        draw_button_style(30, 29, 39, 31, 8, "   OK", 0, focus == 1);
+        draw_button_style(41, 29, 50, 31, 8, " Cancel", 0, focus == 2);
+        Screen_Update();
+
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        if (key == ITK_QUIT) { Running = 0; return 0; }
+        if (key == ITK_ESC)
+            return 0;
+        if (key == ITK_MOUSE) {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (button_hit(&m, 30, 29, 39, 31, 8)) focus = 1, key = ITK_ENTER;
+            else if (button_hit(&m, 41, 29, 50, 31, 8)) return 0;
+            else continue;
+        }
+        if (key == ITK_TAB || key == ITK_DOWN)  { focus = (focus + 1) % 3; continue; }
+        if (key == ITK_SHIFT_TAB || key == ITK_UP) { focus = (focus + 2) % 3; continue; }
+        if (key == ITK_ENTER) {
+            int v;
+            char *end;
+            if (focus == 2)
+                return 0;
+            v = (int)strtol(buf, &end, 10);
+            if (len == 0 || *end || v == 0 || v < -119 || v > 119)
+                return 0;
+            *out = v;
+            return 1;
+        }
+        if (focus != 0)
+            continue;
+        if (key == ITK_BACKSPACE) {
+            if (len > 0)
+                buf[--len] = 0;
+        } else if (len < 4 && ((key >= '0' && key <= '9') ||
+                               (len == 0 && (key == '-' || key == '+')))) {
+            buf[len++] = (char)key;
+            buf[len] = 0;
+        }
+    }
+}
+
+static int ctx_transpose_n(void)
+{
+    int n, r, c;
+
+    if (!block_marked() || !transpose_dialog(&n))
+        return 1;
+    snapshot_undo(25);
+    for (r = BlockTop; r <= BlockBottom; r++)
+        for (c = BlockLeft; c <= BlockRight; c++) {
+            editcell_t *d = &Grid[r * 64 + c];
+            int v;
+            if (!(d->mask & CM_NOTE) || d->note < 1 || d->note > 120)
+                continue;
+            v = d->note + n;
+            d->note = (uint8_t)(v < 1 ? 1 : v > 120 ? 120 : v);
+        }
+    commit_current_pattern();
+    return 1;
+}
+
+static const menuitem_t PeContextItems[] = {
+    { " Copy                 (Alt-C)", ctx_copy },
+    { " Paste                (Alt-P)", ctx_paste },
+    { " Clear", ctx_clear },
+    { " Transpose up         (Alt-Q)", ctx_semi_up },
+    { " Transpose down       (Alt-A)", ctx_semi_down },
+    { " Transpose by...", ctx_transpose_n },
+    { " Interpolate notes    (Ctrl-K)", ctx_interp_notes },
+    { " Interpolate volume   (Alt-K)", ctx_interp_vol },
+    { " Interpolate effect   (Alt-X)", ctx_interp_fx },
+};
+
+static int pattern_cell_at(const it_mouse_t *m, int *row, int *ch, int *off);
+
+static void pe_context_menu(void)
+{
+    enum { N = (int)(sizeof(PeContextItems) / sizeof(PeContextItems[0])),
+           W = 35, H = 3 * N + 3 };
+    it_mouse_t m;
+    menudef_t d;
+    int row, ch, off, x0, y0;
+
+    Screen_GetMouse(&m);
+    if (pattern_cell_at(&m, &row, &ch, &off) &&
+        !(BlockMark && row >= BlockTop && row <= BlockBottom &&
+          ch >= BlockLeft && ch <= BlockRight)) {
+        CurRow = row;
+        CurChan = ch;
+    }
+    x0 = m.x;
+    y0 = m.y;
+    if (x0 + W > 79) x0 = 79 - W;
+    if (y0 + H > 49) y0 = 49 - H;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    d.x0 = x0; d.y0 = y0; d.x1 = x0 + W; d.y1 = y0 + H;
+    d.style = 3;
+    d.tx = x0 + 2; d.ty = y0 + 1;
+    d.title = "";                       /* no heading */
+    d.ix0 = x0 + 2; d.ix1 = x0 + W - 2; d.iy = y0 + 2;
+    d.items = PeContextItems;
+    d.n = N;
+    run_menu(&d, menu_under_screen, NULL);
+}
+
 /* ===================================================================
  * Global key dispatch
  * =================================================================== */
@@ -14079,6 +14591,10 @@ static void handle_global(int key)
     case ITK_ALT_F11:                       /* Music_ToggleOrderUpdate */
         ed_lock(); OrderLockFlag ^= 1; ed_unlock();
         status(OrderLockFlag ? "Order list locked" : "Order list unlocked");
+        return;
+    case ITK_MOUSE_RIGHT:               /* extension: context menu */
+        if (Screen == SCR_PATTERN)
+            pe_context_menu();
         return;
     case ITK_MOUSE:
         if (Screen == SCR_PATTERN)
@@ -17851,11 +18367,14 @@ int main(int argc, char **argv)
             hl = help_lines(1);
             for (n = 0; hl[n]; n++)
                 ;
-            if (n < 3 || hl[n - 1] != HL(PortHelpSave) ||
-                hl[n - 3] != HL(PortHelpHead))
+            if (n < 6 || hl[n - 4] != HL(PortHelpSave) ||
+                hl[n - 6] != HL(PortHelpHead) ||
+                hl[n - 1] != HL(PortHelpPeDrag))
                 DFAIL();
             dlg_fake(NULL);
-            if (!Screen_HasFileDialog()) {  /* IT's lines, minus Ctrl-D (#28) */
+            if (!Screen_HasFileDialog()) {  /* IT's lines, minus Ctrl-D (#28),
+                                               then the pattern editor's
+                                               additions */
                 const uint8_t *const *o = HelpContextPtrs[1];
                 const uint8_t *const *m = help_lines(1);
                 int a = 0, b = 0;
@@ -17864,7 +18383,8 @@ int main(int argc, char **argv)
                         continue;
                     if (m[b++] != o[a]) { DFAIL(); break; }
                 }
-                if (m[b])
+                if (m[b] != HLP_newline || m[b + 1] != HL(PortHelpHead) ||
+                    m[b + 2] != HL(PortHelpPeK) || m[b + 5])
                     DFAIL();
             }
             if (help_col_of(HL(PortHelpPreview) + 1, "Preview") !=

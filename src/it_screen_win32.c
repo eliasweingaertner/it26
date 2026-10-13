@@ -486,6 +486,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         MouseB = 0;
         ReleaseCapture();
         return 0;
+    case WM_RBUTTONDOWN:
+        MouseFromLParam(lp);
+        PushKey(ITK_MOUSE_RIGHT);
+        return 0;
     case WM_ERASEBKGND:
         return 1;
     }

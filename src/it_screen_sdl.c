@@ -540,6 +540,9 @@ static void PumpEvents(void)
                 EventToLogical(e.button.x, e.button.y, &MousePX, &MousePY);
                 MouseB = 1;
                 PushKey(ITK_MOUSE);
+            } else if (e.button.button == SDL_BUTTON_RIGHT) {
+                EventToLogical(e.button.x, e.button.y, &MousePX, &MousePY);
+                PushKey(ITK_MOUSE_RIGHT);
             }
             break;
         case SDL_MOUSEBUTTONUP:

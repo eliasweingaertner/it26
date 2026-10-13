@@ -192,6 +192,8 @@ enum {
                                    (#44) */
     ITK_QUIT = 0x300,       /* window closed (pixel backend) */
     ITK_MOUSE,              /* left button pressed; see Screen_GetMouse */
+    ITK_MOUSE_RIGHT,        /* right button pressed (extension: the
+                               pattern editor's context menu) */
 };
 int Key_Get(void);          /* non-blocking, K_GetKey-style             */
 

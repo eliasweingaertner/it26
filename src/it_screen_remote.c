@@ -19,8 +19,10 @@
  *                                   (hex, CP437) -> "@ok"
  *   shot <file.bmp>                 sync, then Screen_WriteBMP -> "@ok"
  *   mouse <px> <py> <b>             pointer at logical pixel (0..639,
- *                                   0..399), left button b (0/1); a press
- *                                   queues ITK_MOUSE (no reply)
+ *                                   0..399), buttons b: bit 0 left held,
+ *                                   bit 1 right click; a left press queues
+ *                                   ITK_MOUSE, a right one ITK_MOUSE_RIGHT
+ *                                   (no reply)
  *   quit                            deliver ITK_QUIT
  * Errors reply "@err <text>".
  */
@@ -227,7 +229,7 @@ static int RM_KeyEvent(it_key_t *k)
         if (!strncmp(line, "mouse ", 6)) {
             long v[3];
             char *p = line + 6, *end;
-            int i, press;
+            int i, press, rpress = 0;
             for (i = 0; i < 3; i++) {
                 v[i] = strtol(p, &end, 0);
                 if (end == p)
@@ -241,12 +243,13 @@ static int RM_KeyEvent(it_key_t *k)
                 if (v[0] > 639) v[0] = 639;
                 if (v[1] < 0) v[1] = 0;
                 if (v[1] > 399) v[1] = 399;
-                press = v[2] && !RmMouse.b;
+                press = (v[2] & 1) && !RmMouse.b;
+                rpress = (v[2] & 2) != 0;   /* right click (extension) */
                 RmMouse.px = (int)v[0];
                 RmMouse.py = (int)v[1];
                 RmMouse.x = RmMouse.px / 8;
                 RmMouse.y = RmMouse.py / 8;
-                RmMouse.b = v[2] ? 1 : 0;
+                RmMouse.b = (v[2] & 1) ? 1 : 0;
             } else {
                 press = 0;
             }
@@ -256,11 +259,11 @@ static int RM_KeyEvent(it_key_t *k)
                 continue;
             }
             IdlePolls = 0;
-            if (press) {
+            if (press || rpress) {
                 k->scan = 0;
                 k->flags = ITKF_PRESSED;
                 k->ch = 0;
-                k->code = ITK_MOUSE;
+                k->code = press ? ITK_MOUSE : ITK_MOUSE_RIGHT;
                 return 1;
             }
             continue;

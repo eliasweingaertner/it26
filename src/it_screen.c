@@ -737,6 +737,10 @@ static void Term_MouseReport(int b, int x, int y, int press)
     if (y > SCREEN_H) y = SCREEN_H;
     TermMousePX = (x - 1) * 8 + 4;
     TermMousePY = (y - 1) * 8 + 4;
+    if ((b & 3) == 2 && press && !motion) {     /* right button */
+        Term_PushKey(ITK_MOUSE_RIGHT);
+        return;
+    }
     if ((b & 3) != 0)                           /* not the left button */
         return;
     if (!press)
