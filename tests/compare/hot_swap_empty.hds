@@ -1,0 +1,38 @@
+# Instrument mode, sample loaded into an EMPTY slot (17): both ask
+# "Create host instrument?" with OK as default, over the Load Sample
+# screen (O1_InitInstrument, LSWindow_EnterSample IT_DISK.ASM 7297).
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f3
+stable
+key pgdn
+stable
+capture he_f3_slot17
+key enter
+stable 1500
+@dos key end
+@dos key up
+@dos key up
+@port key home
+@port key down
+@port key down
+@port key down
+@port key down
+stable 500
+key enter
+stable 800
+capture he_host_prompt
+key enter
+stable 800
+capture he_after_ok
+key f4
+stable
+capture he_f4

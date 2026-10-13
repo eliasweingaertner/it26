@@ -1,0 +1,64 @@
+# Instrument-mode song playing, sample 1 (looped) replaced from the Load
+# Sample screen: IT 2.14 stops playback and asks "Create host
+# instrument?" (LSWindow_EnterSample, IT_DISK.ASM 7297); it26 keeps
+# playing and swaps the sample in (extension). Then the loop fields of
+# the new sample are edited in place, as IT: Space on Loop, digits in
+# Loop beginning, Enter = Load Sample screen.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+@port keys f3 f9
+stable 800
+key down
+key enter
+waittext Drifting Onwards
+stable 1000
+key f5
+stable 500
+key f3
+stable
+capture hs_f3_playing
+key enter
+stable 1500
+capture hs_load_sample
+key end
+stable 800
+capture hs_ls_end
+@dos key up
+@dos key up
+@port key home
+@port key down
+@port key down
+@port key down
+@port key down
+stable 500
+capture hs_ls_test8
+key enter
+stable 800
+capture hs_host_prompt
+# IT 2.14 asks (default No); it26 hot-swaps without asking
+@dos key enter
+stable 800
+capture hs_after_load
+click 66 13
+stable
+key down
+key down
+stable
+capture hs_loop_toggle
+key space
+stable
+capture hs_loop_on
+key down
+stable
+capture hs_loopbeg_focus
+key 1
+stable
+capture hs_loopbeg_typed1
+click 67 17
+stable
+capture hs_loopend_click
+key enter
+stable
+capture hs_loopbeg_enter

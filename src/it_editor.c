@@ -2987,9 +2987,83 @@ static void smp_op_replace(void)        /* Alt-R: I_ReplaceSample */
         pattern_remap_ins(3, ListSel + 1, (int)n);
 }
 
-/* ---- F3 editable loop/speed fields (O1_SampleList objects 30..36).
- * Numbers edit through the numeric prompt (Enter on the field) --
- * a documented deviation from the original's inline digit entry. --- */
+/* ---- 7-digit inputs (object type 18: F_Draw5Num / F_Pre5Num /
+ * F_Post5Num, IT_F.ASM 4350): edited in place. NumberPos is the digit
+ * cursor, 0..6, one for all fields as CS:NumberPos is; a digit replaces
+ * the one under it and moves right, Left / Backspace / Right move it,
+ * '+' / '-' step the value (not below 0). The mouse sends '-' for a
+ * left click and '+' for a right one (MouseNumberDecrement /
+ * Increment). Enter is no key of theirs. ---- */
+static int NumberPos = 0;
+
+/* returns 1 when the key belongs to the field; *changed when *v moved */
+static int num7_key(uint32_t *v, int key, int *changed)
+{
+    *changed = 0;
+    switch (key) {
+    case ITK_LEFT: case ITK_BACKSPACE:
+        if (NumberPos > 0) NumberPos--;
+        return 1;
+    case ITK_RIGHT:
+        if (NumberPos < 6) NumberPos++;
+        return 1;
+    case '+':
+        (*v)++;
+        *changed = 1;
+        return 1;
+    case '-':
+        if (*v) {
+            (*v)--;
+            *changed = 1;
+        }
+        return 1;
+    default:
+        break;
+    }
+    if (key >= '0' && key <= '9') {     /* F_Post5Num8: seven digits */
+        uint32_t x = *v, nv = 0;
+        int dig[7], i;
+        for (i = 6; i >= 0; i--) {
+            dig[i] = (int)(x % 10);
+            x /= 10;
+        }
+        dig[NumberPos] = key - '0';
+        for (i = 0; i < 7; i++)
+            nv = nv * 10 + (uint32_t)dig[i];
+        *v = nv;
+        *changed = 1;
+        if (NumberPos < 6)
+            NumberPos++;
+        return 1;
+    }
+    return 0;
+}
+
+/* SampleToggle / LoadSampleToggle (IT_F.ASM): Space on Loop / Sustain
+ * Loop: Off -> On Forwards -> On Ping Pong -> Off. Switched on, a loop
+ * start at or past the end goes to 0 and an end not after the start
+ * to the sample's length, so the loop is valid right away. */
+static void loop_toggle(sample_t *s, int sus)
+{
+    uint8_t on = sus ? 0x20 : 0x10, pp = (uint8_t)(on << 2);
+    uint32_t *b = sus ? &s->SusLoopBeg : &s->LoopBeg;
+    uint32_t *e = sus ? &s->SusLoopEnd : &s->LoopEnd;
+
+    if ((s->Flags & on) && !(s->Flags & pp)) {
+        s->Flags |= pp;
+        return;
+    }
+    s->Flags ^= on;
+    if (!(s->Flags & on))
+        return;
+    s->Flags &= (uint8_t)~pp;           /* something was just turned on */
+    if (*b >= s->Length)
+        *b = 0;
+    if (*b >= *e)
+        *e = s->Length;
+}
+
+/* ---- F3 editable loop/speed fields (O1_SampleList objects 30..36) */
 
 typedef struct smpfield_t {
     const char *title;
@@ -3021,39 +3095,41 @@ static uint32_t *smp_field_ptr(int which)
     }
 }
 
-static void smp_field_commit(int idx)
+static int ListLastNote, ListPlayChannel;   /* defined with the lists */
+
+/* a key on F3 field idx; 1 when taken */
+static int smp_field_key(int idx, int key)
 {
     const smpfield_t *f = &SmpFields[idx];
     sample_t *s = cur_smp();
 
     if (f->kind == 0) {
-        long v = prompt_number(f->title, *smp_field_ptr(f->which),
-                               9999999);
-        if (v >= 0) {
+        int changed, took;
+        ed_lock();
+        took = num7_key(smp_field_ptr(f->which), key, &changed);
+        ed_unlock();
+        if (!changed)
+            return took;
+        if (f->which == 0) {            /* InstSpeed: I_PlaySample */
             ed_lock();
-            *smp_field_ptr(f->which) = (uint32_t)v;
+            Music_PlaySample((uint8_t)(ListLastNote - 1),
+                             (uint8_t)(ListSel + 1),
+                             (uint16_t)ListPlayChannel);
             ed_unlock();
+        } else if (f->which <= 2) {
+            smp_check_loop();           /* I_CheckLoopValues */
+        } else {
+            smp_check_susloop();        /* I_CheckSusLoopValues */
         }
-    } else if (f->kind == 1) {          /* Off -> On -> Ping Pong */
-        ed_lock();
-        if (!(s->Flags & 0x10))
-            s->Flags |= 0x10, s->Flags &= (uint8_t)~0x40;
-        else if (!(s->Flags & 0x40))
-            s->Flags |= 0x40;
-        else
-            s->Flags &= (uint8_t)~(0x10 | 0x40);
-        ed_unlock();
-    } else {
-        ed_lock();
-        if (!(s->Flags & 0x20))
-            s->Flags |= 0x20, s->Flags &= (uint8_t)~0x80;
-        else if (!(s->Flags & 0x80))
-            s->Flags |= 0x80;
-        else
-            s->Flags &= (uint8_t)~(0x20 | 0x80);
-        ed_unlock();
+        return 1;
     }
-    smp_check_both();
+    if (key != ' ')                     /* F_PostToggle: Space only */
+        return 0;
+    ed_lock();
+    loop_toggle(s, f->kind == 2);
+    ed_unlock();
+    smp_refresh_loops();                /* Music_RegetLoopInformation */
+    return 1;
 }
 
 static void smpfield_cdraw(int focused)
@@ -3067,10 +3143,13 @@ static void smpfield_cdraw(int focused)
         switch (f->kind) {
         case 0:
             /* F_Draw5Num -> F_ConvEAX2Num (IT_F.ASM 4311): always seven
-             * digits, zero-padded, colour 2 -- "0008363" */
-            drawf(64, f->y, a, "%07u",
+             * digits, zero-padded, colour 2 -- "0008363"; F_Pre5Num
+             * lights the digit under NumberPos */
+            drawf(64, f->y, 0x02, "%07u",
                   (unsigned)(*((const uint32_t *)smp_field_ptr(f->which))
                              % 10000000u));
+            if (a == 0x30)
+                Screen_SetAttr(64 + NumberPos, f->y, 0x30);
             break;
         case 1:
         case 2: {
@@ -3104,24 +3183,28 @@ static int smpfield_ckey(int key)
     case ITK_DOWN:
         if (SmpFieldSel < nf - 1) { SmpFieldSel++; return 1; }
         return 0;
-    case ITK_ENTER: case ' ':
-        smp_field_commit(SmpFieldSel);
-        return 1;
     default:
-        return 0;
+        return smp_field_key(SmpFieldSel, key);
     }
 }
 
-static void smpfield_cclick(const it_mouse_t *m)
+/* a click: the field takes the focus; a number gets '-' (left) or '+'
+ * (right button), a toggle Space */
+static void smpfield_click(const it_mouse_t *m, int right)
 {
     int i;
     for (i = 0; i < (int)(sizeof(SmpFields) / sizeof(SmpFields[0])); i++)
         if (m->y == SmpFields[i].y) {
             SmpFieldSel = i;
-            smp_field_commit(i);
+            if (SmpFields[i].kind == 0)
+                smp_field_key(i, right ? '+' : '-');
+            else if (!right)
+                smp_field_key(i, ' ');
             return;
         }
 }
+
+static void smpfield_cclick(const it_mouse_t *m) { smpfield_click(m, 0); }
 
 static instrument_t *cur_ins(void);
 
@@ -9672,6 +9755,7 @@ static void handle_pattern_key(int key)
  * multichannel playback on, every note moves on to the next channel, so
  * notes ring on together. */
 static int ListMultiChannel = 0, ListPlayChannel = 0;
+static int ListLastNote = 61;           /* LastPlaySample: C-5, 1-based */
 
 static int list_play_channel(void)
 {
@@ -9707,6 +9791,7 @@ static int generic_list_lkey(int key, int n)
         int gn = key_to_note_plain();
         if (gn > 0) {
             CurInstr = ListSel + 1;
+            ListLastNote = gn;
             jam_note(gn, list_play_channel());
             return 1;
         }
@@ -11040,6 +11125,55 @@ static void lib_preview_key(const slibent_t *e, int idx, int key)
     ed_unlock();
 }
 
+/* Hot swap (it26 extension): put `tmp` into sample slot `slot` while the
+ * song may be playing. Voices still on the old sample are cut first --
+ * with the mixer's ramp, which reads the old data, so the swap waits
+ * until they are off (up to 200 ms; whatever is left then is switched
+ * off at once). Every note after the swap plays the new sample. */
+static void smp_hot_swap(int slot, sample_t *tmp)
+{
+    void *old;
+    int i, left = 0, waited;
+
+    ed_lock();
+    for (i = 0; i < MAXSLAVECHANNELS; i++) {
+        slavechn_t *sc = &SChn[i];
+        if ((sc->Flags & SF_CHAN_ON) && sc->Smp != 100 &&
+            sc->SmpOffs == slot) {
+            sc->Flags |= SF_NOTE_STOP;
+            left++;
+        }
+    }
+    ed_unlock();
+    for (waited = 0; left && waited < 200; waited += 5) {
+        ma_sleep(5);
+        ed_lock();
+        for (left = 0, i = 0; i < MAXSLAVECHANNELS; i++)
+            if ((SChn[i].Flags & SF_CHAN_ON) && SChn[i].Smp != 100 &&
+                SChn[i].SmpOffs == slot)
+                left++;
+        ed_unlock();
+    }
+    ed_lock();
+    for (i = 0; i < MAXSLAVECHANNELS; i++) {   /* TurnOffChannel */
+        slavechn_t *sc = &SChn[i];
+        if ((sc->Flags & SF_CHAN_ON) && sc->Smp != 100 &&
+            sc->SmpOffs == slot) {
+            sc->Flags = SF_NOTE_STOP;
+            if (!(sc->HCN & 0x80))
+                HChn[sc->HCOffst & 63].Flags &= (uint16_t)~HF_CHAN_ON;
+        }
+    }
+    old = Song.Smp[slot].Data;
+    Song.Smp[slot] = *tmp;
+    if (slot >= Song.Header.SmpNum)
+        Song.Header.SmpNum = (uint16_t)(slot + 1);
+    ed_unlock();
+    free(old);
+}
+
+static void ls_confirm_bg(void);
+
 /* load the selected sample record into the current F3 slot. No
  * overwrite prompt: the original has none (LSWindow_EnterSample,
  * IT_DISK.ASM 7297). The extra "Replace sample?" box that features
@@ -11051,24 +11185,20 @@ static int lib_load_sample_entry(const slibent_t *e)
     sample_t *dst = &Song.Smp[ListSel];
     sample_t tmp;
     int mkins = 0;
-    /* LSWindow_Enter (IT_DISK.ASM 7297): in instrument mode, offer to
-     * host the sample in an instrument -- default Yes when the slot had
-     * no sample, No when one is being replaced */
-    if (Song.Header.Flags & ITF_INSTRUMENTS)
-        mkins = confirm_box_def("Create host instrument?",
-                                !(dst->Flags & 1));
+    /* LSWindow_EnterSample (IT_DISK.ASM 7297) stops the music and, in
+     * instrument mode, asks on every load (default No over a sample).
+     * it26 hot-swaps instead: the song plays on, and only an empty slot
+     * asks -- replacing a sample keeps the instruments that use it. */
+    if ((Song.Header.Flags & ITF_INSTRUMENTS) && !(dst->Flags & 1))
+        mkins = confirm_box_ex("Create host instrument?", 1,
+                               FileMode == 13 ? ls_confirm_bg
+                                              : draw_screen, "   No");
     memset(&tmp, 0, sizeof(tmp));
     if (!RIS_LoadSample(e, &tmp)) {
         status("Unable to load sample.");
         return 0;
     }
-    stop_song();
-    ed_lock();
-    free(dst->Data);
-    *dst = tmp;
-    if (ListSel >= Song.Header.SmpNum)
-        Song.Header.SmpNum = (uint16_t)(ListSel + 1);
-    ed_unlock();
+    smp_hot_swap(ListSel, &tmp);
     if (mkins) {
         int in;
         ed_lock();
@@ -12256,26 +12386,20 @@ static void ls_field_key(int key)
         return;
     }
     if (obj == 19 || obj == 22) {           /* LSLoopToggle/SusLoopToggle */
-        if (key == ITK_ENTER || key == ' ')
-            s->Flags ^= (uint8_t)(obj == 19 ? 0x10 : 0x20);
+        if (key == ' ')                     /* F_PostToggle: Space only */
+            loop_toggle(s, obj == 22);      /* LoadSampleToggle */
         return;
     }
-    if (obj >= 18 && obj <= 24) {           /* 5num inputs */
-        static const char *const title[] = {
-            "Speed", "", "Loop Begin", "Loop End", "", "Sus. Loop Begin",
-            "Sus. Loop End"
-        };
+    if (obj >= 18 && obj <= 24) {           /* 5num inputs, in place */
         uint32_t *v = obj == 18 ? &s->C5Speed : obj == 20 ? &s->LoopBeg
                     : obj == 21 ? &s->LoopEnd : obj == 23 ? &s->SusLoopBeg
                     : &s->SusLoopEnd;
-        if (key == ITK_ENTER || key == ' ') {
-            long n = prompt_number(title[obj - 18], *v, 9999999);
-            if (n >= 0) {
-                *v = (uint32_t)n;
-                if (obj == 20 || obj == 21) ls_check_loops(s, 0);
-                if (obj == 23 || obj == 24) ls_check_loops(s, 1);
-            }
-        }
+        int changed;
+        num7_key(v, key, &changed);
+        if (changed && (obj == 20 || obj == 21))
+            ls_check_loops(s, 0);           /* D_LSCheckLoopValues */
+        if (changed && (obj == 23 || obj == 24))
+            ls_check_loops(s, 1);
         return;
     }
     {                                       /* thumbbars 25..29 */
@@ -12315,8 +12439,8 @@ static void ls_draw_focus(void)
     } else if (LsFocus == 19 || LsFocus == 22) {
         int on = s->Flags & (LsFocus == 19 ? 0x10 : 0x20);
         for (k = 0; k < (on ? 2 : 3); k++) Screen_SetAttr(64 + k, y, 0x30);
-    } else if (LsFocus <= 24) {
-        for (k = 0; k < 7; k++) Screen_SetAttr(64 + k, y, 0x30);
+    } else if (LsFocus <= 24) {             /* F_Pre5Num: one digit */
+        Screen_SetAttr(64 + NumberPos, y, 0x30);
     } else {                                /* F_PreThumbBar: white thumb */
         if (LsFocus == 25) draw_thumbbar(63, 33, 0, 64, s->Vol, 0x03);
         if (LsFocus == 26) draw_thumbbar(63, 34, 0, 64, s->GvL, 0x03);
@@ -12324,6 +12448,12 @@ static void ls_draw_focus(void)
         if (LsFocus == 28) draw_thumbbar_scaled(63, 38, 0, 32, s->ViD, 8, 0x03);
         if (LsFocus == 29) draw_thumbbar_scaled(63, 39, 0, 255, s->ViR, 8, 0x03);
     }
+}
+
+static void ls_confirm_bg(void)         /* the prompt over this screen */
+{
+    ls_draw();
+    ls_draw_focus();
 }
 
 /* the shared screen loop; view = 1 for the Sample Library (Ctrl-F3) */
@@ -12389,6 +12519,16 @@ static void load_sample_screen_run_(int view)
             if (g == 1) continue;
             if (g == 2) break;
         }
+        if (key == ITK_MOUSE_RIGHT) {       /* MouseNumberIncrement */
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (LsN && mouse_in(&m, 64, 14, 70, 20) &&
+                m.y != 15 && m.y != 18) {   /* not the toggles */
+                LsFocus = 17 + (m.y - 13);
+                ls_field_key('+');
+            }
+            continue;
+        }
 
         if (key == ITK_MOUSE) {                 /* M_Object1List mouse */
             it_mouse_t m;
@@ -12417,7 +12557,9 @@ static void load_sample_screen_run_(int view)
             } else if (LsN && mouse_in(&m, 64, 13, 76, 20)) { /* fields */
                 LsFocus = 17 + (m.y - 13);
                 if (LsFocus == 19 || LsFocus == 22)     /* toggles */
-                    ls_field_key(ITK_ENTER);
+                    ls_field_key(' ');
+                else if (LsFocus >= 18)                 /* numbers: '-' */
+                    ls_field_key('-');
                 continue;
             } else {
                 for (i = 0; i < 5; i++)
@@ -14671,8 +14813,19 @@ static void handle_global(int key)
         status(OrderLockFlag ? "Order list locked" : "Order list unlocked");
         return;
     case ITK_MOUSE_RIGHT:               /* extension: context menu */
-        if (Screen == SCR_PATTERN)
+        if (Screen == SCR_PATTERN) {
             pe_context_menu();
+        } else if (Screen == SCR_SAMPLES) { /* MouseNumberIncrement */
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (m.x >= 64 && m.x <= 70 && m.y >= 14 && m.y <= 20) {
+                int i;
+                for (i = 0; i < NW; i++)
+                    if (W[i].type == WT_CUSTOM && W[i].ckey == smpfield_ckey)
+                        FocusIdx[Screen] = i;
+                smpfield_click(&m, 1);
+            }
+        }
         return;
     case ITK_MOUSE:
         if (Screen == SCR_PATTERN)
@@ -14733,8 +14886,14 @@ static void handle_global(int key)
         handle_message_key(key);
     else if (Screen == SCR_SAMPLES) {
         if (!widgets_key(key) &&        /* Alt ops after the widgets */
-            !handle_sample_altkey(key))
-            list_global_key(key, 0);
+            !handle_sample_altkey(key)) {
+            if (key == ITK_ENTER)       /* SampleGlobalKeyList: Enter on
+                                           any object that leaves it =
+                                           Glbl_LoadSample */
+                sample_library_requester();
+            else
+                list_global_key(key, 0);
+        }
     } else if (Screen == SCR_INSTRUMENTS) {
         if (!widgets_key(key) &&        /* note window gets Alt first */
             !handle_instrument_altkey(key))

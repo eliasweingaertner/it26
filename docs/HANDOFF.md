@@ -324,9 +324,9 @@ Alt-C. F4 note window: Alt-A identity fill, Alt-N/P next/previous,
 Alt-Up/Down transpose table, Alt-Ins/Del row shift. Envelope presets:
 digit loads, Alt-digit stores (compensate-shifted, Flags & 7Fh).
 The Alt modifier key layer itself is new (Win32 WM_SYSKEYDOWN →
-`ITK_ALT_*`; part of roadmap #5). Deviations: numeric fields edit via
-a prompt (not inline digits); no draw/selection/zoom because IT 2.17
-has none (README).
+`ITK_ALT_*`; part of roadmap #5). Deviations: no draw/selection/zoom
+because IT 2.17 has none (README). (The numeric fields' prompt was
+replaced by IT's inline 7-digit entry on 2026-10-13.)
 
 **Module format import — DONE (2026-07-03, spec
 `specs/007-module-format-import`):** `src/it_import.c` ports the
