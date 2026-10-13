@@ -1,0 +1,67 @@
+# F9 / F10: Tab order as IT's object links (O1_LoadModuleList /
+# O1_SaveModuleList), the format buttons as single objects, and Esc =
+# main menu over the file screen (GlobalKeyList), Esc again back to it.
+# The lists' contents differ between the machines; what counts is which
+# object holds the focus.
+mask 9,62,9,79
+mask 6,62,7,79
+@dos waittext Continue
+@dos key enter
+stable 800
+key f9
+stable
+key esc
+stable
+capture f9_esc_menu
+key esc
+stable
+capture f9_esc_back
+key tab
+stable
+capture f9_t1_folders
+key tab
+stable
+capture f9_t2_drives
+key tab
+stable
+capture f9_t3_name
+key tab
+stable
+capture f9_t4_dir
+key tab
+stable
+capture f9_t5_files
+key f2
+stable
+key f10
+stable
+capture f10_t0_name
+key tab
+stable
+capture f10_t1_dir
+key tab
+stable
+key tab
+stable
+key tab
+stable
+key tab
+stable
+capture f10_t5_s3m
+key up
+stable
+capture f10_up_it214
+key down
+stable
+key down
+stable
+capture f10_dd_it2xx
+key enter
+stable
+capture f10_enter_it2xx
+key tab
+stable
+capture f10_tab_name
+key shift-tab
+stable
+capture f10_shtab_drives

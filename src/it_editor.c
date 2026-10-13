@@ -10309,7 +10309,10 @@ static reqfile_t ReqFiles[REQ_MAXFILES];
 static char      ReqDirs[REQ_MAXDIRS][64];
 static char      ReqDrives[26];
 static int       ReqNF, ReqND, ReqNDrv;
-static int       ReqFocus;          /* 0 files, 1 dirs, 2 drives, 3 name */
+static int       ReqFocus;          /* 0 files, 1 dirs, 2 drives, 3 name,
+                                       4 format button ReqBtn, 5 directory */
+static int       ReqBtn;            /* focused format button, 0..3 */
+static char      ReqDirBuf[65];     /* SongDirectoryPrompt while edited */
 static int       FSel, FTop, DSel, DTop, VSel;
 /* FileSpecifier, 64 characters (FileNamePrompt), FileSpecifierDefault */
 static char      ReqName[65] = "*.IT, *.XM, *.S3M, *.MTM, *.669, *.MOD";
@@ -10634,17 +10637,55 @@ static long long now_ms(void)
 #endif
 }
 
-/* IT's arrow keys between the three lists (FileWindowKeys,
- * DirectoryWindowKeys, (Save)DriveWindowKeys, IT_DISK.ASM): objects 12
- * files, 13 folders, 14 drives; on the save screen Right on the drives
- * goes to the format buttons (SaveDriveWindow_Tab, object 18) */
-static int req_arrow_focus(int focus, int right, int save)
+/* Focus moves between the file screen's objects as IT links them, in
+ * the O1_LoadModuleList / O1_SaveModuleList numbers: 12 files, 13
+ * folders, 14 drives (FileWindowKeys, DirectoryWindowKeys,
+ * (Save)DriveWindowKeys, IT_DISK.ASM), 15 file name and 16 directory
+ * (string inputs: Up, Down, Tab, Shift-Tab), 17..20 the format buttons
+ * IT214 / S3M / IT2xx / IT215 (buttons: Up, Down, Left = Shift-Tab,
+ * Right = Tab). Returns the object `key` moves to, the same one for a
+ * link IT leaves empty (0FFFFh), -1 for a key that is no link there. */
+static int req_link(int obj, int key, int save)
 {
-    switch (focus) {
-    case 0: return right ? 1 : 2;
-    case 1: return right ? 2 : 0;
-    case 2: return right ? (save ? 4 : 0) : 1;
-    default: return focus;
+    int tab = key == ITK_TAB, sht = key == ITK_SHIFT_TAB;
+    int up = key == ITK_UP, down = key == ITK_DOWN;
+    int left = key == ITK_LEFT, right = key == ITK_RIGHT;
+
+    switch (obj) {
+    case 12: return tab || right ? 13 : sht ? 16 : left ? 14 : -1;
+    case 13: return tab || right ? 14 : sht || left ? 12 : -1;
+    case 14: return tab ? (save ? 18 : 15) : right ? (save ? 18 : 12)
+                  : sht || left ? 13 : -1;
+    case 15: return up ? 12 : down || tab ? 16 : sht ? 14 : -1;
+    case 16: return up || sht ? 15 : down || tab ? 12 : -1;
+    case 17: case 18: case 19: case 20:
+        return up ? (obj == 17 ? 17 : obj - 1)
+             : down ? (obj == 20 ? 15 : obj + 1)
+             : left || sht ? 14 : right || tab ? 15 : -1;
+    default: return -1;
+    }
+}
+
+static int req_obj(void)
+{
+    static const int obj[6] = { 12, 13, 14, 15, 17, 16 };
+    return ReqFocus == 4 ? 17 + ReqBtn : obj[ReqFocus];
+}
+
+static void req_set_obj(int o)
+{
+    if (o >= 17) {
+        ReqFocus = 4;
+        ReqBtn = o - 17;
+    } else if (o == 16) {
+        if (ReqFocus != 5) {            /* the field starts as the folder */
+            if (!getcwd(ReqDirBuf, sizeof(ReqDirBuf)))
+                ReqDirBuf[0] = 0;
+            ReqDirBuf[64] = 0;
+        }
+        ReqFocus = 5;
+    } else {
+        ReqFocus = o - 12;
     }
 }
 
@@ -10782,7 +10823,7 @@ static void draw_file_requester(void)
         for (i = 0; i < 4; i++)
             draw_button_style(69, 12 + 3 * i, 77, 14 + 3 * i, 8,
                               fmtlbl[i], SaveFormat == fmtof[i],
-                              ReqFocus == 4 && SaveFormat == fmtof[i]);
+                              ReqFocus == 4 && ReqBtn == i);
     }
 
     /* FileNamePrompt (13,46) / SongDirectoryPrompt (13,47): string
@@ -10790,7 +10831,9 @@ static void draw_file_requester(void)
      * 226 up as spaces), the rest of the field keeps the box colour;
      * F_PreStringInput puts the 30h cursor after the text */
     req_draw_string(13, 46, ReqName, ReqFocus == 3);
-    {
+    if (ReqFocus == 5) {
+        req_draw_string(13, 47, ReqDirBuf, 1);
+    } else {
         char cwd[256] = "";
         if (!getcwd(cwd, sizeof(cwd)))  /* on failure keep the "" fallback */
             cwd[0] = '\0';
@@ -11341,6 +11384,7 @@ static void req_enter_dir(const char *name)
 }
 
 static void file_requester_run_(int save);
+static int req_main_menu(void);
 
 static void file_requester_run(int save)
 {
@@ -11378,12 +11422,10 @@ static void file_requester_run_(int save)
 
         switch (key) {
         case ITK_QUIT: Running = 0; done = 1; continue;
-        case ITK_ESC:  done = 1; continue;
-        case ITK_TAB:
-            ReqFocus = (ReqFocus + 1) % (ReqSave ? 5 : 4);
-            continue;
-        case ITK_SHIFT_TAB:
-            ReqFocus = (ReqFocus + (ReqSave ? 4 : 3)) % (ReqSave ? 5 : 4);
+        case ITK_ESC:                   /* the global key list: main menu,
+                                           over this screen */
+            if (req_main_menu() || !Running)
+                done = 1;               /* a menu item took over */
             continue;
         case ITK_MOUSE: {
             it_mouse_t m;
@@ -11420,18 +11462,26 @@ static void file_requester_run_(int save)
                 }
             } else if (m.y == 46 && m.x >= 13 && m.x <= 38) {
                 ReqFocus = 3;
+            } else if (m.y == 47 && m.x >= 13 && m.x <= 76) {
+                req_set_obj(16);
             } else if (ReqSave && m.x >= 69 && m.x <= 77 &&
                        m.y >= 12 && m.y <= 23 && (m.y - 12) % 3 != 2) {
-                ReqFocus = 4;           /* format radio buttons */
-                SaveFormat = (uint8_t)((m.y - 12) / 3);
+                ReqFocus = 4;           /* format buttons */
+                ReqBtn = (m.y - 12) / 3;
+                SaveFormat = (uint8_t)ReqBtn;
             }
             continue; }
         default: break;
         }
 
-        if ((key == ITK_LEFT || key == ITK_RIGHT) && ReqFocus <= 2) {
-            ReqFocus = req_arrow_focus(ReqFocus, key == ITK_RIGHT, ReqSave);
-            continue;
+        {
+            int o = req_link(req_obj(), key, ReqSave);
+            /* the lists keep Up/Down; their links are Tab and the arrows */
+            if (o >= 0 && !(ReqFocus <= 2 && (key == ITK_UP ||
+                                              key == ITK_DOWN))) {
+                req_set_obj(o);
+                continue;
+            }
         }
         if (ReqFocus == 0) {
             switch (key) {
@@ -11478,16 +11528,24 @@ static void file_requester_run_(int save)
             case ITK_BACKSPACE: req_enter_dir(".."); break;
             default: break;
             }
-        } else if (ReqFocus == 4) {         /* save-format group */
-            switch (key) {
-            case ITK_UP:
-                if (SaveFormat > 0) SaveFormat--;
-                break;
-            case ITK_DOWN:
-                if (SaveFormat < 3) SaveFormat++;
-                break;
-            default:
-                break;
+        } else if (ReqFocus == 4) {         /* a format button */
+            if (key == ITK_ENTER)           /* D_GetFormatType */
+                SaveFormat = (uint8_t)ReqBtn;
+        } else if (ReqFocus == 5) {         /* SongDirectoryPrompt */
+            int len = (int)strlen(ReqDirBuf);
+            if (key == ITK_BACKSPACE) {
+                if (len > 0)
+                    ReqDirBuf[len - 1] = 0;
+            } else if (key == ITK_ENTER) {  /* D_NewDirectory */
+                req_enter_dir(ReqDirBuf);
+                if (ReqNF)
+                    ReqFocus = 0;
+                else if (!getcwd(ReqDirBuf, sizeof(ReqDirBuf)))
+                    ReqDirBuf[0] = 0;
+                ReqDirBuf[64] = 0;
+            } else if (key >= 32 && key < 127 && len < 64) {
+                ReqDirBuf[len] = (char)key;
+                ReqDirBuf[len + 1] = 0;
             }
         } else {                            /* filename input */
             int len = (int)strlen(ReqName);
@@ -13629,7 +13687,14 @@ static int run_menu(const menudef_t *d, void (*under)(void), int *psel)
  * starts on its first item, and F_MainMenu / F_FileMenu / ... open it
  * with CX = 0FFFFh, i.e. on the object it was left on */
 static int  MainMenuSel = 0;
-static void menu_under_screen(void) { draw_screen(); }
+static int  MenuOverRequester = 0;      /* Esc on F9 / F10 */
+static void menu_under_screen(void)
+{
+    if (MenuOverRequester)
+        draw_file_requester();
+    else
+        draw_screen();
+}
 static void menu_under_main(void);
 
 /* ---- menu item actions ---- */
@@ -13829,13 +13894,26 @@ static const menudef_t MainMenuDef = {
 
 static void menu_under_main(void)
 {
-    draw_screen();
+    menu_under_screen();
     menu_draw_ex(&MainMenuDef, MainMenuSel, 1);  /* parent of a submenu */
 }
 
 static void main_menu(void)
 {
     run_menu(&MainMenuDef, menu_under_screen, &MainMenuSel);
+}
+
+/* Esc on the file screens: IT's global key list opens the main menu over
+ * the screen; Esc there returns to it. Nonzero when an item ran (it has
+ * switched screens or done its job), which closes the file screen. */
+static int req_main_menu(void)
+{
+    int keep = MenuOverRequester, res;
+
+    MenuOverRequester = 1;
+    res = run_menu(&MainMenuDef, menu_under_screen, &MainMenuSel);
+    MenuOverRequester = keep;
+    return res;
 }
 
 /* ---- pattern editor context menu (extension, right click) ----------
@@ -18225,13 +18303,26 @@ int main(int argc, char **argv)
                         req_scroll_off(12, 5000) != 0)
                         DFAIL();
                     /* IT's arrows between the lists, F9 and F10 */
-                    if (req_arrow_focus(0, 1, 0) != 1 ||
-                        req_arrow_focus(0, 0, 0) != 2 ||
-                        req_arrow_focus(1, 1, 0) != 2 ||
-                        req_arrow_focus(1, 0, 0) != 0 ||
-                        req_arrow_focus(2, 1, 0) != 0 ||
-                        req_arrow_focus(2, 0, 0) != 1 ||
-                        req_arrow_focus(2, 1, 1) != 4)
+                    if (req_link(12, ITK_RIGHT, 0) != 13 ||
+                        req_link(12, ITK_LEFT, 0) != 14 ||
+                        req_link(12, ITK_SHIFT_TAB, 0) != 16 ||
+                        req_link(13, ITK_RIGHT, 0) != 14 ||
+                        req_link(13, ITK_LEFT, 0) != 12 ||
+                        req_link(14, ITK_RIGHT, 0) != 12 ||
+                        req_link(14, ITK_TAB, 0) != 15 ||
+                        req_link(14, ITK_TAB, 1) != 18 ||
+                        req_link(14, ITK_RIGHT, 1) != 18 ||
+                        req_link(14, ITK_LEFT, 1) != 13 ||
+                        req_link(15, ITK_TAB, 0) != 16 ||
+                        req_link(15, ITK_UP, 0) != 12 ||
+                        req_link(16, ITK_TAB, 0) != 12 ||
+                        req_link(16, ITK_SHIFT_TAB, 0) != 15 ||
+                        req_link(17, ITK_UP, 1) != 17 ||
+                        req_link(18, ITK_UP, 1) != 17 ||
+                        req_link(20, ITK_DOWN, 1) != 15 ||
+                        req_link(19, ITK_TAB, 1) != 15 ||
+                        req_link(19, ITK_LEFT, 1) != 14 ||
+                        req_link(12, ITK_UP, 0) != -1)
                         DFAIL();
                     cd_back(home);
                 } else
