@@ -1,6 +1,6 @@
 # it26 — a native cross-platform port of Impulse Tracker
 
-TL;DR AI-vibed 1:1 conversion of Jeffrey Lim's fantastic Impulse Tracker to modern operating systems. Originally written in pure (!) 486 x86 assembly code, this aims to be the first near-complete 1:1 translation of both the playback engine and the editor to C/SDL. The conversion was carried out fully with Anthropic's Claude models (Fable 5, Opus 4.8, Opus 5 and Opus 5.5). Everything I tested works - but bugs might still exist!
+TL;DR AI-vibed conversion of Jeffrey Lim's fantastic Impulse Tracker to modern operating systems. Originally written in pure (!) 486 x86 assembly code, this aims to be the first near-complete translation of both the playback engine and the editor to C/SDL: classic IT, classic interface - with a modern twist. The conversion was carried out fully with Anthropic's Claude models (Fable 5, Opus 4.8, Opus 5 and Opus 5.5). Everything I tested works - but bugs might still exist!
 
 ![ited on Windows, directly after launch ](docs/ited-launch.png)
 (The AI port banner disappears after 10 secs)
@@ -13,12 +13,13 @@ About 30 years ago I was quite a nerdy teenager. My parents had just bought a 48
 
 Once Fable 5 became available I couldn't resist and put it to an extreme test: Can an AI model of this class create a working 1:1 port of Impulse Tracker for modern operating systems? Quite shockingly, the answer is yes. I threw Fable 5 (and in parts Opus 4.8) at it, using [spec-kit](https://github.com/github/spec-kit) to steer its progress. Of course it was not a one-shot miracle: we went through quite some testing iterations, for example to hunt down flickering in the editor screen. 
 
-After burning quite a bunch of tokens, I am happy to present you an AI port of Impulse Tracker! By design, this port does not adopt new features. We don't fix glitches or bugs of Impulse Tracker. If you run this code, you get what IT 2.17 did. Not more and not less!
+After burning quite a bunch of tokens, I am happy to present you an AI port of Impulse Tracker! At its heart, it is what IT 2.17 was: the original playback engine, the original screens and keys, glitches included. On top of that come a few modern twists, such as hot-swapping samples while the song plays, a right-click block menu or scale-aware note interpolation. Everything you know from IT works as it always did.
 
 ## Now we let the AI explain the rest :P
 
-it26 is a 1:1 C port of Jeffrey Lim's Impulse Tracker for Windows,
-macOS and Linux. It has two parts:
+it26 is a C port of Jeffrey Lim's Impulse Tracker for Windows, macOS
+and Linux: classic IT at its core, with a few modern extensions on top.
+It has two parts:
 
 - **The playback engine:** the complete IT 2.17 engine, transliterated
   instruction by instruction from the released x86 assembly source
@@ -29,6 +30,14 @@ macOS and Linux. It has two parts:
   dialogs and behaviours, taken from the same source rather than
   approximated. That includes the context-sensitive F1 help, whose pages
   are generated from IT's own help data.
+
+On top of that classic core sit the **extensions**: things IT never had,
+such as a right-click block menu with scale-aware note interpolation,
+mouse block selection, hot-swapping samples while the song plays, the
+operating system's file dialogs and a modern audio setup screen. They
+hang off keys and mouse buttons IT 2.14 leaves unused, so nothing you
+know from IT changes; they are listed under
+[Classic IT, with a twist](#classic-it-with-a-twist).
 
 The main way to use it is the **pixel window**. It shows the same
 640x400 picture IT's VGA 80x50 text mode drew, with the real font,
@@ -301,12 +310,15 @@ The defaults are the original's (44.1 kHz, 16-bit dithered, stereo, no
 filter, no feedback), and with them playback is bit-identical. Save
 Prefs stores the settings in `ited.cfg`.
 
-## Fidelity notes (deviations from the DOS binary)
+## Classic IT, with a twist
 
-The port aims to behave exactly like IT, bugs included. These are the
-places where it deliberately or unavoidably differs.
+The playback engine and the classic interface behave like IT, bugs
+included, and the comparison harness checks that screen by screen. What
+it26 adds is meant as a twist on that, not a replacement: extensions
+live on input IT 2.14 ignores, and a few things differ because a modern
+system does. These are the places where it26 is not the DOS binary.
 
-**Deliberate deviations:**
+**Extensions and deliberate differences:**
 
 - **Shift-F5** is the Miniaudio Driver screen (see Audio).
 - **Keyboard layout:** a keypress carries two values in IT too, the
@@ -318,6 +330,12 @@ places where it deliberately or unavoidably differs.
   the original file format is still supported via `keyboard_cfg=` in
   `ited.cfg` (`tools/asm_keyboard_cfg.py` assembles the shipped
   `Keyboard/*.ASM` tables).
+- **Replacing a sample while the song plays (hot swap):** loading a
+  sample into a slot that already has one keeps the song playing; notes
+  still sounding with the old sample stop, every later note plays the new
+  one, and the instruments using that slot keep using it. IT 2.14 stops
+  playback and asks "Create host instrument?" on every load; it26 asks
+  only when the slot was empty.
 - **Load Sample and Load Instrument screens:** the list is always sorted
   (the original sorts only once background identification finishes),
   there is no `CACHE.ITS` / `CACHE.ITI`, and saving an edited sample
@@ -409,7 +427,6 @@ places where it deliberately or unavoidably differs.
   IT produced.
 - S3M export reproduces `D_SaveS3M`'s lossy conversion and warnings.
 - Alt-Y (calculate C5 speed) is a stub in the 2.17 source and stays one.
-- Loading a sample over an occupied slot doesn't ask, as in IT.
 
 ### The terminal fallback
 
