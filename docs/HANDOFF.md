@@ -987,6 +987,41 @@ Terminal.app via `open -a Terminal .`, Linux `$TERMINAL` / `x-terminal-
 emulator`), bind 04h in `handle_global`, point `act_file_shell` at it and
 drop the `HLP_helpglobal_16` filter.
 
+## 5f. Rendering after Esa Ruoho's IT 2.354 (feature 018, 2026-10-18)
+
+Spec, plan, research (Esa's assembly cited per behaviour) and tasks:
+`specs/018-audio-render-extensions/`. README "Rendering".
+- **`src/it_render.c`** (editor-side, in `EDITOR_SOURCES`): `Render_Run`
+  drives the unchanged engine + WAV driver offline like `itplay -w`:
+  `Music_Stop`, `Driver->InitSound`, `Music_ResetRNG`, `StopEndOfPlaySection`,
+  `Music_PlayPattern`/`Music_PlaySong`, then `WAVDriver_RenderAny` tick by
+  tick (`WAVDriver_Pending`) until `PlayMode` drops -- the tick in which the
+  engine stopped is left out, so a pattern file is exactly its playing
+  time. Imports: 44.1 kHz, 16-bit, mono (L+R)/2. Files: the Shift-F5 rate,
+  32-bit float **unclamped** (`OutFormat` 5, internal, not on Shift-F5).
+  Also the WAV writer and Esa's names.
+- **`it_driver.c`**: `OutFormat` 5 and `WAVDriver_Pending()` in the it26
+  extension block; the 8-bit test is now `== 3 || == 4`. Original path
+  untouched (`test_pattern` IDENTICAL, same hashes).
+- **Live-audio gate** (`it_editor.c`): `audio_cb` locks `AudioMutex` and
+  outputs silence while `RenderActive`; `render_begin()` / `render_end()`
+  save and resume play state (single-pattern renders resume the pattern
+  at its row or the song at its order/row) and `render_restore_driver()`
+  re-applies the Shift-F5 settings. Every render path must go through
+  begin/end -- a bare `Render_Run` with the device open mixes in two
+  threads (the selftest found this).
+- Keys: global `0x0F` branch (F2/F11/F5), F11 handler (Right / Shift-Right
+  on digit 2, Shift-G, Ctrl-G), `handle_info_key` (Shift-Right, D),
+  `handle_global` (Ctrl-Shift-Right, Ctrl-Alt-Right -- Win32 delivers it as
+  `ITK_ALT_RIGHT`+Ctrl, SDL as `ITK_CTRL_RIGHT`+Alt --, Alt-W where the
+  screen has none, Shift-Alt-W everywhere), PE Alt-M with Shift.
+- F10: `SaveFormat` 4 / 5, buttons objects 21 / 22 in `req_link`; F12:
+  `DirQuicksave` (`quicksavedir=`), row 45, box to 46, button 47..49.
+- Batch: `ited --render-patterns <mod> [--pattern N]`, `--dump-samples
+  <mod>` (`batch_run`, before mutex/window/device).
+- Tests: selftest block **RND** (21 blocks now); port-only scripts
+  `build-compare/_work/rnd_gestures.py` (19 gestures) and `rnd_f10.py`.
+
 ## 6. Next phase
 
 Stage-4 status: the "make it the real IT UI" milestone landed

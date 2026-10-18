@@ -310,6 +310,56 @@ The defaults are the original's (44.1 kHz, 16-bit dithered, stereo, no
 filter, no feedback), and with them playback is bit-identical. Save
 Prefs stores the settings in `ited.cfg`.
 
+## Rendering (after Esa Ruoho's IT 2.354)
+
+Esa Juhani Ruoho ([@esaruoho](https://github.com/esaruoho)) extends the
+original DOS source in his fork,
+[esaruoho/impulse-tracker](https://github.com/esaruoho/impulse-tracker),
+for working next to a DAW. it26 takes over his rendering set with his keys,
+file names and messages. Every render runs the real engine, faster than real
+time; a song that was playing stops for a pattern render and carries on where
+it was.
+
+| Key | Where | What it does |
+|---|---|---|
+| Ctrl-O | F2 | render the pattern into a new sample |
+| Shift-Ctrl-O | F2 | render the pattern as a WAV into the Quicksave folder |
+| Ctrl-O, Shift-G, Right on an order's last digit | F11 | the playing pattern (stopped: the one at the cursor) into a new sample |
+| Shift-Ctrl-O, Ctrl-G, Shift-Right on the last digit | F11 | the same pattern as a WAV into the Quicksave folder |
+| Shift-Right, Ctrl-O | F5 | the playing pattern (stopped: the editor's) as a WAV into the Quicksave folder |
+| D, Ctrl-Shift-Right | F5 | every sample as its own WAV |
+| Ctrl-Shift-Right | F3, F11 | every sample as its own WAV |
+| Ctrl-Alt-Right | F3 | this sample as a WAV |
+| Shift-Alt-M | F2 | one WAV per channel of the pattern (channels with notes, not muted) |
+| "WAV" / "MWAV" format button | F10 | the whole song as one WAV / one WAV per unmuted channel, under the name you type |
+| Alt-W / Shift-Alt-W | any screen without its own Alt-W | save the module into the Quicksave folder / make the current folder the Quicksave folder |
+
+- **The Quicksave folder** is a new row in F12 (Enter or Ctrl-O picks a
+  folder). Renders and sample exports go there; without one, to the
+  sample folder.
+- **Into a sample**: the pattern plays once, from its first to its last
+  row, at 44.1 kHz into a 16-bit sample in the first slot free in both
+  the sample and instrument lists, looped, named "Pattern NNN" (1 MB at
+  most). In instrument mode an instrument is made for it. Stereo songs
+  are mixed to mono: IT samples are mono.
+- **As a WAV file**: 32-bit float at the Shift-F5 mixing rate, not
+  clipped — peaks above full scale stay in the file for the DAW.
+- **Names** are Esa's: `LL<HHMMSS>.WAV` for a pattern, `<song><NNNN>.WAV`
+  for channel and command-line renders, `HHMMSS<slot>.WAV` for samples,
+  `SONG01.WAV`… for MWAV.
+- **Esc** stops a render (a channel sweep stops after the channel it is
+  on); pressing a render key again does the same.
+- **From the command line**: `ited --render-patterns <module>` writes
+  every pattern that holds data (`--pattern N` for one), `ited
+  --dump-samples <module>` every sample, both into the Quicksave folder
+  from `ited.cfg`, and exit without opening a window.
+
+Where it26 differs from Esa's build: F5's Ctrl-O renders, as his source
+comment intends (his build exports the samples there); F3's Ctrl-Right
+stays IT's "next order", so exporting one sample is Ctrl-Alt-Right;
+imported renders are mono (his keep IT's stereo bit, which IT's mixer
+doesn't play); WAV files are 32-bit float instead of 16-bit.
+
 ## Classic IT, with a twist
 
 The playback engine and the classic interface behave like IT, bugs
@@ -330,6 +380,12 @@ system does. These are the places where it26 is not the DOS binary.
   the original file format is still supported via `keyboard_cfg=` in
   `ited.cfg` (`tools/asm_keyboard_cfg.py` assembles the shipped
   `Keyboard/*.ASM` tables).
+- **Rendering** (Ctrl-O, Shift-Ctrl-O, the F11 / F5 / F3 render keys,
+  Shift-Alt-M, F10's WAV / MWAV buttons, Alt-W, the command-line options):
+  after Esa Ruoho's IT 2.354 fork, see [Rendering](#rendering-after-esa-ruohos-it-2354).
+  F10 gets two more format buttons and F12 a Quicksave row (the directory
+  box is one row taller, "Save all Preferences" one row lower), laid out
+  as in his fork.
 - **Replacing a sample while the song plays (hot swap):** loading a
   sample into a slot that already has one keeps the song playing; notes
   still sounding with the old sample stop, every later note plays the new

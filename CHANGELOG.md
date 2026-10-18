@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Rendering, after Esa Juhani Ruoho's IT 2.354 fork**
+  ([esaruoho/impulse-tracker](https://github.com/esaruoho/impulse-tracker)):
+  Ctrl-O renders the pattern into a new sample (looped, "Pattern NNN"),
+  Shift-Ctrl-O renders it as a WAV into a new **Quicksave folder** (F12);
+  the same from F11 (Ctrl-O / Shift-G / Ctrl-G, Right and Shift-Right on an
+  order's last digit) and F5 (Shift-Right); every sample as a WAV (F5 D,
+  Ctrl-Shift-Right on F3/F5/F11, one sample with Ctrl-Alt-Right on F3);
+  one WAV per channel (Shift-Alt-M); the whole song as one WAV or one per
+  channel (F10's new WAV / MWAV buttons); Alt-W saves the module into the
+  Quicksave folder, Shift-Alt-W makes the current folder the Quicksave
+  folder; `ited --render-patterns` / `--dump-samples` from the command
+  line. Renders run faster than real time and resume playback; WAV files
+  are 32-bit float, not clipped, at the Shift-F5 rate; imports are
+  IT-compatible 44.1 kHz 16-bit mono samples.
+
 ## v0.8.0 — 2026-10-13
 
 **Classic IT, classic interface — with a twist.** it26 is no longer

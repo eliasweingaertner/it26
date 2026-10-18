@@ -1114,7 +1114,7 @@ static void DoTick(void)
                 int32_t t = v >> 14;
                 if (t < -0x8000) t = -0x8000; else if (t > 0x7FFF) t = 0x7FFF;
                 di[k] = (int16_t)t;
-                if (OutFormat >= 3) {   /* 8-bit unsigned */
+                if (OutFormat == 3 || OutFormat == 4) {   /* 8-bit unsigned */
                     int32_t x;
                     if (OutFormat == 4) {   /* error feedback, >> 22 */
                         int32_t *acc = k ? &Dither8R : &Dither8L;
@@ -1131,6 +1131,12 @@ static void DoTick(void)
                     if (x < -0x800000) { x = -0x800000; NumClipped++; }
                     else if (x > 0x7FFFFF) { x = 0x7FFFFF; NumClipped++; }
                     w[k] = x * 256;
+                } else if (OutFormat == 5) {   /* float, unclamped: WAV-file
+                                                  renders only (feature 018)
+                                                  -- peaks above full scale
+                                                  are kept for the DAW */
+                    float f = (float)v * (1.0f / 536870912.0f);
+                    memcpy(&w[k], &f, 4);
                 } else {                /* full scale = 2^29 */
                     float f = (float)v * (1.0f / 536870912.0f);
                     if (f < -1.0f) { f = -1.0f; NumClipped++; }
@@ -1218,7 +1224,10 @@ void WAVDriver_GetWaveForm(int16_t *out2048)
 
 void WAVDriver_Render(int16_t *dst, uint32_t frames);
 
-void WAVDriver_SetOutputFormat(int fmt)    { OutFormat = fmt >= 0 && fmt <= 4 ? fmt : 0; }
+void WAVDriver_SetOutputFormat(int fmt)    { OutFormat = fmt >= 0 && fmt <= 5 ? fmt : 0; }
+/* frames of the current tick not yet handed out (feature 018: renders
+ * stop exactly at the tick where the engine stopped) */
+uint32_t WAVDriver_Pending(void)           { return OutFilled - OutPos; }
 void WAVDriver_SetOutputChannels(int ch)   { OutChannels = ch == 1 ? 1 : 2; }
 void WAVDriver_SetForceMono(int on)        { ForceMono = on ? 1 : 0; }
 int  WAVDriver_GetOutputFormat(void)       { return OutFormat; }
@@ -1232,7 +1241,7 @@ void WAVDriver_SetStartRamp(int on)        { StartNoRamp = on ? 0 : 1; }
  * channel is sent (forced mono makes both the same). */
 void WAVDriver_RenderAny(void *dst, uint32_t frames)
 {
-    static const int bps[5] = { 2, 4, 4, 1, 1 };
+    static const int bps[6] = { 2, 4, 4, 1, 1, 4 };
     uint8_t *d = (uint8_t *)dst;
     int b = bps[OutFormat], ch = OutChannels;
 

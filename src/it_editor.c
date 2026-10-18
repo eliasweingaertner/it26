@@ -52,6 +52,7 @@
 #include "it_save.h"
 #include "it_import.h"
 #include "it_ris.h"
+#include "it_render.h"               /* feature 018 */
 #include "it_screen.h"
 #include "it_vgadata.h"                 /* IT_FontROM (selftest checks) */
 
@@ -216,6 +217,7 @@ static char      FileNameDisp[20] = "";   /* header File Name field */
 static char      FileSaveName[260] = "";
 static time_t    StartTime;
 static char      DirModule[256], DirSample[256], DirInstr[256];
+static char      DirQuicksave[256];      /* feature 018: F12 "Quicksave" */
 
 static ma_device Device;
 static ma_mutex  Mutex;
@@ -1829,6 +1831,8 @@ static void stop_song(void);
 static void commit_current_pattern(void);
 static void load_pattern(uint16_t pat);
 static void pe_new_pattern(uint16_t pat);   /* NewPattern: load + undo */
+static void info_render_pattern(void);      /* feature 018 */
+static int  export_samples(int only1);
 
 #define SMP_MAXBYTES 4177920u           /* I_ReMix size cap */
 #define SMP_PAD      32                 /* interpolator padding, as loader */
@@ -4738,8 +4742,8 @@ static const uint8_t SongVarLabels[] =
     "\377\006 Playback\015\015\015"
     "  Pitch Slides";
 
-static const uint8_t DirLabels[] =
-    "\377\004 Module\015\377\004 Sample\015Instrument";
+static const uint8_t DirLabels[] =      /* + Esa's Quicksave row */
+    "\377\004 Module\015\377\004 Sample\015Instrument\015\377\001 Quicksave";
 
 static void draw_vars(void)
 {
@@ -4780,13 +4784,15 @@ static void draw_vars(void)
 
     Screen_DrawStringCtl(1, 39, (const uint8_t *)"\377\116\201", 0x21, NULL);
     Screen_DrawString(34, 40, "Directories", 0x23);
-    Screen_DrawBox(12, 41, 78, 45, 27);             /* DirectoryInputBox */
+    Screen_DrawBox(12, 41, 78, 46, 27);             /* DirectoryInputBox,
+                                                       one row taller (018) */
     Screen_DrawStringCtl(2, 42, DirLabels, 0x20, NULL);
     wtext(13, 42, DirModule, 64);
     wtext(13, 43, DirSample, 64);
     wtext(13, 44, DirInstr, 64);
+    wtext(13, 45, DirQuicksave, 64);                /* QuickSaveDirectoryInput */
 
-    wbutton(27, 46, 52, 48, "  Save all Preferences", act_save_prefs);
+    wbutton(27, 47, 52, 49, "  Save all Preferences", act_save_prefs);
 
     /* O1_ConfigureITList's object links (IT_OBJ1.ASM, objects 14..31 and
      * 10 = LinkCommandGToggle), renumbered to the widgets above: inputs,
@@ -4795,7 +4801,7 @@ static void draw_vars(void)
      * (F_PostButtonObject). "Save all Preferences" has none but Up, so
      * Tab stays on it (#50). */
     {
-        static const int8_t links[18][6] = {
+        static const int8_t links[19][6] = {
             { -1,  1,  1, -1, -2, -2 },     /* Song Name */
             {  0,  2,  2,  0, -2, -2 },     /* Initial Tempo */
             {  1,  3,  3,  1, -2, -2 },     /* Initial Speed */
@@ -4813,10 +4819,11 @@ static void draw_vars(void)
             { 12, 15, 15, 12, -2, -2 },     /* Module directory */
             { 14, 16, 16, 14, -2, -2 },     /* Sample directory */
             { 15, 17, 17, 15, -2, -2 },     /* Instrument directory */
-            { 16, -1, -1, -1, -1, -1 },     /* Save all Preferences */
+            { 16, 18, 18, 16, -2, -2 },     /* Quicksave directory (018) */
+            { 17, -1, -1, -1, -1, -1 },     /* Save all Preferences */
         };
         int i;
-        for (i = 0; i < 18 && i < NW; i++) {
+        for (i = 0; i < 19 && i < NW; i++) {
             W[i].has_links = 1;
             memcpy(W[i].link, links[i], sizeof(links[i]));
         }
@@ -4963,6 +4970,33 @@ static const char PortHelpPeDrag[] =
     "\x05" "Mouse drag        Mark block";
 static const char PortHelpDirMac[] =
     "\x05" "Cmd-O             Choose folder for a path field (system dialog)";
+/* feature 018: rendering after Esa Ruoho's IT 2.354 */
+static const char PortHelpRenPe1[] =
+    "\x05" "Ctrl-O            Render pattern into a new sample";
+static const char PortHelpRenPe2[] =
+    "\x05" "Shift-Ctrl-O      Render pattern to the Quicksave folder";
+static const char PortHelpRenPe3[] =
+    "\x05" "Shift-Alt-M       Render each channel of the pattern to a WAV";
+static const char PortHelpRenOrd1[] =
+    "\x05" "Ctrl-O / Shift-G  Render playing pattern into a new sample";
+static const char PortHelpRenOrd2[] =
+    "\x05" "Shift-Ctrl-O      Render playing pattern to Quicksave";
+static const char PortHelpRenOrd4[] =
+    "\x05" "Ctrl-G            Render playing pattern to Quicksave";
+static const char PortHelpRenOrd3[] =
+    "\x05" "Right, last digit New sample; Shift-Right: to Quicksave";
+static const char PortHelpRenInfo1[] =
+    "\x05" "Shift-Right       Render playing pattern to Quicksave";
+static const char PortHelpRenDump[] =
+    "\x05" "Ctrl-Shift-Right  Save every sample as a WAV";
+static const char PortHelpRenInfo2[] =
+    "\x05" "D                 Save every sample as a WAV";
+static const char PortHelpRenSmp[] =
+    "\x05" "Ctrl-Alt-Right    Save this sample as a WAV";
+static const char PortHelpQs1[] =
+    "\x05" "Alt-W             Save module to the Quicksave folder";
+static const char PortHelpQs2[] =
+    "\x05" "Shift-Alt-W       Make this folder the Quicksave folder";
 
 /* the line list a context shows: a copy of IT's own with the port lines
  * applied (rebuilt per call -- a few hundred pointers) */
@@ -4981,10 +5015,9 @@ static const uint8_t *const *help_lines(int ctx)
         buf[n++] = (pk && *src == HLP_helpcontext1_181) ? HL(PortHelpPreview)
                                                          : *src;
     }
-    if (dlg || ctx == 1) {
-        buf[n++] = HLP_newline;
-        buf[n++] = HL(PortHelpHead);
-    }
+    buf[n++] = HLP_newline;             /* every context has some now:
+                                           Alt-W is global (feature 018) */
+    buf[n++] = HL(PortHelpHead);
     if (dlg) {
         int mac = Screen_DialogModLabel() != NULL;
         buf[n++] = HL(mac ? PortHelpOpenMac : PortHelpOpen);
@@ -5000,7 +5033,25 @@ static const uint8_t *const *help_lines(int ctx)
         buf[n++] = HL(PortHelpPeK);
         buf[n++] = HL(PortHelpPeMenu);
         buf[n++] = HL(PortHelpPeDrag);
+        buf[n++] = HL(PortHelpRenPe1);  /* feature 018 */
+        buf[n++] = HL(PortHelpRenPe2);
+        buf[n++] = HL(PortHelpRenPe3);
+    } else if (ctx == 0) {              /* order list */
+        buf[n++] = HL(PortHelpRenOrd1);
+        buf[n++] = HL(PortHelpRenOrd2);
+        buf[n++] = HL(PortHelpRenOrd4);
+        buf[n++] = HL(PortHelpRenOrd3);
+        buf[n++] = HL(PortHelpRenDump);
+    } else if (ctx == 9) {              /* info page */
+        buf[n++] = HL(PortHelpRenInfo1);
+        buf[n++] = HL(PortHelpRenInfo2);
+        buf[n++] = HL(PortHelpRenDump);
+    } else if (ctx == 2) {              /* sample list */
+        buf[n++] = HL(PortHelpRenSmp);
+        buf[n++] = HL(PortHelpRenDump);
     }
+    buf[n++] = HL(PortHelpQs1);         /* global (Glbl_Alt_W) */
+    buf[n++] = HL(PortHelpQs2);
     buf[n] = NULL;
     return buf;
 }
@@ -6302,6 +6353,12 @@ static void handle_info_key(int key)
     case ITK_UP: case ITK_LEFT:         /* DisplayUp */
         if (InfoCurChannel > 0) InfoCurChannel--;
         return;
+    case ITK_SHIFT_RIGHT:               /* Esa: Display_RenderQuicksave */
+        info_render_pattern();
+        return;
+    case 'd': case 'D':                 /* Esa: D_DumpAllSamplesWAV */
+        export_samples(0);
+        return;
     case ITK_DOWN: case ITK_RIGHT:      /* DisplayDown */
         if (InfoCurChannel < 63) InfoCurChannel++;
         return;
@@ -7152,6 +7209,509 @@ static void jam_note(int gnote, int chan)
     ed_lock();
     Music_PlayNote((uint16_t)chan, n, 128);
     ed_unlock();
+}
+
+/* ===================================================================
+ * Feature 018: rendering, after Esa Ruoho's IT 2.354 fork
+ * (specs/018-audio-render-extensions). it_render.c runs the real engine
+ * offline; here: the live-audio gate, play state saved and resumed, the
+ * render folder, the import into a sample slot, sample export and the
+ * per-channel sweeps. Keys and texts follow Esa's assembly (research.md).
+ * =================================================================== */
+static ma_mutex     AudioMutex;             /* audio_cb vs. renders */
+static int          AudioMutexUp = 0;
+static volatile int RenderActive = 0;       /* audio_cb outputs silence */
+static int          RenderRunning = 0;
+static struct { uint16_t mode, order, row, pattern, rows; } RenderSaved;
+static long long    RenderPollAt;
+
+static long long now_ms(void);
+static void render_restore_driver(void);
+static void rpath_dir(char *out, size_t n, const char *path);
+static void info_render_pattern(void);    /* the Shift-F5 settings */
+static void draw_file_requester(void);
+
+static int render_dir_ok(const char *d)
+{
+#ifdef _WIN32
+    DWORD a = GetFileAttributesA(d);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+    return stat(d, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+/* D_GotoRenderDirectory: the Quicksave folder if one is set (and it must
+ * exist), else the sample folder, else the current one; 0 = bad
+ * Quicksave folder */
+static int render_dir(char *out, size_t n)
+{
+    if (DirQuicksave[0]) {
+        if (!render_dir_ok(DirQuicksave))
+            return 0;
+        snprintf(out, n, "%s", DirQuicksave);
+    } else if (DirSample[0] && render_dir_ok(DirSample)) {
+        snprintf(out, n, "%s", DirSample);
+    } else {
+        snprintf(out, n, ".");
+    }
+    return 1;
+}
+
+static void render_path(char *out, size_t n, const char *dir,
+                        const char *name)
+{
+    size_t l = strlen(dir);
+    int sep = l && (dir[l - 1] == '/' || dir[l - 1] == '\\');
+    snprintf(out, n, "%s%s%s", dir, sep ? "" : "/", name);
+}
+
+/* say it before the work, so a long render can't look like a hang */
+static void render_paint(const char *fmt, ...)
+{
+    va_list ap;
+    char msg[96];
+
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    status("%s", msg);
+    if (getenv("ITED_SELFTEST"))
+        return;
+    if (FileMode == 9 || FileMode == 10)
+        draw_file_requester();
+    else
+        draw_screen();
+    Screen_Update();
+}
+
+/* Esc, or any render gesture again, stops a render in progress
+ * (WAV_AlreadyActive: the second press = early stop, file finished) */
+static int render_stop_key(int k)
+{
+    if (k == ITK_ESC || k == 0x0F || k == 0x07 || k == ITK_SHIFT_RIGHT)
+        return 1;
+    if ((k == 'G' || k == 'g') && (CurKey.flags & ITKF_SHIFT))
+        return 1;
+    if (k == ITK_ALT_A + ('M' - 'A') && (CurKey.flags & ITKF_SHIFT))
+        return 1;
+    return 0;
+}
+
+static int render_abort_poll(void)
+{
+    long long t = now_ms();
+    int k;
+
+    if (t - RenderPollAt < 50)
+        return 0;
+    RenderPollAt = t;
+    while ((k = ed_get_key()) != ITK_NONE) {
+        if (k == ITK_QUIT) {
+            Running = 0;
+            return 1;
+        }
+        if (render_stop_key(k)) {
+            render_paint("Render halted -- finalizing to Quicksave ...");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* stop the live output (the callback writes silence and keeps out of
+ * the driver) and remember where playback was */
+static void render_begin(void)
+{
+    commit_current_pattern();
+    ed_lock();
+    RenderSaved.mode = PlayMode;
+    RenderSaved.order = CurrentOrder;
+    RenderSaved.row = CurrentRow;
+    RenderSaved.pattern = CurrentPattern;
+    RenderSaved.rows = NumberOfRows;
+    ed_unlock();
+    if (AudioMutexUp) ma_mutex_lock(&AudioMutex);
+    RenderActive = 1;
+    if (AudioMutexUp) ma_mutex_unlock(&AudioMutex);
+    RenderRunning = 1;
+    RenderPollAt = now_ms();
+}
+
+/* Music_ResumeAfterRender: a single-pattern render resumes what was
+ * playing in its own mode -- the pattern at its row, or the song at its
+ * order and row; nothing starts when it was stopped */
+static void render_end(int resume)
+{
+    render_restore_driver();
+    if (AudioMutexUp) ma_mutex_lock(&AudioMutex);
+    RenderActive = 0;
+    if (AudioMutexUp) ma_mutex_unlock(&AudioMutex);
+    RenderRunning = 0;
+    if (resume && RenderSaved.mode) {
+        ed_lock();
+        if (RenderSaved.mode == 1)
+            Music_PlayPattern(RenderSaved.pattern, RenderSaved.rows,
+                              RenderSaved.row);
+        else
+            Music_PlayPartSong(RenderSaved.order, RenderSaved.row);
+        ed_unlock();
+    }
+}
+
+static int smp_slot_used(const sample_t *s)
+{
+    return (s->Flags & 1) || s->SampleName[0] || s->DOSFileName[0];
+}
+
+/* WAVI_HaveMax: the slot after the highest sample AND the highest
+ * instrument, so sample N and its host instrument N line up; -1 = full */
+static int render_free_slot(void)
+{
+    int i, hi = 0;
+
+    for (i = 0; i < 99; i++) {
+        if (smp_slot_used(&Song.Smp[i]) && i + 1 > hi)
+            hi = i + 1;
+        if (!Music_InstrumentIsBlank(&Song.Ins[i]) && i + 1 > hi)
+            hi = i + 1;
+    }
+    return hi < 99 ? hi : -1;
+}
+
+/* Ctrl-O & co.: Music_ImportRenderedPattern. Pattern `pat` once, at
+ * 44.1 kHz into a 16-bit mono sample (IT samples are mono), looped over
+ * its whole length, named "Pattern NNN"; 1 MB cap. */
+static int render_import(int pat, int rows, int resume)
+{
+    render_job_t job;
+    sample_t ns;
+    char name[16];
+    int slot, ins = 0, ok;
+
+    if (pat < 0 || pat >= 200)
+        return 0;
+    slot = render_free_slot();
+    if (slot < 0) {
+        status("Import failed: no free sample slot");
+        return 0;
+    }
+    Render_NameTimestamp(name);
+    render_paint("Rendering pattern to WAV ...");
+    memset(&job, 0, sizeof(job));
+    job.kind = RENDER_PATTERN;
+    job.pattern = pat;
+    job.rows = rows;
+    job.to_memory = 1;
+    job.mem_cap_bytes = 1048576u;
+    job.abort_cb = render_abort_poll;
+    render_begin();
+    ok = Render_Run(&job, NULL);
+    render_end(resume);
+    if (!ok || !job.mem || job.frames == 0) {
+        free(job.mem);
+        status("Could not import rendered pattern");
+        return 0;
+    }
+
+    memset(&ns, 0, sizeof(ns));
+    memcpy(&ns.ID, "IMPS", 4);
+    memcpy(ns.DOSFileName, name, strlen(name) < 12 ? strlen(name) : 12);
+    ns.Flags = 1 | 2 | 0x10;                /* present, 16-bit, loop */
+    ns.Vol = 64;
+    ns.GvL = 64;
+    ns.Cvt = 1;                             /* signed */
+    ns.DfP = 32;                            /* centre, not in use */
+    ns.Length = job.frames;
+    ns.LoopBeg = 0;
+    ns.LoopEnd = job.frames;
+    ns.C5Speed = 44100;
+    snprintf(ns.SampleName, sizeof(ns.SampleName), "Pattern %03d", pat);
+    ns.Data = smp_alloc(job.frames * 2u);
+    if (!ns.Data) {
+        free(job.mem);
+        status("Import failed: out of memory for sample");
+        return 0;
+    }
+    memcpy(ns.Data, job.mem, (size_t)job.frames * 2u);
+    free(job.mem);
+
+    ed_lock();
+    free(Song.Smp[slot].Data);
+    Song.Smp[slot] = ns;
+    if (slot + 1 > Song.Header.SmpNum)
+        Song.Header.SmpNum = (uint16_t)(slot + 1);
+    if (Song.Header.Flags & ITF_INSTRUMENTS) {
+        ins = Music_AssignSampleToInstrument(slot);
+        if (ins > Song.Header.InsNum)
+            Song.Header.InsNum = (uint16_t)ins;
+    }
+    ed_unlock();
+
+    CurInstr = ins ? ins : slot + 1;        /* PE_SetLastInstrument */
+    if (Screen == SCR_SAMPLES || Screen == SCR_INSTRUMENTS)
+        ListSel = CurInstr - 1;
+    if (job.truncated)
+        status("Pattern truncated to 1MB; sample %d", slot + 1);
+    else if (ins)
+        status("Pat %03d -> %s -> sample %03d in inst %03d", pat, name,
+               slot + 1, ins);
+    else
+        status("Pat %03d -> %s -> sample %03d", pat, name, slot + 1);
+    return 1;
+}
+
+static uint32_t render_file_rate(void)
+{
+    return WAVDriver_GetMixSpeed();         /* the Shift-F5 mixing rate */
+}
+
+/* Shift-Ctrl-O & co.: the pattern as LL<HHMMSS>.WAV in the render
+ * folder, nothing imported */
+static int render_to_folder(int pat, int rows, int resume)
+{
+    render_job_t job;
+    char dir[256], name[16], path[300];
+    int ok;
+
+    if (pat < 0 || pat >= 200)
+        return 0;
+    if (!render_dir(dir, sizeof(dir))) {
+        status("Render aborted: Quicksave folder invalid (check F12)");
+        return 0;
+    }
+    Render_NameTimestamp(name);
+    render_path(path, sizeof(path), dir, name);
+    render_paint("Rendering pattern to WAV ...");
+    memset(&job, 0, sizeof(job));
+    job.kind = RENDER_PATTERN;
+    job.pattern = pat;
+    job.rows = rows;
+    job.rate = render_file_rate();
+    job.abort_cb = render_abort_poll;
+    render_begin();
+    ok = Render_Run(&job, path);
+    render_end(resume);
+    if (!ok) {
+        status("Could not write %s", name);
+        return 0;
+    }
+    status("Saved pat %03d as %s in %s", pat, name, dir);
+    return 1;
+}
+
+/* rows of a pattern as the engine plays it (header rows, 64 if empty) */
+static int pattern_rows_of(int pat)
+{
+    if (pat == (int)CurPattern)
+        return (int)CurRows;
+    if (pat >= 0 && pat < MAX_PATTERNS && Song.Patterns[pat].Rows)
+        return Song.Patterns[pat].Rows;
+    return 64;
+}
+
+/* D_DumpAllSamplesWAV: every sample (only1 = 0) or just slot only1 as a
+ * WAV in the render folder, named HHMMSS + slot. Read-only on the song,
+ * so playback carries on. */
+static int export_samples(int only1)
+{
+    char dir[256], hms[7], name[16], path[300];
+    int i, n = 0;
+
+    if (!render_dir(dir, sizeof(dir))) {
+        status("Render aborted: Quicksave folder invalid (check F12)");
+        return 0;
+    }
+    Render_ClockHHMMSS(hms);
+    if (only1) {
+        sample_t copy = Song.Smp[only1 - 1];
+        if (!smp_has_data(&copy)) {
+            status("Selected sample is empty.");
+            return 0;
+        }
+        render_paint("Saving selected sample as C-4 44.1kHz WAV...");
+        copy.C5Speed = 44100;               /* Esa stamps 44.1 kHz */
+        Render_NameSampleExport(name, hms, only1);
+        render_path(path, sizeof(path), dir, name);
+        if (!RIS_SaveWAV(&copy, path)) {
+            status("Error: Sample %d NOT saved! (No Filename?)", only1);
+            return 0;
+        }
+        status("Saved C-4 44.1kHz WAV (sample %d)", only1);
+        return 1;
+    }
+    render_paint("Starting batch export of samples as .WAV...");
+    for (i = 0; i < 99; i++) {
+        if (!smp_has_data(&Song.Smp[i]))
+            continue;
+        Render_NameSampleExport(name, hms, i + 1);
+        render_path(path, sizeof(path), dir, name);
+        if (RIS_SaveWAV(&Song.Smp[i], path))
+            n++;
+    }
+    if (n)
+        status("Dumped %d samples as SMPnn.WAV", n);
+    else
+        status("No samples to dump");
+    return n;
+}
+
+/* the channels a sweep renders: song = every unmuted channel (Esa's song
+ * mode skips only on mute); pattern = unmuted channels with a note
+ * C-0..B-9 in the editor's pattern (PE_ChannelIsEmpty) */
+static int render_sweep_channels(int song, int *list)
+{
+    int c, r, n = 0;
+
+    for (c = 0; c < 64; c++) {
+        if (Song.Header.ChnlPan[c] & 0x80)
+            continue;
+        if (!song) {
+            int has = 0;
+            for (r = 0; r < (int)CurRows && !has; r++) {
+                const editcell_t *e = &Grid[r * 64 + c];
+                if ((e->mask & CM_NOTE) && e->note >= 1 && e->note <= 120)
+                    has = 1;
+            }
+            if (!has)
+                continue;
+        }
+        list[n++] = c;
+    }
+    return n;
+}
+
+/* a sweep's Esc (WAV_MultiAdvance): the channel in progress is finished,
+ * then the sweep stops; quitting stops at once */
+static int SweepStopReq;
+
+static int sweep_abort_poll(void)
+{
+    if (render_abort_poll()) {
+        if (!Running)
+            return 1;
+        if (!SweepStopReq)
+            render_paint("Stopping after this channel ...");
+        SweepStopReq = 1;
+    }
+    return 0;
+}
+
+/* Music_StartMultiWAV / Music_StartFullSongMWAV: one WAV per channel,
+ * that channel alone audible; `typed` = the F10 name (NULL = counter
+ * names, Shift-Alt-M). Mutes come back as they were; Esc stops after
+ * the channel in progress. Returns the number of files. */
+static int render_sweep(int song, const char *typed)
+{
+    int list[64], n, i, c, files = 0;
+    uint8_t keep[64];
+    char dir[256], name[16], path[300];
+    render_job_t job;
+
+    if (typed)
+        rpath_dir(dir, sizeof(dir), typed); /* F10: where it saves */
+    else if (!render_dir(dir, sizeof(dir))) {
+        status("Render aborted: Quicksave folder invalid (check F12)");
+        return 0;
+    }
+    n = render_sweep_channels(song, list);
+    if (n == 0) {
+        status("Nothing to render");
+        return 0;
+    }
+    memcpy(keep, Song.Header.ChnlPan, 64);
+    SweepStopReq = 0;
+    render_begin();
+    for (i = 0; i < n && !SweepStopReq && Running; i++) {
+        c = list[i];
+        ed_lock();
+        for (int k = 0; k < 64; k++)
+            Song.Header.ChnlPan[k] = (uint8_t)(k == c ? keep[k] & 0x7F
+                                                    : keep[k] | 0x80);
+        ed_unlock();
+        if (typed)
+            Render_NameChannel(name, typed, c + 1);
+        else
+            Render_NameCounter(name, Song.Header.SongName);
+        render_path(path, sizeof(path), dir, name);
+        render_paint("Rendering channel %02d ... (%d of %d, Esc stops)",
+                     c + 1, i + 1, n);
+        memset(&job, 0, sizeof(job));
+        job.kind = song ? RENDER_SONG : RENDER_PATTERN;
+        job.pattern = CurPattern;
+        job.rows = (int)CurRows;
+        job.rate = render_file_rate();
+        job.abort_cb = sweep_abort_poll;
+        if (!Render_Run(&job, path))
+            break;
+        files++;
+        if (job.aborted)
+            break;
+    }
+    ed_lock();
+    memcpy(Song.Header.ChnlPan, keep, 64);
+    ed_unlock();
+    render_end(0);
+    status("Rendered %d channel%s to %s", files, files == 1 ? "" : "s",
+           dir);
+    return files;
+}
+
+/* F11's "active pattern" (PE_OrderList_ResolvePattern): the playing one,
+ * stopped: the pattern at the order cursor */
+static void order_render(int to_folder)
+{
+    int pat = PlayMode ? (int)CurrentPattern : Song.Orders[ListSel];
+
+    if (pat >= 200)
+        return;
+    if (to_folder)
+        render_to_folder(pat, pattern_rows_of(pat), 1);
+    else
+        render_import(pat, pattern_rows_of(pat), 1);
+}
+
+/* F5 (Display_RenderQuicksave / Display_ResolvePattern): the playing
+ * pattern, stopped: the editor's; to the folder only */
+static void info_render_pattern(void)
+{
+    int pat = PlayMode ? (int)CurrentPattern : (int)CurPattern;
+
+    if (pat >= 200)
+        return;
+    render_to_folder(pat, pattern_rows_of(pat), 1);
+}
+
+/* the folder part of `path` ("." when none) */
+static void rpath_dir(char *out, size_t n, const char *path)
+{
+    const char *p, *cut = NULL;
+    for (p = path; *p; p++)
+        if (*p == '/' || *p == '\\')
+            cut = p;
+    if (!cut)
+        snprintf(out, n, ".");
+    else
+        snprintf(out, n, "%.*s", (int)(cut - path), path);
+}
+
+/* F10 "WAV": the whole song under the typed name (D_SaveModule with
+ * SaveFormat 4 -> Music_StartFullSongWAV) */
+static int render_song_file(const char *path)
+{
+    render_job_t job;
+    int ok;
+
+    render_paint("Rendering song ... (Esc stops)");
+    memset(&job, 0, sizeof(job));
+    job.kind = RENDER_SONG;
+    job.rate = render_file_rate();
+    job.abort_cb = render_abort_poll;
+    render_begin();
+    ok = Render_Run(&job, path);
+    render_end(0);
+    return ok;
 }
 
 /* ===================================================================
@@ -9641,7 +10201,12 @@ static void handle_pattern_key(int key)
     case ITK_ALT_A + ('C' - 'A'): pe_block_copy(); return;
     case ITK_ALT_A + ('O' - 'A'): pe_block_overwrite(); return;
     case ITK_ALT_A + ('P' - 'A'): pe_block_paste(); return;
-    case ITK_ALT_A + ('M' - 'A'): pe_block_mix(); return;
+    case ITK_ALT_A + ('M' - 'A'):
+        if (CurKey.flags & ITKF_SHIFT)      /* feature 018: Esa's stems */
+            render_sweep(0, NULL);
+        else
+            pe_block_mix();
+        return;
     case ITK_ALT_A + ('Z' - 'A'): pe_wipe_block(); return;
     case ITK_ALT_A + ('Y' - 'A'): pe_block_swap(); return;
     case ITK_ALT_A + ('F' - 'A'): pe_block_double(); return;
@@ -10008,7 +10573,20 @@ static int order_list_lkey(int key)
         OrderCursor = OrderCursor ? OrderCursor - 1 : 2;
         return 1;
     case ITK_RIGHT:                             /* PE_PostOrderList9 */
+        if (OrderCursor == 2) {                 /* Esa: the right edge
+                                                   renders + imports */
+            order_render(0);
+            return 1;
+        }
         OrderCursor = OrderCursor < 2 ? OrderCursor + 1 : 0;
+        return 1;
+    case ITK_SHIFT_RIGHT:                       /* Esa: right edge, to the
+                                                   Quicksave folder */
+        if (OrderCursor == 2)
+            order_render(1);
+        return 1;
+    case 0x07:                                  /* Esa: Ctrl-G = Quicksave */
+        order_render(1);
         return 1;
     case '-':                                   /* PE_PostOrderList16 */
         ed_lock();
@@ -10067,6 +10645,10 @@ static int order_list_lkey(int key)
         order_reorder_patterns();
         return 1;
     case 'g': case 'G':                         /* PE_PostOrderList24 */
+        if (CurKey.flags & ITKF_SHIFT) {        /* Esa: Shift-G = import */
+            order_render(0);
+            return 1;
+        }
     case ITK_ENTER:
         PEOrder = o;
         if (Song.Orders[o] < 200) {
@@ -10356,6 +10938,7 @@ static void act_save_prefs(void)
         return;
     }
     audio_pref_save(fp);
+    fprintf(fp, "quicksavedir=%s\n", DirQuicksave);    /* feature 018 */
     fprintf(fp, "moduledir=%s\nsampledir=%s\ninstrdir=%s\n"
             "octave=%d\nstep=%d\n"
             "peconfig=%d\nviewdivision=%d\nviewtracking=%d\n"
@@ -10743,9 +11326,11 @@ static int req_link(int obj, int key, int save)
                   : sht || left ? 13 : -1;
     case 15: return up ? 12 : down || tab ? 16 : sht ? 14 : -1;
     case 16: return up || sht ? 15 : down || tab ? 12 : -1;
-    case 17: case 18: case 19: case 20:
+    case 17: case 18: case 19: case 20: case 21: case 22:
+        /* 21 / 22 = Esa's WAV / MWAV buttons (IT_OBJ1.ASM, IT215 Down
+         * -> 21, MWAV Down -> 15) */
         return up ? (obj == 17 ? 17 : obj - 1)
-             : down ? (obj == 20 ? 15 : obj + 1)
+             : down ? (obj == 22 ? 15 : obj + 1)
              : left || sht ? 14 : right || tab ? 15 : -1;
     default: return -1;
     }
@@ -10902,10 +11487,10 @@ static void draw_file_requester(void)
     /* save-format radio buttons (O1_SaveModuleList objects 17..20:
      * style 8 at (69,12)..(77,23), bound to SaveFormat) */
     if (ReqSave) {
-        static const char *const fmtlbl[4] =
-            { " IT214", "  S3M", " IT2xx", " IT215" };
-        static const uint8_t fmtof[4] = { 0, 1, 2, 3 };
-        for (i = 0; i < 4; i++)
+        static const char *const fmtlbl[6] =   /* + Esa's WAV / MWAV */
+            { " IT214", "  S3M", " IT2xx", " IT215", "  WAV", " MWAV" };
+        static const uint8_t fmtof[6] = { 0, 1, 2, 3, 4, 5 };
+        for (i = 0; i < 6; i++)
             draw_button_style(69, 12 + 3 * i, 77, 14 + 3 * i, 8,
                               fmtlbl[i], SaveFormat == fmtof[i],
                               ReqFocus == 4 && ReqBtn == i);
@@ -11020,10 +11605,27 @@ static void save_s3m_keywait(void)
 }
 
 /* dispatch by SaveFormat (D_PostFileSaveWindow3) */
+static const char *save_ext(void)   /* default extension per format */
+{
+    return SaveFormat == 1 ? ".S3M" : SaveFormat >= 4 ? ".WAV" : ".IT";
+}
+
 static int save_module_dispatch(const char *name)
 {
     int ok;
 
+    if (SaveFormat == 4) {              /* feature 018: F10 "WAV" */
+        char dir[256], fn[16], path[300];
+        rpath_dir(dir, sizeof(dir), name);
+        Render_NameUser(fn, name);
+        render_path(path, sizeof(path), dir, fn);
+        if (!render_song_file(path))
+            return 0;
+        status("Saved song as %s", fn);
+        return 1;
+    }
+    if (SaveFormat == 5)                /* feature 018: F10 "MWAV" */
+        return render_sweep(1, name) > 0;
     Save_Progress = save_progress_draw;
     if (SaveFormat == 1) {
         Save_S3MWarning = save_s3m_warning_draw;
@@ -11053,7 +11655,7 @@ static void req_do_save(int *done)
         return;
     }
     if (!strchr(name, '.') && strlen(name) < sizeof(name) - 5)
-        strcat(name, SaveFormat == 1 ? ".S3M" : ".IT");
+        strcat(name, save_ext());
 
     f = fopen(name, "rb");
     if (f) {
@@ -11063,6 +11665,13 @@ static void req_do_save(int *done)
     }
 
     commit_current_pattern();           /* PE_SaveCurrentPattern */
+    if (SaveFormat >= 4) {              /* a render: the song's own file
+                                           name stays (WAV_SavedSong-
+                                           FileName) */
+        save_module_dispatch(name);
+        *done = 1;
+        return;
+    }
     if (save_module_dispatch(name)) {
         char *q;
         snprintf(FileNameDisp, sizeof(FileNameDisp), "%s", name);
@@ -11595,7 +12204,7 @@ static void file_requester_run_(int save)
             } else if (m.y == 47 && m.x >= 13 && m.x <= 76) {
                 req_set_obj(16);
             } else if (ReqSave && m.x >= 69 && m.x <= 77 &&
-                       m.y >= 12 && m.y <= 23 && (m.y - 12) % 3 != 2) {
+                       m.y >= 12 && m.y <= 29 && (m.y - 12) % 3 != 2) {
                 ReqFocus = 4;           /* format buttons */
                 ReqBtn = (m.y - 12) / 3;
                 SaveFormat = (uint8_t)ReqBtn;
@@ -13047,22 +13656,31 @@ static void instrument_library_requester(void)
 /* "Save Current" (Ctrl-S): save to the loaded filename without the
  * requester; the original always goes through D_CheckOverWrite.
  * D_SaveSong replaces the extension with IT/S3M per SaveFormat. */
-static void quick_save(void)
+static void quick_save_in(const char *dir)
 {
-    char name[sizeof(FileSaveName) + 8], *dot;
+    char base[sizeof(FileSaveName) + 8], name[sizeof(base) + 260], *dot;
     FILE *f;
 
     if (!FileNameDisp[0]) {
         save_requester();
         return;
     }
-    snprintf(name, sizeof(name), "%s",
+    snprintf(base, sizeof(base), "%s",
              FileSaveName[0] ? FileSaveName : FileNameDisp);
-    dot = strrchr(name, '.');
-    if (dot && (size_t)(dot - name) < sizeof(name) - 5)
-        strcpy(dot, SaveFormat == 1 ? ".S3M" : ".IT");
-    else if (!dot && strlen(name) < sizeof(name) - 5)
-        strcat(name, SaveFormat == 1 ? ".S3M" : ".IT");
+    dot = strrchr(base, '.');
+    if (dot && (size_t)(dot - base) < sizeof(base) - 5)
+        strcpy(dot, save_ext());
+    else if (!dot && strlen(base) < sizeof(base) - 5)
+        strcat(base, save_ext());
+    if (dir) {                          /* Alt-W: into the Quicksave folder */
+        const char *b = base, *p;
+        for (p = base; *p; p++)
+            if (*p == '/' || *p == '\\')
+                b = p + 1;
+        render_path(name, sizeof(name), dir, b);
+    } else {
+        snprintf(name, sizeof(name), "%s", base);
+    }
     f = fopen(name, "rb");
     if (f) {
         fclose(f);
@@ -13070,10 +13688,39 @@ static void quick_save(void)
             return;
     }
     commit_current_pattern();
-    if (save_module_dispatch(name))
-        status("Saved.");
+    if (SaveFormat >= 4)
+        save_module_dispatch(name);
+    else if (save_module_dispatch(name))
+        status(dir ? "Saved to Quicksave folder." : "Saved.");
     else
         status("Unable to save file");
+}
+
+static void quick_save(void) { quick_save_in(NULL); }
+
+/* Glbl_Alt_W (feature 018, Esa's D_QuickSave / D_MemorizeQuickSaveDir) */
+static void act_quicksave(void)
+{
+    if (!DirQuicksave[0]) {
+        status("Quick-save folder not configured.");
+        save_requester();               /* Jmp Glbl_F10 */
+        return;
+    }
+    if (!render_dir_ok(DirQuicksave)) {
+        status("Render aborted: Quicksave folder invalid (check F12)");
+        return;
+    }
+    quick_save_in(DirQuicksave);
+}
+
+static void act_memorize_quicksave(void)
+{
+    char cwd[256] = "";
+    const char *d = DirModule[0] ? DirModule
+                  : (getcwd(cwd, sizeof(cwd)) ? cwd : "");
+    snprintf(DirQuicksave, sizeof(DirQuicksave), "%.*s", 64, d);
+    act_save_prefs();
+    status("Quick-save folder memorized.");
 }
 
 /* ---- Load Module screen (O1_LoadITList and its siblings, IT_OBJ1.ASM
@@ -13388,7 +14035,8 @@ static void act_dialog_pick_folder(void)
         return;
     w = &W[FocusIdx[Screen]];
     field = w->type == WT_TEXT ? w->text : NULL;
-    if (field != DirModule && field != DirSample && field != DirInstr)
+    if (field != DirModule && field != DirSample && field != DirInstr &&
+        field != DirQuicksave)
         return;                         /* not a path field: nothing */
     if (!ed_dialog(IT_DLG_PICK_FOLDER, field, NULL, &r))
         return;
@@ -13691,6 +14339,10 @@ static void load_prefs(void)
         else if (!strncmp(line, "sampledir=", 10))
             snprintf(DirSample, sizeof(DirSample),
                      "%.*s", (int)sizeof(DirSample) - 1, line + 10);
+        else if (!strncmp(line, "quicksavedir=", 13)) {
+            snprintf(DirQuicksave, sizeof(DirQuicksave), "%s", line + 13);
+            DirQuicksave[strcspn(DirQuicksave, "\r\n")] = 0;
+        }
         else if (!strncmp(line, "instrdir=", 9))
             snprintf(DirInstr, sizeof(DirInstr),
                      "%.*s", (int)sizeof(DirInstr) - 1, line + 9);
@@ -14769,6 +15421,23 @@ static void handle_global(int key)
             act_dialog_save_module();
         return;
     case 0x0F:                              /* Ctrl-O: unbound in IT */
+        /* feature 018 (Esa): render on F2 / F11 / F5; Shift = to the
+         * Quicksave folder only */
+        if (Screen == SCR_PATTERN) {
+            if (CurKey.flags & ITKF_SHIFT)
+                render_to_folder(CurPattern, (int)CurRows, 1);
+            else
+                render_import(CurPattern, (int)CurRows, 1);
+            return;
+        }
+        if (Screen == SCR_ORDER) {
+            order_render((CurKey.flags & ITKF_SHIFT) != 0);
+            return;
+        }
+        if (Screen == SCR_INFO) {           /* Esa's comment: "same thing" */
+            info_render_pattern();
+            return;
+        }
         if (Screen == SCR_SAMPLES) {
             act_dialog_load_slot(0);
             return;
@@ -14854,6 +15523,40 @@ static void handle_global(int key)
         else if (BaseOctave < 9) BaseOctave++;
         return;
     }
+    /* feature 018 (Esa): Ctrl-Shift-Right exports every sample (F3, F5,
+     * F11); F3 Ctrl-Alt-Right the selected one (Esa's Ctrl-Right, moved:
+     * IT's Ctrl-Right is next order) */
+    if (key == ITK_CTRL_RIGHT && (CurKey.flags & ITKF_SHIFT) &&
+        (Screen == SCR_SAMPLES || Screen == SCR_INFO || Screen == SCR_ORDER)) {
+        export_samples(0);
+        return;
+    }
+    if (((key == ITK_CTRL_RIGHT && (CurKey.flags & ITKF_ALT)) ||
+         (key == ITK_ALT_RIGHT && (CurKey.flags & ITKF_CTRL))) &&
+        Screen == SCR_SAMPLES) {            /* Win32 sends Alt first */
+        export_samples(ListSel + 1);
+        return;
+    }
+    /* Shift-Alt-W memorizes the Quicksave folder everywhere; Alt-W saves
+     * there where the screen has no Alt-W of its own (F2 wipe, F3 save
+     * sample, F4 clear instrument keep theirs, as in Esa's fork) */
+    if (key == ITK_ALT_A + ('W' - 'A') && (CurKey.flags & ITKF_SHIFT)) {
+        act_memorize_quicksave();
+        return;
+    }
+    if (key == ITK_ALT_A + ('W' - 'A') && Screen != SCR_PATTERN &&
+        Screen != SCR_SAMPLES && Screen != SCR_INSTRUMENTS &&
+        Screen != SCR_HELP) {
+        act_quicksave();
+        return;
+    }
+    if (key == ITK_ENTER && Screen == SCR_VARS && NW > 0 &&
+        FocusIdx[Screen] < NW && W[FocusIdx[Screen]].type == WT_TEXT &&
+        W[FocusIdx[Screen]].text == DirQuicksave) {
+        act_dialog_pick_folder();           /* D_PickQuickSaveDir */
+        return;
+    }
+
     /* Ctrl-Left/Right = DisplayMinus/Plus (previous/next order) unless
      * the screen uses them: the pattern editor's views, a focused
      * thumbbar (F_PostThumbBar16), the envelope editor */
@@ -14912,8 +15615,15 @@ static void handle_global(int key)
  * =================================================================== */
 static void audio_cb(ma_device *d, void *out, const void *in, ma_uint32 fr)
 {
-    (void)d; (void)in;
-    WAVDriver_RenderAny(out, fr);
+    (void)in;
+    if (AudioMutexUp) ma_mutex_lock(&AudioMutex);
+    if (RenderActive)                   /* feature 018: a render owns the
+                                           driver -- stay out, play silence */
+        ma_silence_pcm_frames(out, fr, d->playback.format,
+                              d->playback.channels);
+    else
+        WAVDriver_RenderAny(out, fr);
+    if (AudioMutexUp) ma_mutex_unlock(&AudioMutex);
 }
 
 /* ===================================================================
@@ -15258,6 +15968,21 @@ static void audio_live_apply(void)
     ed_unlock();
 }
 
+/* after a render (feature 018): the live mixer as Shift-F5 set it */
+static void render_restore_driver(void)
+{
+    ed_lock();
+    WAVDriver_SetMixSpeed(AudRate);
+    WAVDriver_SetOutputFormat(AudFormat);
+    WAVDriver_SetOutputChannels(AudMono ? 1 : 2);
+    WAVDriver_SetForceMono(AudMono);
+    Driver->InitSound();
+    Music_InitStereo();
+    Music_InitTempo();
+    ed_unlock();
+    audio_live_apply();
+}
+
 /* open the output with the audio_* settings; 1 on success */
 static int audio_open(void)
 {
@@ -15579,16 +16304,87 @@ static void draw_driver(void)
 static volatile int g_sig = 0;
 static void on_sig(int s) { (void)s; g_sig = 1; }
 
+/* Feature 018: the batch options (Esa's IT.EXE O<module> / N### /
+ * U<module>, specs/018 contracts/cli.md): render every pattern holding
+ * data (or one) to the render folder with counter names, or export
+ * every sample, then exit. No window, no audio device. */
+static int batch_run(int mode, int onepat, uint32_t rate)
+{
+    char dir[256], name[16], path[300];
+    int p, fails = 0;
+
+    if (!render_dir(dir, sizeof(dir))) {
+        fprintf(stderr, "ited: Quicksave folder invalid (check F12): %s\n",
+                DirQuicksave);
+        return 1;
+    }
+    if (mode == 2) {                        /* --dump-samples */
+        char hms[7];
+        Render_ClockHHMMSS(hms);
+        for (p = 0; p < 99; p++) {
+            if (!smp_has_data(&Song.Smp[p]))
+                continue;
+            Render_NameSampleExport(name, hms, p + 1);
+            render_path(path, sizeof(path), dir, name);
+            if (RIS_SaveWAV(&Song.Smp[p], path))
+                printf("wrote %s\n", path);
+            else {
+                fprintf(stderr, "ited: could not write %s\n", path);
+                fails++;
+            }
+        }
+        return fails ? 1 : 0;
+    }
+    for (p = 0; p < 200; p++) {             /* Music_BatchRenderPatterns */
+        render_job_t job;
+        if (onepat >= 0 ? p != onepat
+                        : !(Song.Patterns[p].PackedData &&
+                            Song.Patterns[p].DataLength))
+            continue;
+        Render_NameCounter(name, Song.Header.SongName);  /* WAV_BatchNaming */
+        render_path(path, sizeof(path), dir, name);
+        memset(&job, 0, sizeof(job));
+        job.kind = RENDER_PATTERN;
+        job.pattern = p;
+        job.rows = Song.Patterns[p].Rows ? Song.Patterns[p].Rows : 64;
+        job.rate = rate;
+        if (Render_Run(&job, path))
+            printf("wrote %s\n", path);
+        else {
+            fprintf(stderr, "ited: could not write %s\n", path);
+            fails++;
+        }
+    }
+    return fails ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *startmod = NULL;
     uint32_t mixspeed = 44100;
-    int i;
+    int i, batch = 0, batchpat = -1;
 
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-r") && i + 1 < argc) {
             mixspeed = (uint32_t)atoi(argv[++i]);
             AudRateFromCmdline = 1;
+        }
+        else if (!strcmp(argv[i], "--render-patterns") && i + 1 < argc) {
+            batch = 1;                      /* feature 018 */
+            startmod = argv[++i];
+        }
+        else if (!strcmp(argv[i], "--dump-samples") && i + 1 < argc) {
+            batch = 2;
+            startmod = argv[++i];
+        }
+        else if (!strcmp(argv[i], "--pattern") && i + 1 < argc) {
+            char *end;
+            long v = strtol(argv[++i], &end, 10);
+            if (*end || v < 0 || v > 199) {
+                fprintf(stderr, "ited: --pattern takes 0..199\n");
+                return 1;
+            }
+            batchpat = (int)v;
         }
         else if (argv[i][0] != '-')
             startmod = argv[i];
@@ -15655,12 +16451,18 @@ int main(int argc, char **argv)
     Music_InitMixTable();
     Music_InitTempo();
 
+    if (batch)                              /* feature 018: no window */
+        return batch_run(batch, batchpat,
+                         AudRateFromCmdline ? mixspeed : AudRate);
+
     if (ma_mutex_init(&Mutex) != MA_SUCCESS) {
         fprintf(stderr, "mutex init failed\n");
         return 1;
     }
     Engine_Lock = ed_lock;
     Engine_Unlock = ed_unlock;
+    if (ma_mutex_init(&AudioMutex) == MA_SUCCESS)    /* feature 018 */
+        AudioMutexUp = 1;
 
     load_pattern(0);
 
@@ -18478,7 +19280,9 @@ int main(int argc, char **argv)
                         req_link(16, ITK_SHIFT_TAB, 0) != 15 ||
                         req_link(17, ITK_UP, 1) != 17 ||
                         req_link(18, ITK_UP, 1) != 17 ||
-                        req_link(20, ITK_DOWN, 1) != 15 ||
+                        req_link(20, ITK_DOWN, 1) != 21 ||   /* 018 */
+                        req_link(21, ITK_UP, 1) != 20 ||
+                        req_link(22, ITK_DOWN, 1) != 15 ||
                         req_link(19, ITK_TAB, 1) != 15 ||
                         req_link(19, ITK_LEFT, 1) != 14 ||
                         req_link(12, ITK_UP, 0) != -1)
@@ -18617,9 +19421,10 @@ int main(int argc, char **argv)
             hl = help_lines(1);
             for (n = 0; hl[n]; n++)
                 ;
-            if (n < 6 || hl[n - 4] != HL(PortHelpSave) ||
-                hl[n - 6] != HL(PortHelpHead) ||
-                hl[n - 1] != HL(PortHelpPeDrag))
+            if (n < 11 || hl[n - 9] != HL(PortHelpSave) ||
+                hl[n - 11] != HL(PortHelpHead) ||
+                hl[n - 6] != HL(PortHelpPeDrag) ||
+                hl[n - 1] != HL(PortHelpQs2))
                 DFAIL();
             dlg_fake(NULL);
             if (!Screen_HasFileDialog()) {  /* IT's lines, minus Ctrl-D (#28),
@@ -18634,7 +19439,9 @@ int main(int argc, char **argv)
                     if (m[b++] != o[a]) { DFAIL(); break; }
                 }
                 if (m[b] != HLP_newline || m[b + 1] != HL(PortHelpHead) ||
-                    m[b + 2] != HL(PortHelpPeK) || m[b + 5])
+                    m[b + 2] != HL(PortHelpPeK) ||
+                    m[b + 5] != HL(PortHelpRenPe1) ||
+                    m[b + 8] != HL(PortHelpQs1) || m[b + 10])
                     DFAIL();
             }
             if (help_col_of(HL(PortHelpPreview) + 1, "Preview") !=
@@ -18812,6 +19619,325 @@ int main(int argc, char **argv)
 #undef LFAIL
             fprintf(stderr, "ITED selftest: [%s]\n",
                     li_ok ? "LI OK" : "LI FAIL");
+        }
+
+        /* RND (feature 018): renders after Esa Ruoho's IT 2.354 -- names,
+         * determinism, import, folder renders (32-bit float, unclamped),
+         * sample export, the solo sweep, Alt-W / Shift-Alt-W */
+        {
+            int r_ok = 1, rfail_line = 0;
+#define RFAIL() do { if (r_ok) rfail_line = __LINE__; r_ok = 0; } while (0)
+            const char *wd = "st_rnd_work";
+            char nm[16], keepqs[256], path[300];
+            char *cfg = NULL;
+            long cfglen = -1;
+            FILE *cf;
+
+            memcpy(keepqs, DirQuicksave, sizeof(keepqs));
+            cf = fopen("ited.cfg", "rb");       /* Shift-Alt-W writes it */
+            if (cf) {
+                fseek(cf, 0, SEEK_END);
+                cfglen = ftell(cf);
+                fseek(cf, 0, SEEK_SET);
+                cfg = (char *)malloc((size_t)cfglen + 1);
+                if (cfg && fread(cfg, 1, (size_t)cfglen, cf) != (size_t)cfglen)
+                    cfglen = -1;
+                fclose(cf);
+            }
+
+            /* names (R7) */
+            Render_ResetCounter();
+            Render_NameCounter(nm, "");
+            if (strcmp(nm, "PTN0001.WAV")) RFAIL();
+            Render_NameCounter(nm, "a-b");
+            if (strcmp(nm, "AXB0002.WAV")) RFAIL();
+            Render_NameCounter(nm, "Tw");
+            if (strcmp(nm, "TWX0003.WAV")) RFAIL();
+            Render_NameCounter(nm, " x");
+            if (strcmp(nm, "PTN0004.WAV")) RFAIL();
+            Render_NameTimestamp(nm);
+            if (strlen(nm) != 12 || strncmp(nm, "LL", 2) ||
+                strcmp(nm + 8, ".WAV")) RFAIL();
+            Render_NameUser(nm, "song.wav");
+            if (strcmp(nm, "SONG.WAV")) RFAIL();
+            Render_NameUser(nm, "dir/mix");
+            if (strcmp(nm, "MIX.WAV")) RFAIL();
+            Render_NameChannel(nm, "song.wav", 3);
+            if (strcmp(nm, "SONG03.WAV")) RFAIL();
+            Render_NameChannel(nm, "abcdefgh.wav", 12);
+            if (strcmp(nm, "ABCDEF12.WAV")) RFAIL();
+            Render_NameSampleExport(nm, "163422", 3);
+            if (strcmp(nm, "16342203.WAV")) RFAIL();
+
+#ifdef _WIN32
+            _mkdir(wd);
+#else
+            mkdir(wd, 0777);
+#endif
+            if (!do_load_named("testdata/itdemo.it"))
+                RFAIL();
+            snprintf(DirQuicksave, sizeof(DirQuicksave), "%s", wd);
+            {
+                int pat = Song.Orders[0] < 200 ? Song.Orders[0] : 0;
+                int rows = pattern_rows_of(pat), expect = 0, i, slot;
+                render_job_t a, b;
+                uint32_t fr0;
+
+                /* deterministic: the same render twice, same bytes */
+                memset(&a, 0, sizeof(a));
+                a.kind = RENDER_PATTERN; a.pattern = pat; a.rows = rows;
+                a.to_memory = 1; a.mem_cap_bytes = 1048576u;
+                b = a;
+                render_begin();                 /* keep the live output out */
+                if (!Render_Run(&a, NULL) || !Render_Run(&b, NULL))
+                    RFAIL();
+                render_end(0);
+                if (a.frames == 0 || a.frames != b.frames || !a.mem ||
+                    !b.mem || memcmp(a.mem, b.mem, (size_t)a.frames * 2))
+                    RFAIL();
+                if (a.channels != 1 || a.out_rate != 44100) RFAIL();
+                fr0 = a.frames;
+                free(a.mem);
+                free(b.mem);
+
+                /* import: slot after the highest sample AND instrument */
+                for (i = 0; i < 99; i++)
+                    if (smp_slot_used(&Song.Smp[i]) ||
+                        !Music_InstrumentIsBlank(&Song.Ins[i]))
+                        expect = i + 1;
+                if (!render_import(pat, rows, 0))
+                    RFAIL();
+                slot = expect;
+                {
+                    const sample_t *ns = &Song.Smp[slot];
+                    char want[32];
+                    snprintf(want, sizeof(want), "Pattern %03d", pat);
+                    if (strcmp(ns->SampleName, want) ||
+                        ns->Flags != (1 | 2 | 0x10) || ns->C5Speed != 44100 ||
+                        ns->Length != fr0 || ns->LoopEnd != fr0 ||
+                        ns->LoopBeg != 0 || ns->Vol != 64 || ns->GvL != 64 ||
+                        strncmp(ns->DOSFileName, "LL", 2))
+                        RFAIL();
+                    if ((Song.Header.Flags & ITF_INSTRUMENTS) &&
+                        !strstr(StatusMsg, " in inst "))
+                        RFAIL();
+                }
+
+                /* folder render: LL<time>.WAV, 32-bit float, the mixing
+                 * rate, the song's channel count, same length */
+                if (!render_to_folder(pat, rows, 0))
+                    RFAIL();
+                {
+                    char got[16] = "";
+                    uint8_t h[44];
+                    FILE *f;
+                    if (sscanf(StatusMsg, "Saved pat %*d as %15s", got) != 1)
+                        RFAIL();
+                    render_path(path, sizeof(path), wd, got);
+                    f = fopen(path, "rb");
+                    if (!f || fread(h, 1, 44, f) != 44) {
+                        RFAIL();
+                    } else {
+                        int ch = (Song.Header.Flags & ITF_STEREO) ? 2 : 1;
+                        uint32_t rate, data;
+                        memcpy(&rate, h + 24, 4);
+                        memcpy(&data, h + 40, 4);
+                        if (h[20] != 3 || h[22] != ch || h[34] != 32 ||
+                            rate != WAVDriver_GetMixSpeed() ||
+                            (rate == 44100 &&
+                             data != fr0 * 4u * (uint32_t)ch))
+                            RFAIL();
+                    }
+                    if (f) fclose(f);
+                }
+
+                /* unclamped (SC-007): mixing volume up -> peaks > 1.0 */
+                {
+                    uint8_t mv = Song.Header.MV, gv = Song.Header.GV;
+                    render_job_t c;
+                    FILE *f;
+                    int over = 0;
+                    Song.Header.MV = 128;
+                    Song.Header.GV = 128;
+                    Music_InitMixTable();
+                    render_path(path, sizeof(path), wd, "LOUD.WAV");
+                    memset(&c, 0, sizeof(c));
+                    c.kind = RENDER_PATTERN; c.pattern = pat; c.rows = rows;
+                    c.rate = 44100;
+                    render_begin();
+                    if (!Render_Run(&c, path))
+                        RFAIL();
+                    render_end(0);
+                    Song.Header.MV = mv;
+                    Song.Header.GV = gv;
+                    Music_InitMixTable();
+                    f = fopen(path, "rb");
+                    if (f) {
+                        float v;
+                        fseek(f, 44, SEEK_SET);
+                        while (!over && fread(&v, 4, 1, f) == 1)
+                            if (v > 1.0f || v < -1.0f)
+                                over = 1;
+                        fclose(f);
+                    }
+                    if (!over) RFAIL();
+                }
+
+                /* a Quicksave folder that does not exist: nothing */
+                snprintf(DirQuicksave, sizeof(DirQuicksave),
+                         "st_rnd_missing_dir");
+                if (render_to_folder(pat, rows, 0) ||
+                    !strstr(StatusMsg, "invalid"))
+                    RFAIL();
+                snprintf(DirQuicksave, sizeof(DirQuicksave), "%s", wd);
+            }
+
+            /* sample export: one file per sample, 8-bit unsigned, the
+             * song's data untouched; the selected one stamped 44.1 kHz */
+            {
+                char h1[7], h2[7];
+                int i, n = 0, n8 = -1;
+                uint32_t sum0 = 0, sum1 = 0;
+                for (i = 0; i < 99; i++)
+                    if (smp_has_data(&Song.Smp[i])) {
+                        const uint8_t *d = (const uint8_t *)Song.Smp[i].Data;
+                        uint32_t k, nb = Song.Smp[i].Length <<
+                                         ((Song.Smp[i].Flags & 2) ? 1 : 0);
+                        n++;
+                        if (n8 < 0 && !(Song.Smp[i].Flags & 2))
+                            n8 = i;
+                        for (k = 0; k < nb; k++)
+                            sum0 = sum0 * 31 + d[k];
+                    }
+                do {
+                    Render_ClockHHMMSS(h1);
+                    if (export_samples(0) != n)
+                        RFAIL();
+                    Render_ClockHHMMSS(h2);
+                } while (strcmp(h1, h2) && r_ok);
+                for (i = 0; i < 99; i++)
+                    if (smp_has_data(&Song.Smp[i])) {
+                        const uint8_t *d = (const uint8_t *)Song.Smp[i].Data;
+                        uint32_t k, nb = Song.Smp[i].Length <<
+                                         ((Song.Smp[i].Flags & 2) ? 1 : 0);
+                        for (k = 0; k < nb; k++)
+                            sum1 = sum1 * 31 + d[k];
+                    }
+                if (sum0 != sum1) RFAIL();
+                if (n8 >= 0) {
+                    FILE *f;
+                    uint8_t b0[16];
+                    Render_NameSampleExport(nm, h1, n8 + 1);
+                    render_path(path, sizeof(path), wd, nm);
+                    f = fopen(path, "rb");
+                    if (!f || fseek(f, 44, SEEK_SET) ||
+                        fread(b0, 1, 16, f) != 16) {
+                        RFAIL();
+                    } else {
+                        const int8_t *sd = (const int8_t *)Song.Smp[n8].Data;
+                        for (i = 0; i < 16 && i < (int)Song.Smp[n8].Length; i++)
+                            if (b0[i] != (uint8_t)(sd[i] + 128))
+                                RFAIL();
+                    }
+                    if (f) fclose(f);
+                }
+                if (n > 0) {
+                    int first = 0;
+                    uint8_t h[44];
+                    FILE *f;
+                    while (!smp_has_data(&Song.Smp[first])) first++;
+                    do {
+                        Render_ClockHHMMSS(h1);
+                        export_samples(first + 1);
+                        Render_ClockHHMMSS(h2);
+                    } while (strcmp(h1, h2));
+                    if (!strstr(StatusMsg, "Saved C-4 44.1kHz WAV")) RFAIL();
+                    Render_NameSampleExport(nm, h1, first + 1);
+                    render_path(path, sizeof(path), wd, nm);
+                    f = fopen(path, "rb");
+                    if (!f || fread(h, 1, 44, f) != 44 ||
+                        h[24] != 0x44 || h[25] != 0xAC) /* 44100 */
+                        RFAIL();
+                    if (f) fclose(f);
+                }
+            }
+
+            /* Shift-Alt-M sweep: notes in channels 1, 2 and 5 of an empty
+             * pattern, channel 2 muted -> 2 files; mutes as before */
+            {
+                uint8_t keep[64];
+                load_pattern(199);
+                Grid[0 * 64 + 0].note = 61; Grid[0 * 64 + 0].ins = 1;
+                Grid[0 * 64 + 0].mask = CM_NOTE | CM_INS;
+                Grid[0 * 64 + 1] = Grid[0];
+                Grid[0 * 64 + 4] = Grid[0];
+                commit_current_pattern();
+                Song.Header.ChnlPan[1] |= 0x80;
+                memcpy(keep, Song.Header.ChnlPan, 64);
+                if (render_sweep(0, NULL) != 2) RFAIL();
+                if (memcmp(keep, Song.Header.ChnlPan, 64)) RFAIL();
+            }
+
+            /* Alt-W into the folder; Shift-Alt-W = the module folder */
+            {
+                FILE *f;
+                act_quicksave();
+                render_path(path, sizeof(path), wd, FileNameDisp);
+                f = fopen(path, "rb");
+                if (!f) RFAIL(); else fclose(f);
+                act_memorize_quicksave();
+                if (strcmp(DirQuicksave, DirModule) ||
+                    !strstr(StatusMsg, "memorized"))
+                    RFAIL();
+            }
+
+            /* clean up: the work folder, ited.cfg, the song */
+            {
+#ifdef _WIN32
+                WIN32_FIND_DATAA fd;
+                HANDLE hf = FindFirstFileA("st_rnd_work\\*", &fd);
+                if (hf != INVALID_HANDLE_VALUE) {
+                    do {
+                        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                            render_path(path, sizeof(path), wd, fd.cFileName);
+                            remove(path);
+                        }
+                    } while (FindNextFileA(hf, &fd));
+                    FindClose(hf);
+                }
+                _rmdir(wd);
+#else
+                DIR *dd = opendir(wd);
+                struct dirent *de;
+                if (dd) {
+                    while ((de = readdir(dd)))
+                        if (de->d_name[0] != '.') {
+                            render_path(path, sizeof(path), wd, de->d_name);
+                            remove(path);
+                        }
+                    closedir(dd);
+                }
+                rmdir(wd);
+#endif
+            }
+            if (cfglen >= 0 && cfg) {
+                cf = fopen("ited.cfg", "wb");
+                if (cf) {
+                    fwrite(cfg, 1, (size_t)cfglen, cf);
+                    fclose(cf);
+                }
+            } else {
+                remove("ited.cfg");
+            }
+            free(cfg);
+            memcpy(DirQuicksave, keepqs, sizeof(keepqs));
+            if (!do_load_named("testdata/itdemo.it"))
+                RFAIL();
+            if (!r_ok)
+                fprintf(stderr, "ITED selftest: RND first failure at line %d\n", rfail_line);
+#undef RFAIL
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    r_ok ? "RND OK" : "RND FAIL");
         }
 
         commit_current_pattern();
