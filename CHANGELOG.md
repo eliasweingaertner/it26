@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+**Stereo samples.** Stereo samples load, play, edit and save in stereo
+instead of being cut to one channel (README → "Stereo samples").
+
+### New
+
+- Loading a stereo WAV offers **Stereo** (default), Left and Right.
+- Stereo samples in IT modules, ITS and ITI files (as OpenMPT and Schism
+  Tracker write them) load and play in stereo; pan works as balance.
+- F3: two-lane waveform, "Stereo" in the info box, every operation on both
+  channels, **Alt-U** converts stereo ↔ mono (mix, left or right).
+- IT / ITS / ITI saves keep stereo samples (uncompressed, as OpenMPT);
+  WAV exports are 2-channel; S3M export mixes them down with a warning.
+- Pattern renders of a stereo song (Ctrl-O & co.) become stereo samples;
+  a render into a sample now stops after 10 minutes (was 1 MB).
+- **Longer samples:** up to 268,435,456 frames per channel, the limit of
+  OpenMPT and Schism Tracker (IT: about 4 MB).
+- **More WAV files:** 24- and 32-bit PCM, 32/64-bit float and
+  WAVE_FORMAT_EXTENSIBLE load (as 16-bit), and the data chunk is found
+  behind any metadata chunks -- WAVs exported from Reaper and other DAWs
+  load instead of turning into noise.
+
+- **Load Sample screen:** the waveform appears as soon as the cursor
+  rests on a sample (no note key needed), in two lanes for stereo.
+
+### Fixed
+
+- The Load Sample waveform of 16-bit samples was striped: the preview
+  read every other low byte as a high byte (IT's D_DrawWaveForm keeps
+  one running pointer; the port restarted it per column).
+
+### Changed
+
+- Modules that already contain stereo samples now play them in stereo
+  (IT 2.14 plays only the left channel), e.g. `testdata/beyond_network.it`.
+
 ## v0.9.0 — 2026-10-18
 
 **Rendering and exporting audio.** Bounce a pattern into a new sample with

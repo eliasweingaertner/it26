@@ -29,6 +29,9 @@ typedef struct slibent_t {
                                            4 unknown, >= 20h module */
     uint8_t  SortPri;                   /* record +5Ah: 0 dir, 1 library,
                                            2 recognised, 3 unknown */
+    uint8_t  WavFmt;                    /* it26: 0, or a wide WAV to make
+                                           16-bit on load: 24 / 32 bit,
+                                           80h|32 / 80h|64 float */
     char     SrcFile[264];
 } slibent_t;
 

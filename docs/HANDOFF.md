@@ -684,7 +684,8 @@ cmake --build build --config Release --target test_pattern   # or compile tests/
 It checks: (a) unpack→pack idempotency, (b) **byte-identical audio** after
 round-tripping every pattern through unpack→pack, (c) a double-render
 determinism control. Known-good FNV-1a hashes (all four `IDENTICAL`):
-- `beyond_network`  `a43e6f19...`
+- `beyond_network`  `b4ee2da5...` (feature 019: its 37 stereo samples now
+  play in stereo; `a43e6f19...` was the left-channel-only IT 2.14 sound)
 - `itdemo`          `1e6a5383...`
 - `quests_end`      `bb5b15bc...`
 - `synthscape`      `d561c207...`
@@ -1030,6 +1031,61 @@ Spec, plan, research (Esa's assembly cited per behaviour) and tasks:
   8.3 `LL<HHMMSS>.WAV` only in the sample's 12-byte file-name field.
 - Tests: selftest block **RND** (21 blocks now); port-only scripts
   `build-compare/_work/rnd_gestures.py` (19 gestures) and `rnd_f10.py`.
+
+## 5g. Stereo samples (feature 019, 2026-10-18, local until release)
+
+- Spec / plan / tasks: `specs/019-stereo-samples/`. Reference module
+  `testdata/openmpt-testpattern-stereo.it` (OpenMPT 1.32: 16-bit loop,
+  16-bit, 8-bit ping-pong, all stereo).
+- **Layout** (`src/it_sample.h`, inline helpers): flag 04h = stereo; one
+  allocation `[L Length frames][4 frames pad][R Length frames][4 pad]`.
+  `smp_chan(s, c)`, `smp_width`, `smp_channels`, `smp_data_bytes` (all
+  channels, no pad), `smp_alloc_bytes`, `smp_chan_at`, `smp_pad`. Mono
+  samples are laid out as before, so mono code paths are unchanged.
+- **Loader:** `Load_SampleData` reads planar (flag 04h, IT/ITS/ITI;
+  compressed = left block sequence then right) and interleaved (WAV,
+  `Cvt & 32` + `Load_StereoChoice` returning 256). `Music_LoadIT` sends
+  flag-04h samples to `Load_SampleData`, mono ones stay on its inline path.
+- **Mixer** (`it_driver.c`): `MixRight` (right channel of the voice being
+  mixed, set in the voice loop; NULL = mono) makes `MixInner` call
+  `MixInnerStereo`: left × LVC, right × RVC (balance), surround = (L+R)/2.
+  `FilterValuesR[]` = the right channel's filter history (coefficients
+  copied from `FilterValues` each chunk; reset on new notes; mirrored to
+  ch+64 in sample mode; cleared in InitSound). `slavechn_t` unchanged.
+- **Savers:** IT stereo always uncompressed (flag 08h cleared, `Cvt` 1),
+  `save_sample_raw` writes L then R; ITS/ITI keep 04h; WAV interleaved;
+  ST3 sample / S3M = mono mix, S3M warning row 34.
+- **Editor:** every `smp_op_*` loops over channels; length changes go
+  through `smp_relayout` / `smp_alloc_chans`; `smp_quality_stereo`;
+  Alt-U = `smp_op_stereo` (`smp_to_mono` / `smp_to_stereo`,
+  `mono_choice_prompt`); `wave_lane` draws two 16-row lanes;
+  `stereo_choice_prompt` has Stereo/Left/Right. Size cap `SMP_MAXBYTES`
+  counts both channels; render imports use it too (was 1 MB).
+- **Renders:** memory jobs keep 2 channels interleaved for stereo songs;
+  `render_import` builds a stereo sample; `Render_SaveSampleWav` 2-channel.
+- **Size / WAV follow-up:** `SMP_MAXFRAMES` (it_sample.h, 0x10000000 =
+  OpenMPT/Schism `MAX_SAMPLE_LENGTH`) replaces IT's 4177910-byte caps in
+  `scan_wav`, `xm_conv_len`, the XM importer and the loaders;
+  `SMP_MAXBYTES` = one 16-bit channel of that; resize caps frames; render
+  imports stop after `RENDER_IMPORT_SECONDS` (600; the memory sink grows
+  its buffer by doubling). `scan_wav_ext` (it_ris.c) takes what IT's
+  `scan_wav` refuses: full RIFF chunk walk, PCM 8/16/24/32, float 32/64,
+  EXTENSIBLE; `slibent_t.WavFmt` marks wide data, which `wav_to16`
+  converts in place before `Load_SampleData` (ls_identify copies WavFmt).
+  `ls_unknown`'s raw cap stays IT's.
+- **Load Sample preview:** `ls_auto_preview` (screen loop) loads the
+  entry under a resting cursor (150 ms) into the check slot with
+  `ls_preview_stereo` (256), cutting voices on slot 99 instead of
+  stopping the song; `LibCheckAuto` makes the first note key still
+  `stop_song()` as IT. Skips dirs, modules and unknown files.
+  `ls_wave_lane` draws one lane; its byte pointer runs on across
+  columns as in `D_DrawWaveForm` (fixes the 16-bit stripes).
+  `ITED_SHOT_MODULE` (shot screen 13) enters a module row. The LIB test now expects the float /
+  24-bit fixtures to load.
+- Tests: selftest block **STR** (22 blocks now): reference load vs the
+  file's blocks, balance playback (`st_play`), requester keys, WAV / ITS /
+  ITI / IT (IT214, raw, IT215) / S3M round trips, compressed stereo read,
+  F3 ops per channel (8/16-bit), Alt-U, render import.
 
 ## 6. Next phase
 

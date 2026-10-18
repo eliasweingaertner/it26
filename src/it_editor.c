@@ -53,6 +53,7 @@
 #include "it_import.h"
 #include "it_ris.h"
 #include "it_render.h"               /* feature 018 */
+#include "it_sample.h"               /* feature 019: stereo samples */
 #include "it_screen.h"
 #include "it_vgadata.h"                 /* IT_FontROM (selftest checks) */
 
@@ -1834,7 +1835,13 @@ static void pe_new_pattern(uint16_t pat);   /* NewPattern: load + undo */
 static void info_render_pattern(void);      /* feature 018 */
 static int  export_samples(int only1);
 
-#define SMP_MAXBYTES 4177920u           /* I_ReMix size cap */
+/* I_ReMix capped samples at 4177920 bytes; it26 allows OpenMPT's and
+ * Schism's frame limit (SMP_MAXFRAMES, it_sample.h): this is one 16-bit
+ * channel of that length */
+#define SMP_MAXBYTES (SMP_MAXFRAMES * 2u)
+/* render imports (Ctrl-O & co.) stop after this long, so a runaway
+ * pattern cannot eat gigabytes */
+#define RENDER_IMPORT_SECONDS 600u
 #define SMP_PAD      32                 /* interpolator padding, as loader */
 
 static sample_t *cur_smp(void) { return &Song.Smp[ListSel]; }
@@ -2217,6 +2224,70 @@ static void wave_marker(uint32_t beg, uint32_t end, uint32_t len,
     }
 }
 
+/* one channel's columns; `lane` -1 = the full 32 rows (IT), 0 / 1 =
+ * the upper / lower 16 rows (it26: a stereo sample's left / right) */
+static void wave_lane(const sample_t *s, int c, int lane)
+{
+    int is16 = (s->Flags & 2) != 0;
+    int step = is16 ? 2 : 1;
+    const uint8_t *base = (const uint8_t *)smp_chan(s, c) +
+                          (is16 ? 1 : 0);
+    uint32_t len = s->Length;
+    uint64_t stepfx = ((uint64_t)len << 16) / 176;
+    uint64_t posfx = 0;
+    int prevmin = -128, prevmax = 127;  /* LastWaveformValues 7F80h */
+    int col;
+
+    for (col = 0; col < 176; col++) {
+        uint64_t nextfx = posfx + stepfx;
+        uint32_t i0 = (uint32_t)(posfx >> 16);
+        uint32_t i1 = (uint32_t)(nextfx >> 16);
+        int8_t mn, mx;
+        int lo, hi, cnt, row;
+        uint32_t i;
+
+        if (i0 >= len)
+            i0 = len - 1;
+        mn = mx = (int8_t)base[(size_t)i0 * step];
+        for (i = i0; i < i1 && i < len; i++) {
+            int8_t v = (int8_t)base[(size_t)i * step];
+            if (v < mn)
+                mn = v;
+            else if (v > mx)
+                mx = v;
+        }
+        /* join with the previous column (XChg LastWaveformValues) */
+        lo = mn; hi = mx;
+        if (lo > prevmax) lo = prevmax;
+        if (hi < prevmin) hi = prevmin;
+        prevmin = mn; prevmax = mx;
+
+        /* row map: byte-exact SAR/Add AX,202h/SAR (incl. the AL->AH
+         * carry when min>>1 is -1 or -2 -- authentic) */
+        {
+            uint8_t al = (uint8_t)((int8_t)lo >> 1);
+            uint8_t ah = (uint8_t)((int8_t)hi >> 1);
+            unsigned ax = (unsigned)((ah << 8) | al) + 0x202;
+            int rlo, rhi;
+            ah = (uint8_t)((int8_t)(ax >> 8) >> 2);
+            al = (uint8_t)((int8_t)(ax & 0xFF) >> 2);
+            rhi = (int8_t)ah;
+            rlo = (int8_t)al;
+            cnt = rhi - rlo + 1;
+            row = 16 - rhi;
+            if (row == 32)
+                row = 31;
+        }
+        for (; cnt > 0; cnt--, row++)
+            if (row >= 0 && row < 32) {
+                int r = lane < 0 ? row : lane * 16 + (row >> 1);
+                WavePix[r * 176 + col] = 1;
+            }
+
+        posfx = nextfx;
+    }
+}
+
 static void draw_waveform(void)
 {
     const sample_t *s = cur_smp();
@@ -2224,61 +2295,13 @@ static void draw_waveform(void)
     memset(WavePix, 0, sizeof(WavePix));
 
     if (smp_has_data(s)) {
-        int is16 = (s->Flags & 2) != 0;
-        int step = is16 ? 2 : 1;
-        const uint8_t *base = (const uint8_t *)s->Data + (is16 ? 1 : 0);
         uint32_t len = s->Length;
-        uint64_t stepfx = ((uint64_t)len << 16) / 176;
-        uint64_t posfx = 0;
-        int prevmin = -128, prevmax = 127;  /* LastWaveformValues 7F80h */
-        int col;
 
-        for (col = 0; col < 176; col++) {
-            uint64_t nextfx = posfx + stepfx;
-            uint32_t i0 = (uint32_t)(posfx >> 16);
-            uint32_t i1 = (uint32_t)(nextfx >> 16);
-            int8_t mn, mx;
-            int lo, hi, cnt, row;
-            uint32_t i;
-
-            if (i0 >= len)
-                i0 = len - 1;
-            mn = mx = (int8_t)base[(size_t)i0 * step];
-            for (i = i0; i < i1 && i < len; i++) {
-                int8_t v = (int8_t)base[(size_t)i * step];
-                if (v < mn)
-                    mn = v;
-                else if (v > mx)
-                    mx = v;
-            }
-            /* join with the previous column (XChg LastWaveformValues) */
-            lo = mn; hi = mx;
-            if (lo > prevmax) lo = prevmax;
-            if (hi < prevmin) hi = prevmin;
-            prevmin = mn; prevmax = mx;
-
-            /* row map: byte-exact SAR/Add AX,202h/SAR (incl. the AL->AH
-             * carry when min>>1 is -1 or -2 -- authentic) */
-            {
-                uint8_t al = (uint8_t)((int8_t)lo >> 1);
-                uint8_t ah = (uint8_t)((int8_t)hi >> 1);
-                unsigned ax = (unsigned)((ah << 8) | al) + 0x202;
-                int rlo, rhi;
-                ah = (uint8_t)((int8_t)(ax >> 8) >> 2);
-                al = (uint8_t)((int8_t)(ax & 0xFF) >> 2);
-                rhi = (int8_t)ah;
-                rlo = (int8_t)al;
-                cnt = rhi - rlo + 1;
-                row = 16 - rhi;
-                if (row == 32)
-                    row = 31;
-            }
-            for (; cnt > 0; cnt--, row++)
-                if (row >= 0 && row < 32)
-                    WavePix[row * 176 + col] = 1;
-
-            posfx = nextfx;
-        }
+        if (s->Flags & SMP_STEREO) {
+            wave_lane(s, 0, 0);
+            wave_lane(s, 1, 1);
+        } else
+            wave_lane(s, 0, -1);
 
         if (s->Flags & 0x10)
             wave_marker(s->LoopBeg, s->LoopEnd, len, 1);
@@ -2348,6 +2371,13 @@ static void *smp_alloc(uint32_t bytes)
     return p;
 }
 
+/* it26 (feature 019): memory for `channels` channels of `frames`
+ * frames each in the it_sample.h layout, zeroed (padding included) */
+static void *smp_alloc_chans(uint32_t frames, int width, int channels)
+{
+    return calloc(smp_alloc_bytes(frames, width, channels) + SMP_PAD, 1);
+}
+
 static void smp_free_data(sample_t *s)
 {
     ed_lock();
@@ -2357,13 +2387,31 @@ static void smp_free_data(sample_t *s)
     ed_unlock();
 }
 
+/* it26: a stereo sample's channels after its Length shrank -- move
+ * channel c's `newlen` frames from `skip` frames into its old block to
+ * its new place (channel 0 first, so nothing is overwritten unread) */
+static void smp_relayout(sample_t *s, uint32_t oldlen, uint32_t skip)
+{
+    int c, w = smp_width(s);
+
+    for (c = 0; c < smp_channels(s); c++)
+        memmove(smp_chan(s, c),
+                (uint8_t *)smp_chan_at(s->Data, oldlen, w, c) +
+                (size_t)skip * w,
+                (size_t)s->Length * w);
+    smp_pad(s);
+}
+
 /* ---- destructive ops (research R3, transliterated) ----------------- */
+/* it26 (feature 019): a stereo sample gets each operation once per
+ * channel, as if each channel were a mono sample */
 
 static void smp_op_convert(void)        /* Alt-A: I_ConvertSample */
 {
     sample_t *s = cur_smp();
     uint32_t i, n;
     uint8_t *p;
+    int c;
 
     if (!smp_has_data(s))
         return;
@@ -2372,9 +2420,11 @@ static void smp_op_convert(void)        /* Alt-A: I_ConvertSample */
     stop_song();
     ed_lock();
     n = s->Length;
-    p = (uint8_t *)s->Data + ((s->Flags & 2) ? 1 : 0);
-    for (i = 0; i < n; i++)             /* 16-bit: high bytes only */
-        p[(size_t)i * ((s->Flags & 2) ? 2 : 1)] ^= 0x80;
+    for (c = 0; c < smp_channels(s); c++) {
+        p = (uint8_t *)smp_chan(s, c) + ((s->Flags & 2) ? 1 : 0);
+        for (i = 0; i < n; i++)         /* 16-bit: high bytes only */
+            p[(size_t)i * ((s->Flags & 2) ? 2 : 1)] ^= 0x80;
+    }
     ed_unlock();
 }
 
@@ -2382,20 +2432,23 @@ static void smp_op_invert(void)         /* Alt-I: I_InvertSample */
 {
     sample_t *s = cur_smp();
     uint32_t i, n;
+    int c;
 
     if (!smp_has_data(s))
         return;
     stop_song();
     ed_lock();
     n = s->Length;
-    if (s->Flags & 2) {
-        int16_t *p = (int16_t *)s->Data;
-        for (i = 0; i < n; i++)
-            p[i] = (int16_t)-p[i];
-    } else {
-        int8_t *p = (int8_t *)s->Data;
-        for (i = 0; i < n; i++)
-            p[i] = (int8_t)-p[i];
+    for (c = 0; c < smp_channels(s); c++) {
+        if (s->Flags & 2) {
+            int16_t *p = (int16_t *)smp_chan(s, c);
+            for (i = 0; i < n; i++)
+                p[i] = (int16_t)-p[i];
+        } else {
+            int8_t *p = (int8_t *)smp_chan(s, c);
+            for (i = 0; i < n; i++)
+                p[i] = (int8_t)-p[i];
+        }
     }
     ed_unlock();
 }
@@ -2404,42 +2457,52 @@ static void smp_op_centre(void)         /* Alt-H: I_CenterSample */
 {
     sample_t *s = cur_smp();
     uint32_t i, n;
-    long off;
+    long off[2] = { 0, 0 };
     char msg[48];
+    int c, chans = smp_channels(s);
 
     if (!smp_has_data(s))
         return;
     n = s->Length;
-    if (s->Flags & 2) {
-        const int16_t *p = (const int16_t *)s->Data;
-        int16_t mn = p[0], mx = p[0];
-        for (i = 0; i < n; i++) {
-            if (p[i] < mn) mn = p[i];
-            else if (p[i] > mx) mx = p[i];
+    for (c = 0; c < chans; c++) {
+        if (s->Flags & 2) {
+            const int16_t *p = (const int16_t *)smp_chan(s, c);
+            int16_t mn = p[0], mx = p[0];
+            for (i = 0; i < n; i++) {
+                if (p[i] < mn) mn = p[i];
+                else if (p[i] > mx) mx = p[i];
+            }
+            off[c] = -((long)mn + mx) >> 1;
+        } else {
+            const int8_t *p = (const int8_t *)smp_chan(s, c);
+            int8_t mn = p[0], mx = p[0];
+            for (i = 0; i < n; i++) {
+                if (p[i] < mn) mn = p[i];
+                else if (p[i] > mx) mx = p[i];
+            }
+            off[c] = -((long)mn + mx) >> 1;
         }
-        off = -((long)mn + mx) >> 1;
-    } else {
-        const int8_t *p = (const int8_t *)s->Data;
-        int8_t mn = p[0], mx = p[0];
-        for (i = 0; i < n; i++) {
-            if (p[i] < mn) mn = p[i];
-            else if (p[i] > mx) mx = p[i];
-        }
-        off = -((long)mn + mx) >> 1;
     }
-    snprintf(msg, sizeof(msg), "Centre sample (DC offset %ld)?", off);
+    if (chans == 2)
+        snprintf(msg, sizeof(msg), "Centre sample (DC offset %ld/%ld)?",
+                 off[0], off[1]);
+    else
+        snprintf(msg, sizeof(msg), "Centre sample (DC offset %ld)?",
+                 off[0]);
     if (!confirm_box(msg))
         return;
     stop_song();
     ed_lock();
-    if (s->Flags & 2) {
-        int16_t *p = (int16_t *)s->Data;
-        for (i = 0; i < n; i++)
-            p[i] = (int16_t)(p[i] + off);
-    } else {
-        int8_t *p = (int8_t *)s->Data;
-        for (i = 0; i < n; i++)
-            p[i] = (int8_t)(p[i] + off);
+    for (c = 0; c < chans; c++) {
+        if (s->Flags & 2) {
+            int16_t *p = (int16_t *)smp_chan(s, c);
+            for (i = 0; i < n; i++)
+                p[i] = (int16_t)(p[i] + off[c]);
+        } else {
+            int8_t *p = (int8_t *)smp_chan(s, c);
+            for (i = 0; i < n; i++)
+                p[i] = (int8_t)(p[i] + off[c]);
+        }
     }
     ed_unlock();
 }
@@ -2453,26 +2516,31 @@ static void smp_op_amplify(void)        /* Alt-M: I_AmplifySample */
     unsigned dev = 0, sug;
     long amp;
     uint32_t mult;
+    int c;
 
     if (!smp_has_data(s))
         return;
     n = s->Length;
-    if (s->Flags & 2) {
-        const int16_t *p = (const int16_t *)s->Data;
-        for (i = 0; i < n; i++) {
-            int v = p[i] < 0 ? -p[i] : p[i];
-            if ((unsigned)v > dev)
-                dev = (unsigned)v;
+    /* stereo: one suggestion from the peak of both channels */
+    for (c = 0; c < smp_channels(s); c++) {
+        if (s->Flags & 2) {
+            const int16_t *p = (const int16_t *)smp_chan(s, c);
+            for (i = 0; i < n; i++) {
+                int v = p[i] < 0 ? -p[i] : p[i];
+                if ((unsigned)v > dev)
+                    dev = (unsigned)v;
+            }
+        } else {
+            const int8_t *p = (const int8_t *)smp_chan(s, c);
+            for (i = 0; i < n; i++) {
+                int v = p[i] < 0 ? -p[i] : p[i];
+                if ((unsigned)v > dev)
+                    dev = (unsigned)v;
+            }
         }
-    } else {
-        const int8_t *p = (const int8_t *)s->Data;
-        for (i = 0; i < n; i++) {
-            int v = p[i] < 0 ? -p[i] : p[i];
-            if ((unsigned)v > dev)
-                dev = (unsigned)v;
-        }
-        dev <<= 8;                      /* BH-position, as the original */
     }
+    if (!(s->Flags & 2))
+        dev <<= 8;                      /* BH-position, as the original */
     sug = (dev > 0x32) ? (unsigned)(0x320000u / dev) : 400;
     if (sug >= 400)
         sug = 400;
@@ -2485,22 +2553,24 @@ static void smp_op_amplify(void)        /* Alt-M: I_AmplifySample */
     stop_song();
     mult = (uint32_t)(((uint64_t)(unsigned long)amp << 16) / 100);
     ed_lock();
-    if (s->Flags & 2) {
-        int16_t *p = (int16_t *)s->Data;
-        for (i = 0; i < n; i++) {
-            int64_t v = ((int64_t)p[i] * (int64_t)mult + 0x8000) >> 16;
-            if (v > 0x7FFF) v = 0x7FFF;
-            if (v < -0x8000) v = -0x8000;
-            p[i] = (int16_t)v;
-        }
-    } else {
-        int8_t *p = (int8_t *)s->Data;
-        for (i = 0; i < n; i++) {
-            int32_t v = (int32_t)(((int64_t)p[i] * (int64_t)mult
-                                   + 0x8000) >> 16);
-            if (v > 0x7F) v = 0x7F;
-            if (v < -0x80) v = -0x80;
-            p[i] = (int8_t)v;
+    for (c = 0; c < smp_channels(s); c++) {
+        if (s->Flags & 2) {
+            int16_t *p = (int16_t *)smp_chan(s, c);
+            for (i = 0; i < n; i++) {
+                int64_t v = ((int64_t)p[i] * (int64_t)mult + 0x8000) >> 16;
+                if (v > 0x7FFF) v = 0x7FFF;
+                if (v < -0x8000) v = -0x8000;
+                p[i] = (int16_t)v;
+            }
+        } else {
+            int8_t *p = (int8_t *)smp_chan(s, c);
+            for (i = 0; i < n; i++) {
+                int32_t v = (int32_t)(((int64_t)p[i] * (int64_t)mult
+                                       + 0x8000) >> 16);
+                if (v > 0x7F) v = 0x7F;
+                if (v < -0x80) v = -0x80;
+                p[i] = (int8_t)v;
+            }
         }
     }
     ed_unlock();
@@ -2510,25 +2580,28 @@ static void smp_op_reverse(void)        /* Alt-G: I_ReverseSample */
 {
     sample_t *s = cur_smp();
     uint32_t n, t;
+    int c;
 
     if (!smp_has_data(s))
         return;
     stop_song();
     ed_lock();
     n = s->Length;
-    if (s->Flags & 2) {
-        int16_t *p = (int16_t *)s->Data;
-        uint32_t a = 0, b = n - 1;
-        while (a < b) {
-            int16_t x = p[a]; p[a] = p[b]; p[b] = x;
-            a++; b--;
-        }
-    } else {
-        int8_t *p = (int8_t *)s->Data;
-        uint32_t a = 0, b = n - 1;
-        while (a < b) {
-            int8_t x = p[a]; p[a] = p[b]; p[b] = x;
-            a++; b--;
+    for (c = 0; c < smp_channels(s); c++) {
+        if (s->Flags & 2) {
+            int16_t *p = (int16_t *)smp_chan(s, c);
+            uint32_t a = 0, b = n - 1;
+            while (a < b) {
+                int16_t x = p[a]; p[a] = p[b]; p[b] = x;
+                a++; b--;
+            }
+        } else {
+            int8_t *p = (int8_t *)smp_chan(s, c);
+            uint32_t a = 0, b = n - 1;
+            while (a < b) {
+                int8_t x = p[a]; p[a] = p[b]; p[b] = x;
+                a++; b--;
+            }
         }
     }
     t = s->LoopBeg;                     /* mirror both loops */
@@ -2544,7 +2617,7 @@ static void smp_op_reverse(void)        /* Alt-G: I_ReverseSample */
 static void smp_op_cut_before(void)     /* Alt-B: I_CutSampleBeforeLoop */
 {
     sample_t *s = cur_smp();
-    uint32_t cut, bytes;
+    uint32_t cut, bytes, oldlen;
 
     if (!smp_has_data(s) || s->LoopBeg == 0)
         return;
@@ -2559,12 +2632,17 @@ static void smp_op_cut_before(void)     /* Alt-B: I_CutSampleBeforeLoop */
     s->LoopEnd    = (s->LoopEnd    > cut) ? s->LoopEnd    - cut : 0;
     s->SusLoopBeg = (s->SusLoopBeg > cut) ? s->SusLoopBeg - cut : 0;
     s->SusLoopEnd = (s->SusLoopEnd > cut) ? s->SusLoopEnd - cut : 0;
+    oldlen = s->Length;
     s->Length -= cut;
-    bytes = s->Length << ((s->Flags & 2) ? 1 : 0);
-    memmove(s->Data,
-            (uint8_t *)s->Data + ((size_t)cut << ((s->Flags & 2) ? 1 : 0)),
-            bytes);
-    memset((uint8_t *)s->Data + bytes, 0, SMP_PAD);
+    if (s->Flags & SMP_STEREO) {
+        smp_relayout(s, oldlen, cut);
+    } else {
+        bytes = s->Length << ((s->Flags & 2) ? 1 : 0);
+        memmove(s->Data,
+                (uint8_t *)s->Data + ((size_t)cut << ((s->Flags & 2) ? 1 : 0)),
+                bytes);
+        memset((uint8_t *)s->Data + bytes, 0, SMP_PAD);
+    }
     ed_unlock();
     smp_check_both();
 }
@@ -2572,7 +2650,7 @@ static void smp_op_cut_before(void)     /* Alt-B: I_CutSampleBeforeLoop */
 static void smp_op_cut_after(void)      /* Alt-L: I_CutSample */
 {
     sample_t *s = cur_smp();
-    uint32_t end;
+    uint32_t end, oldlen;
 
     if (!smp_has_data(s) || s->LoopEnd == 0)
         return;
@@ -2583,9 +2661,58 @@ static void smp_op_cut_after(void)      /* Alt-L: I_CutSample */
     end = s->LoopEnd;
     if (s->SusLoopEnd > end)
         end = s->SusLoopEnd;
+    oldlen = s->Length;
     s->Length = end;
+    if ((s->Flags & SMP_STEREO) && end < oldlen)
+        smp_relayout(s, oldlen, 0);
     ed_unlock();
     smp_check_both();
+}
+
+/* I_ReMix's resampling of one channel */
+static void smp_remix(const void *srcv, uint32_t oldlen, void *dstv,
+                      uint32_t newlen, int is16, int interpolate)
+{
+    /* 16.16 source step = old/new (BP:BX in the original) */
+    uint64_t stepfx = (((uint64_t)oldlen << 16) / newlen);
+    uint64_t pos = 0;
+    uint32_t i;
+
+    if (is16) {
+        const int16_t *src = (const int16_t *)srcv;
+        int16_t *dst = (int16_t *)dstv;
+        for (i = 0; i < newlen; i++) {
+            uint32_t si = (uint32_t)(pos >> 16);
+            if (si >= oldlen)
+                si = oldlen - 1;
+            if (interpolate) {
+                uint32_t f = ((uint32_t)pos >> 8) & 0xFF;
+                int32_t s0 = src[si];
+                int32_t s1 = src[si + 1 < oldlen ? si + 1 : si];
+                dst[i] = (int16_t)((s0 * (int32_t)(256 - f)
+                                    + s1 * (int32_t)f + 0x80) >> 8);
+            } else
+                dst[i] = src[si];
+            pos += stepfx;
+        }
+    } else {
+        const int8_t *src = (const int8_t *)srcv;
+        int8_t *dst = (int8_t *)dstv;
+        for (i = 0; i < newlen; i++) {
+            uint32_t si = (uint32_t)(pos >> 16);
+            if (si >= oldlen)
+                si = oldlen - 1;
+            if (interpolate) {
+                uint32_t f = ((uint32_t)pos >> 8) & 0xFF;
+                int32_t s0 = src[si];
+                int32_t s1 = src[si + 1 < oldlen ? si + 1 : si];
+                dst[i] = (int8_t)((s0 * (int32_t)(256 - f)
+                                   + s1 * (int32_t)f + 0x80) >> 8);
+            } else
+                dst[i] = src[si];
+            pos += stepfx;
+        }
+    }
 }
 
 /* Alt-E / Alt-F: I_ResizeSample(NoInt) via I_ReMix */
@@ -2594,7 +2721,7 @@ static void smp_op_resize(int interpolate)
     sample_t *s = cur_smp();
     long nl;
     uint32_t newlen, oldlen;
-    int is16;
+    int is16, c, chans = smp_channels(s);
     void *nd;
 
     if (!smp_has_data(s))
@@ -2604,11 +2731,13 @@ static void smp_op_resize(int interpolate)
         return;
     is16 = (s->Flags & 2) != 0;
     newlen = (uint32_t)nl;
-    if ((newlen << is16) > SMP_MAXBYTES)
-        newlen = SMP_MAXBYTES >> is16;
+    /* the size cap counts both channels of a stereo sample */
+    if (newlen > SMP_MAXFRAMES)         /* per channel (it26) */
+        newlen = SMP_MAXFRAMES;
     oldlen = s->Length;
 
-    nd = smp_alloc(newlen << is16);
+    nd = (chans == 2) ? smp_alloc_chans(newlen, 1 << is16, 2)
+                      : smp_alloc(newlen << is16);
     if (!nd) {
         status("Out of memory");
         return;
@@ -2616,49 +2745,15 @@ static void smp_op_resize(int interpolate)
     stop_song();
     ed_lock();
     {
-        /* 16.16 source step = old/new (BP:BX in the original) */
-        uint64_t stepfx = (((uint64_t)oldlen << 16) / newlen);
-        uint64_t pos = 0;
-        uint32_t i;
-
-        if (is16) {
-            const int16_t *src = (const int16_t *)s->Data;
-            int16_t *dst = (int16_t *)nd;
-            for (i = 0; i < newlen; i++) {
-                uint32_t si = (uint32_t)(pos >> 16);
-                if (si >= oldlen)
-                    si = oldlen - 1;
-                if (interpolate) {
-                    uint32_t f = ((uint32_t)pos >> 8) & 0xFF;
-                    int32_t s0 = src[si];
-                    int32_t s1 = src[si + 1 < oldlen ? si + 1 : si];
-                    dst[i] = (int16_t)((s0 * (int32_t)(256 - f)
-                                        + s1 * (int32_t)f + 0x80) >> 8);
-                } else
-                    dst[i] = src[si];
-                pos += stepfx;
-            }
-        } else {
-            const int8_t *src = (const int8_t *)s->Data;
-            int8_t *dst = (int8_t *)nd;
-            for (i = 0; i < newlen; i++) {
-                uint32_t si = (uint32_t)(pos >> 16);
-                if (si >= oldlen)
-                    si = oldlen - 1;
-                if (interpolate) {
-                    uint32_t f = ((uint32_t)pos >> 8) & 0xFF;
-                    int32_t s0 = src[si];
-                    int32_t s1 = src[si + 1 < oldlen ? si + 1 : si];
-                    dst[i] = (int8_t)((s0 * (int32_t)(256 - f)
-                                       + s1 * (int32_t)f + 0x80) >> 8);
-                } else
-                    dst[i] = src[si];
-                pos += stepfx;
-            }
-        }
+        for (c = 0; c < chans; c++)
+            smp_remix(smp_chan(s, c), oldlen,
+                      smp_chan_at(nd, newlen, 1 << is16, c), newlen,
+                      is16, interpolate);
         free(s->Data);
         s->Data = nd;
         s->Length = newlen;
+        if (chans == 2)
+            smp_pad(s);
         /* scale the loop points by new/old, cap 9999999 (I_ReMix5) */
         {
             uint32_t *pts[4];
@@ -2681,6 +2776,54 @@ static void smp_op_resize(int interpolate)
     smp_check_both();
 }
 
+/* it26: Alt-Q on a stereo sample -- each channel converted, or its
+ * bytes reinterpreted (mode 2), into a fresh two-channel buffer */
+static void smp_quality_stereo(sample_t *s, int mode, int is16)
+{
+    uint32_t n = s->Length, nn, i;
+    int nw = is16 ? 1 : 2, c;
+    void *nd;
+
+    if (mode == 2)
+        nn = is16 ? n << 1 : n >> 1;
+    else
+        nn = n;
+    nd = smp_alloc_chans(nn, nw, 2);
+    if (!nd) {
+        status("Out of memory");
+        return;
+    }
+    for (c = 0; c < 2; c++) {
+        void *dst = smp_chan_at(nd, nn, nw, c);
+        if (mode == 2)
+            memcpy(dst, smp_chan(s, c), (size_t)nn * nw);
+        else if (is16)
+            for (i = 0; i < n; i++)
+                ((int8_t *)dst)[i] =
+                    (int8_t)(((const int16_t *)smp_chan(s, c))[i] >> 8);
+        else
+            for (i = 0; i < n; i++)
+                ((int16_t *)dst)[i] =
+                    (int16_t)(((const int8_t *)smp_chan(s, c))[i] << 8);
+    }
+    free(s->Data);
+    s->Data = nd;
+    if (is16)
+        s->Flags &= (uint8_t)~2;
+    else
+        s->Flags |= 2;
+    if (mode == 2) {
+        if (is16) {
+            s->Length <<= 1; s->LoopBeg <<= 1; s->LoopEnd <<= 1;
+            s->SusLoopBeg <<= 1; s->SusLoopEnd <<= 1;
+        } else {
+            s->Length >>= 1; s->LoopBeg >>= 1; s->LoopEnd >>= 1;
+            s->SusLoopBeg >>= 1; s->SusLoopEnd >>= 1;
+        }
+    }
+    smp_pad(s);
+}
+
 static void smp_op_quality(void)        /* Alt-Q: I_ToggleSampleQuality */
 {
     sample_t *s = cur_smp();
@@ -2696,7 +2839,9 @@ static void smp_op_quality(void)        /* Alt-Q: I_ToggleSampleQuality */
     stop_song();
     ed_lock();
     n = s->Length;
-    if (mode == 2) {                    /* adjust fields (reinterpret) */
+    if (s->Flags & SMP_STEREO) {
+        smp_quality_stereo(s, mode, is16);
+    } else if (mode == 2) {             /* adjust fields (reinterpret) */
         if (is16) {
             s->Flags &= (uint8_t)~2;
             s->Length <<= 1; s->LoopBeg <<= 1; s->LoopEnd <<= 1;
@@ -3261,6 +3406,130 @@ static void ins_save_disk(void)
 /* Alt-key dispatch for the F3 sample list; returns 1 when consumed */
 static void list_toggle_multichannel(void);   /* Alt-N (F3/F4) */
 
+/* ---- it26 (feature 019): stereo <-> mono, Alt-U on F3 ------------- */
+
+/* how: 1 = mix (L+R)/2, 2 = keep left, 3 = keep right */
+static int smp_to_mono(sample_t *s, int how)
+{
+    uint32_t i, n = s->Length;
+    int w = smp_width(s);
+    void *nd;
+
+    if (!(s->Flags & SMP_STEREO) || !s->Data)
+        return 0;
+    nd = smp_alloc((uint32_t)n * w);
+    if (!nd)
+        return 0;
+    if (how == 2 || how == 3)
+        memcpy(nd, smp_chan(s, how - 2), (size_t)n * w);
+    else if (w == 2)
+        for (i = 0; i < n; i++)
+            ((int16_t *)nd)[i] = (int16_t)
+                ((((const int16_t *)smp_chan(s, 0))[i] +
+                  ((const int16_t *)smp_chan(s, 1))[i]) / 2);
+    else
+        for (i = 0; i < n; i++)
+            ((int8_t *)nd)[i] = (int8_t)
+                ((((const int8_t *)smp_chan(s, 0))[i] +
+                  ((const int8_t *)smp_chan(s, 1))[i]) / 2);
+    free(s->Data);
+    s->Data = nd;
+    s->Flags &= (uint8_t)~SMP_STEREO;
+    return 1;
+}
+
+/* both channels = the mono data; the size cap counts both */
+static int smp_to_stereo(sample_t *s)
+{
+    int w = smp_width(s);
+    void *nd;
+
+    if ((s->Flags & SMP_STEREO) || !s->Data ||
+        s->Length > SMP_MAXFRAMES)
+        return 0;
+    nd = smp_alloc_chans(s->Length, w, 2);
+    if (!nd)
+        return 0;
+    memcpy(smp_chan_at(nd, s->Length, w, 0), s->Data, (size_t)s->Length * w);
+    memcpy(smp_chan_at(nd, s->Length, w, 1), s->Data, (size_t)s->Length * w);
+    free(s->Data);
+    s->Data = nd;
+    s->Flags |= SMP_STEREO;
+    smp_pad(s);
+    return 1;
+}
+
+/* "Convert to mono": Mix / Left / Right / Cancel, styled as the
+ * "Loading Stereo Sample" requester. Returns 0 (cancel) or 1..3. */
+static int mono_choice_prompt(void)
+{
+    int sel = 0;
+
+    for (;;) {
+        int key;
+
+        Screen_DrawBox(20, 22, 60, 29, 3);
+        Screen_DrawString(33, 24, "Convert to mono", 0x20);
+        draw_button_style(23, 26, 31, 28, 8, "  Mix", 0, sel == 0);
+        draw_button_style(32, 26, 40, 28, 8, "  Left", 0, sel == 1);
+        draw_button_style(41, 26, 49, 28, 8, " Right", 0, sel == 2);
+        draw_button_style(50, 26, 58, 28, 8, " Cancel", 0, sel == 3);
+        Screen_Update();
+
+        key = ed_get_key();
+        if (key == ITK_NONE) { ma_sleep(15); continue; }
+        switch (key) {
+        case ITK_QUIT: Running = 0; return 0;
+        case ITK_ESC: case 'c': case 'C': return 0;
+        case 'm': case 'M': return 1;
+        case 'l': case 'L': return 2;
+        case 'r': case 'R': return 3;
+        case ITK_RIGHT: case ITK_TAB:
+            sel = (sel + 1) & 3;
+            break;
+        case ITK_LEFT: case ITK_SHIFT_TAB:
+            sel = (sel + 3) & 3;
+            break;
+        case ITK_ENTER: case ' ':
+            return sel == 3 ? 0 : sel + 1;
+        case ITK_MOUSE: {
+            it_mouse_t m;
+            Screen_GetMouse(&m);
+            if (button_hit(&m, 23, 26, 31, 28, 8)) return 1;
+            if (button_hit(&m, 32, 26, 40, 28, 8)) return 2;
+            if (button_hit(&m, 41, 26, 49, 28, 8)) return 3;
+            if (button_hit(&m, 50, 26, 58, 28, 8)) return 0;
+            break; }
+        default:
+            break;
+        }
+    }
+}
+
+static void smp_op_stereo(void)         /* Alt-U (it26) */
+{
+    sample_t *s = cur_smp();
+    int how, ok;
+
+    if (!smp_has_data(s))
+        return;
+    if (s->Flags & SMP_STEREO) {
+        how = mono_choice_prompt();
+        if (!how)
+            return;
+    } else {
+        how = 0;
+        if (!confirm_box("Convert to stereo?"))
+            return;
+    }
+    stop_song();
+    ed_lock();
+    ok = how ? smp_to_mono(s, how) : smp_to_stereo(s);
+    ed_unlock();
+    if (!ok)
+        status(how ? "Out of memory" : "Sample too large for stereo");
+}
+
 static int handle_sample_altkey(int key)
 {
     switch (key) {
@@ -3279,6 +3548,7 @@ static int handle_sample_altkey(int key)
     case ITK_ALT_A + ('Q'-'A'): smp_op_quality();      break;
     case ITK_ALT_A + ('R'-'A'): smp_op_replace();      break;
     case ITK_ALT_A + ('S'-'A'): smp_op_swap();         break;
+    case ITK_ALT_A + ('U'-'A'): smp_op_stereo();       break;
     case ITK_ALT_A + ('X'-'A'): smp_op_exchange();     break;
     case ITK_ALT_A + ('Y'-'A'): /* I_CalculateC5Speed: 2.17 stub */
         break;
@@ -3444,6 +3714,9 @@ static void draw_samples(void)
     /* I_ShowSampleInfo (IT_I.ASM 1686): colour 2; no sample flag ->
      * "No sample", else the bit depth */
     Screen_DrawString(64, 22, !(s->Flags & 1) ? "No sample"
+                             : (s->Flags & SMP_STEREO)    /* it26 */
+                             ? ((s->Flags & 2) ? "16 bit Stereo"
+                                               : "8 bit Stereo")
                              : (s->Flags & 2) ? "16 bits" : "8 bits", 0x02);
     drawf(64, 23, 0x02, "%u", s->Length);
 
@@ -4993,6 +5266,9 @@ static const char PortHelpRenInfo2[] =
     "\x05" "D                 Save every sample as a WAV";
 static const char PortHelpRenSmp[] =
     "\x05" "Ctrl-Alt-Right    Save this sample as a WAV";
+/* feature 019: stereo samples */
+static const char PortHelpStereo[] =
+    "\x05" "Alt-U             Convert sample: stereo <-> mono";
 static const char PortHelpRenInfo3[] =
     "\x05" "Ctrl-O            Render playing pattern to Quicksave";
 static const char PortHelpRenStop[] =
@@ -5061,6 +5337,7 @@ static const uint8_t *const *help_lines(int ctx)
         buf[n++] = HL(PortHelpRenDump);
         buf[n++] = HL(PortHelpRenStop);
     } else if (ctx == 2) {              /* sample list */
+        buf[n++] = HL(PortHelpStereo);  /* feature 019 */
         buf[n++] = HL(PortHelpRenSmp);
         buf[n++] = HL(PortHelpRenDump);
     } else if (ctx == 3) {              /* F9 / F10 file screens */
@@ -7440,8 +7717,9 @@ static int render_free_slot(void)
 }
 
 /* Ctrl-O & co.: Music_ImportRenderedPattern. Pattern `pat` once, at
- * 44.1 kHz into a 16-bit mono sample (IT samples are mono), looped over
- * its whole length, named "Pattern NNN"; 1 MB cap. */
+ * 44.1 kHz into a 16-bit sample (stereo for a stereo song, feature
+ * 019), looped over its whole length, named "Pattern NNN"; stops after
+ * RENDER_IMPORT_SECONDS (Esa's fork capped at 1 MB). */
 static int render_import(int pat, int rows, int resume)
 {
     render_job_t job;
@@ -7463,7 +7741,8 @@ static int render_import(int pat, int rows, int resume)
     job.pattern = pat;
     job.rows = rows;
     job.to_memory = 1;
-    job.mem_cap_bytes = 1048576u;
+    job.mem_cap_bytes = 44100u * RENDER_IMPORT_SECONDS * 2u *
+                        ((Song.Header.Flags & ITF_STEREO) ? 2u : 1u);
     job.abort_cb = render_abort_poll;
     render_begin();
     ok = Render_Run(&job, NULL);
@@ -7487,13 +7766,28 @@ static int render_import(int pat, int rows, int resume)
     ns.LoopEnd = job.frames;
     ns.C5Speed = 44100;
     snprintf(ns.SampleName, sizeof(ns.SampleName), "Pattern %03d", pat);
-    ns.Data = smp_alloc(job.frames * 2u);
+    /* a stereo song gives a stereo sample (feature 019) */
+    if (job.channels == 2) {
+        ns.Flags |= SMP_STEREO;
+        ns.Data = smp_alloc_chans(job.frames, 2, 2);
+    } else
+        ns.Data = smp_alloc(job.frames * 2u);
     if (!ns.Data) {
         free(job.mem);
         status("Import failed: out of memory for sample");
         return 0;
     }
-    memcpy(ns.Data, job.mem, (size_t)job.frames * 2u);
+    if (job.channels == 2) {
+        int16_t *l = (int16_t *)smp_chan(&ns, 0);
+        int16_t *r = (int16_t *)smp_chan(&ns, 1);
+        uint32_t f;
+        for (f = 0; f < job.frames; f++) {
+            l[f] = job.mem[f * 2];
+            r[f] = job.mem[f * 2 + 1];
+        }
+        smp_pad(&ns);
+    } else
+        memcpy(ns.Data, job.mem, (size_t)job.frames * 2u);
     free(job.mem);
 
     ed_lock();
@@ -7512,7 +7806,8 @@ static int render_import(int pat, int rows, int resume)
     if (Screen == SCR_SAMPLES || Screen == SCR_INSTRUMENTS)
         ListSel = CurInstr - 1;
     if (job.truncated)
-        status("Pattern truncated to 1MB; sample %d", slot + 1);
+        status("Pattern truncated to %u minutes; sample %d",
+               RENDER_IMPORT_SECONDS / 60u, slot + 1);
     else if (ins)
         status("Pat %03d -> %s -> sample %03d in inst %03d", pat, name,
                slot + 1, ins);
@@ -11656,38 +11951,48 @@ static int confirm_overwrite(void (*bg)(void))
 
 /* O1_StereoSampleList (feature 013): the "Loading Stereo Sample"
  * Left/Right requester, drawn over the current screen as the original
- * overlays the loader. Returns 64 (left) or 64+128 (right). */
+ * overlays the loader. Returns 64 (left) or 64+128 (right). it26
+ * (feature 019) adds "Stereo" in front, focused, returning 256 (keep
+ * both channels); Esc keeps IT's answer, Left. */
 static int stereo_choice_prompt(void)
 {
-    int sel = 0;                        /* 0 = Left, 1 = Right */
+    static const int ret[3] = { 256, 64, 64 + 128 };
+    int sel = 0;                        /* 0 = Stereo, 1 = Left, 2 = Right */
 
     for (;;) {
         int key;
 
-        Screen_DrawBox(26, 22, 54, 29, 3);
+        Screen_DrawBox(22, 22, 58, 29, 3);
         Screen_DrawString(30, 24, "Loading Stereo Sample", 0x20);
-        draw_button_style(30, 26, 39, 28, 8, "  Left", 0, sel == 0);
-        draw_button_style(40, 26, 50, 28, 8, "  Right", 0, sel == 1);
+        draw_button_style(25, 26, 35, 28, 8, " Stereo", 0, sel == 0);
+        draw_button_style(36, 26, 45, 28, 8, "  Left", 0, sel == 1);
+        draw_button_style(46, 26, 56, 28, 8, "  Right", 0, sel == 2);
         Screen_Update();
 
         key = ed_get_key();
         if (key == ITK_NONE) { ma_sleep(15); continue; }
         switch (key) {
         case ITK_QUIT: Running = 0; return 64;
+        case 's': case 'S':
+            return 256;
         case 'l': case 'L': case ITK_ESC:
             return 64;
         case 'r': case 'R':
             return 64 + 128;
-        case ITK_LEFT: case ITK_RIGHT: case ITK_TAB: case ITK_SHIFT_TAB:
-            sel ^= 1;
+        case ITK_RIGHT: case ITK_TAB:
+            sel = (sel + 1) % 3;
+            break;
+        case ITK_LEFT: case ITK_SHIFT_TAB:
+            sel = (sel + 2) % 3;
             break;
         case ITK_ENTER: case ' ':
-            return sel ? 64 + 128 : 64;
+            return ret[sel];
         case ITK_MOUSE: {
             it_mouse_t m;
             Screen_GetMouse(&m);
-            if (button_hit(&m, 30, 26, 39, 28, 8)) return 64;
-            if (button_hit(&m, 40, 26, 50, 28, 8)) return 64 + 128;
+            if (button_hit(&m, 25, 26, 35, 28, 8)) return 256;
+            if (button_hit(&m, 36, 26, 45, 28, 8)) return 64;
+            if (button_hit(&m, 46, 26, 56, 28, 8)) return 64 + 128;
             break; }
         default:
             break;
@@ -11709,7 +12014,8 @@ static void save_progress_draw(int stage, int param)
     Screen_Update();
 }
 
-/* the original's S3M format-limit warnings, rows 23..33 attr 4 */
+/* the original's S3M format-limit warnings, rows 23..33 attr 4 (it26:
+ * row 34, stereo samples mixed down) */
 static void save_s3m_warning_draw(int row, const char *msg)
 {
     drawf(4, row, 4, "%s", msg);
@@ -11844,6 +12150,8 @@ static ilibent_t ILib[LIB_MAX];
 static int LibN;                        /* records in the open library */
 static int LibSel, LibTop;
 static int LibCheckIdx = -1;            /* record loaded into slot 99  */
+static int LibCheckAuto;                /* it26: slot 99 filled by the
+                                           browse preview, not auditioned */
 static int LibUnused;                   /* UnusedSamples at open (F4)  */
 
 static void lib_release_check(void)
@@ -11873,7 +12181,10 @@ static void lib_preview_key(const slibent_t *e, int idx, int key)
         Song.Smp[CHECK_SLOT] = tmp;
         ed_unlock();
         LibCheckIdx = idx;
+    } else if (LibCheckAuto) {
+        stop_song();                    /* IT stops on the first audition */
     }
+    LibCheckAuto = 0;
     ed_lock();
     Music_PlaySample((uint8_t)(gn - 1), CHECK_SLOT + 1, 40);
     ed_unlock();
@@ -12766,8 +13077,9 @@ static void ls_draw_values(void)
                                                      : "Forwards", 0x02);
         }
     }
-    /* Quality uses IT_DISK.ASM's strings, stereo = Cvt bit 32 */
-    Screen_DrawString(64, 21, (s->Cvt & 32)
+    /* Quality uses IT_DISK.ASM's strings, stereo = Cvt bit 32 (WAV);
+     * it26: or flag 04h (stereo samples in IT / ITS files) */
+    Screen_DrawString(64, 21, ((s->Cvt & 32) || (s->Flags & SMP_STEREO))
                       ? ((s->Flags & 2) ? "16 Bit Stereo" : "8 Bit Stereo")
                       : ((s->Flags & 2) ? "16 Bit" : "8 Bit"), 0x02);
     drawf(64, 22, 0x02, "%u", s->Length);
@@ -12825,6 +13137,61 @@ static void ls_marker(uint32_t b, uint32_t en, uint32_t len, int sus)
     }
 }
 
+/* it26 (feature 019): the preview keeps a stereo WAV's two channels
+ * (IT's DisableStereoMenu previewed the left one) */
+static int ls_preview_stereo(void)
+{
+    return 256;
+}
+
+/* one channel of the check slot into LsWavePix: `lane` -1 = all 32
+ * rows (IT), 0 / 1 = upper / lower 16 rows (a stereo sample) */
+static void ls_wave_lane(const sample_t *d, int c, int lane)
+{
+    int is16 = (d->Flags & 2) != 0, step = is16 ? 2 : 1;
+    const uint8_t *base = (const uint8_t *)smp_chan(d, c) + (is16 ? 1 : 0);
+    uint64_t total = (uint64_t)d->Length * (uint64_t)step;
+    uint64_t per = (total << 16) / 248, pos = 0;
+    size_t i = 0;                       /* SI: runs on across columns in
+                                           steps of 1 / 2, so a 16-bit
+                                           sample is always read at its
+                                           high byte (D_DrawWaveForm6) */
+    int col;
+
+    for (col = 0; col < 248; col++) {
+        uint64_t end = (pos + per) >> 16;   /* EBP */
+        int8_t mn, mx;
+        int cnt, row;
+
+        mn = mx = (int8_t)base[i < total ? i : total - (size_t)step];
+        for (; i < end && i < total; i += (size_t)step) {
+            int8_t v = (int8_t)base[i];
+            if (v < mn) mn = v;
+            else if (v > mx) mx = v;
+        }
+        {   /* SAR/Add AX,202h/SAR, AL->AH carry kept (authentic) */
+            uint8_t al = (uint8_t)((int8_t)mn >> 1);
+            uint8_t ah = (uint8_t)((int8_t)mx >> 1);
+            unsigned ax = (unsigned)((ah << 8) | al) + 0x202;
+            int rhi, rlo;
+            ah = (uint8_t)((int8_t)(ax >> 8) >> 2);
+            al = (uint8_t)((int8_t)(ax & 0xFF) >> 2);
+            rhi = (int8_t)ah;
+            rlo = (int8_t)al;
+            cnt = rhi - rlo + 1;
+            row = 16 - rhi;
+            if (row == 32)
+                row = 31;
+        }
+        for (; cnt > 0; cnt--, row++)
+            if (row >= 0 && row < 32) {
+                int r = lane < 0 ? row : lane * 16 + (row >> 1);
+                LsWavePix[r * 248 + col] = 1;
+            }
+        pos += per;
+    }
+}
+
 static void ls_draw_waveform(void)
 {
     const sample_t *d = &Song.Smp[CHECK_SLOT];
@@ -12835,48 +13202,11 @@ static void ls_draw_waveform(void)
         return;
     h = &LsEnt[LsCur].hdr;
     memset(LsWavePix, 0, sizeof(LsWavePix));
-    {
-        int is16 = (d->Flags & 2) != 0, step = is16 ? 2 : 1;
-        const uint8_t *base = (const uint8_t *)d->Data + (is16 ? 1 : 0);
-        uint64_t total = (uint64_t)d->Length * (uint64_t)step;
-        uint64_t per = (total << 16) / 248, pos = 0;
-        int col;
-
-        for (col = 0; col < 248; col++) {
-            uint64_t start = pos >> 16, end = (pos + per) >> 16;
-            size_t i = (size_t)start;
-            int8_t mn, mx;
-            int cnt, row;
-
-            if (start >= total)
-                start = total ? total - (uint64_t)step : 0;
-            i = (size_t)start;
-            mn = mx = (int8_t)base[i];              /* CL = CH = [SI] */
-            for (; i < end && i < total; i += (size_t)step) {
-                int8_t v = (int8_t)base[i];
-                if (v < mn) mn = v;
-                else if (v > mx) mx = v;
-            }
-            {   /* SAR/Add AX,202h/SAR, AL->AH carry kept (authentic) */
-                uint8_t al = (uint8_t)((int8_t)mn >> 1);
-                uint8_t ah = (uint8_t)((int8_t)mx >> 1);
-                unsigned ax = (unsigned)((ah << 8) | al) + 0x202;
-                int rhi, rlo;
-                ah = (uint8_t)((int8_t)(ax >> 8) >> 2);
-                al = (uint8_t)((int8_t)(ax & 0xFF) >> 2);
-                rhi = (int8_t)ah;
-                rlo = (int8_t)al;
-                cnt = rhi - rlo + 1;
-                row = 16 - rhi;
-                if (row == 32)
-                    row = 31;
-            }
-            for (; cnt > 0; cnt--, row++)
-                if (row >= 0 && row < 32)
-                    LsWavePix[row * 248 + col] = 1;
-            pos += per;
-        }
-    }
+    if (d->Flags & SMP_STEREO) {
+        ls_wave_lane(d, 0, 0);
+        ls_wave_lane(d, 1, 1);
+    } else
+        ls_wave_lane(d, 0, -1);
     if (h->Length) {
         if (h->Flags & 0x10)
             ls_marker(h->LoopBeg, h->LoopEnd, h->Length, 0);
@@ -13211,6 +13541,61 @@ static void ls_confirm_bg(void)         /* the prompt over this screen */
 }
 
 /* the shared screen loop; view = 1 for the Sample Library (Ctrl-F3) */
+/* it26 extension: the waveform appears when the cursor rests on a
+ * sample file (IT drew it only after a note key auditioned the entry).
+ * The entry is loaded into the check slot without playing anything and
+ * without stopping the song; voices still on the old preview are cut. */
+#define LS_PREVIEW_DELAY_MS 150
+
+static void ls_auto_preview(void)
+{
+    static int seen = -1, tried = -1;
+    static long long moved;
+    const slibent_t *e;
+    sample_t tmp;
+    void *old;
+    int ok, i, (*keep)(void);
+
+    if (LsN == 0)
+        return;
+    if (LsCur != seen) {                /* the cursor moved: wait */
+        seen = LsCur;
+        tried = -1;
+        moved = now_ms();
+        return;
+    }
+    if (LibCheckIdx == LsCur || tried == LsCur ||
+        now_ms() - moved < LS_PREVIEW_DELAY_MS)
+        return;
+    tried = LsCur;
+    e = &LsEnt[LsCur];
+    if (e->Format < 2 || e->Format >= 0x20 || e->Format == 4)
+        return;                         /* dirs, modules, unknown files */
+    memset(&tmp, 0, sizeof(tmp));
+    keep = Load_StereoChoice;
+    Load_StereoChoice = ls_preview_stereo;
+    ok = RIS_LoadSample(e, &tmp);
+    Load_StereoChoice = keep;
+    if (!ok)
+        return;
+    ed_lock();
+    for (i = 0; i < MAXSLAVECHANNELS; i++) {
+        slavechn_t *sc = &SChn[i];
+        if ((sc->Flags & SF_CHAN_ON) && sc->Smp != 100 &&
+            sc->SmpOffs == CHECK_SLOT) {
+            sc->Flags = 0;
+            if (!(sc->HCN & 0x80))
+                HChn[sc->HCOffst & 63].Flags &= (uint16_t)~HF_CHAN_ON;
+        }
+    }
+    old = Song.Smp[CHECK_SLOT].Data;
+    Song.Smp[CHECK_SLOT] = tmp;
+    ed_unlock();
+    free(old);
+    LibCheckIdx = LsCur;
+    LibCheckAuto = 1;
+}
+
 static void load_sample_screen_run_(int view);
 
 static void load_sample_screen_run(int view)
@@ -13259,6 +13644,7 @@ static void load_sample_screen_run_(int view)
             }
         }
 
+        ls_auto_preview();              /* it26 */
         ls_snapshot();
         ls_draw();
         ls_draw_focus();
@@ -13389,7 +13775,7 @@ static void load_sample_screen_run_(int view)
             if (LsN && LsEnt[LsCur].Format >= 2 &&
                 LsEnt[LsCur].Format < 0x20) {   /* unknown = raw (#17) */
                 int (*keep)(void) = Load_StereoChoice;
-                Load_StereoChoice = NULL;
+                Load_StereoChoice = ls_preview_stereo;  /* it26 */
                 lib_preview_key(&LsEnt[LsCur], LsCur, key);
                 Load_StereoChoice = keep;
             }
@@ -16499,6 +16885,159 @@ static int batch_run(int mode, int onepat, uint32_t rate)
     return fails ? 1 : 0;
 }
 
+/* ---- selftest helpers, feature 019 (block STR) ----------------------- */
+
+/* a synthetic sample in `s`: left = a sine (+dc), right (stereo) = a
+ * different sine (-dc), `kind` 1 = right silent, 2 = right = left;
+ * loop 100..len-200 */
+static int st_make_smp(sample_t *s, uint32_t len, int is16, int stereo,
+                       int kind)
+{
+    int w = is16 ? 2 : 1, c;
+    uint32_t i;
+
+    free(s->Data);
+    Music_InitSample(s);
+    s->Data = stereo ? smp_alloc_chans(len, w, 2) : smp_alloc(len * w);
+    if (!s->Data)
+        return 0;
+    s->Flags = (uint8_t)(1 | (is16 ? 2 : 0) | 0x10 |
+                         (stereo ? SMP_STEREO : 0));
+    s->Length = len;
+    s->LoopBeg = 100;
+    s->LoopEnd = len - 200;
+    s->C5Speed = 44100;
+    s->Vol = 64;
+    s->GvL = 64;
+    for (c = 0; c < (stereo ? 2 : 1); c++)
+        for (i = 0; i < len; i++) {
+            double v;
+            if (c == 0 || kind == 2)
+                v = sin(i * 6.2831853 / 100.0) * 0.6 + 0.01;
+            else if (kind == 1)
+                v = 0.0;
+            else
+                v = sin(i * 6.2831853 / 37.0) * 0.4 - 0.02;
+            if (is16)
+                ((int16_t *)smp_chan(s, c))[i] = (int16_t)(v * 32000.0);
+            else
+                ((int8_t *)smp_chan(s, c))[i] = (int8_t)(v * 120.0);
+        }
+    if (stereo)
+        smp_pad(s);
+    return 1;
+}
+
+/* channel c of `s` into the mono sample `m` (header copied) */
+static int st_mono_of(const sample_t *s, int c, sample_t *m)
+{
+    size_t nb = (size_t)s->Length * smp_width(s);
+
+    free(m->Data);
+    *m = *s;
+    m->Flags &= (uint8_t)~SMP_STEREO;
+    m->Data = smp_alloc((uint32_t)nb);
+    if (!m->Data)
+        return 0;
+    memcpy(m->Data, smp_chan(s, c), nb);
+    return 1;
+}
+
+/* channel ca of a equals channel cb of b, and the headers agree */
+static int st_chan_eq(const sample_t *a, int ca, const sample_t *b, int cb)
+{
+    if (!a->Data || !b->Data || a->Length != b->Length ||
+        smp_width(a) != smp_width(b) || a->LoopBeg != b->LoopBeg ||
+        a->LoopEnd != b->LoopEnd ||
+        (a->Flags & ~SMP_STEREO) != (b->Flags & ~SMP_STEREO))
+        return 0;
+    return memcmp(smp_chan(a, ca), smp_chan(b, cb),
+                  (size_t)a->Length * smp_width(a)) == 0;
+}
+
+static void st_feed(const int *codes, int n)
+{
+    it_key_t k[16];
+    int i;
+
+    memset(k, 0, sizeof(k));
+    for (i = 0; i < n && i < 16; i++) {
+        k[i].flags = ITKF_PRESSED;
+        k[i].code = codes[i];
+        if (codes[i] > 0 && codes[i] < 128)
+            k[i].ch = (uint16_t)codes[i];
+    }
+    Screen_KeyFeedTest(k, n);
+}
+
+/* one F3 operation on the current slot, its dialogs answered */
+static void st_op(int op)
+{
+    static const int y[] = { 'y' };
+    static const int rs[] = { '0', '0', '0', '2', '5', '0', '0', ITK_ENTER };
+    static const int qc[] = { ITK_ENTER };
+    static const int qa[] = { ITK_RIGHT, ITK_ENTER };
+
+    switch (op) {
+    case 0: smp_op_invert(); break;
+    case 1: smp_op_reverse(); break;
+    case 2: st_feed(y, 1); smp_op_convert(); break;
+    case 3: st_feed(y, 1); smp_op_centre(); break;
+    case 4: st_feed(y, 1); smp_op_cut_before(); break;
+    case 5: st_feed(y, 1); smp_op_cut_after(); break;
+    case 6: st_feed(rs, 8); smp_op_resize(1); break;
+    case 7: st_feed(rs, 8); smp_op_resize(0); break;
+    case 8: st_feed(qc, 1); smp_op_quality(); break;
+    case 9: st_feed(qa, 2); smp_op_quality(); break;
+    }
+}
+
+static int StStereoAnswer;
+static int st_stereo_answer(void) { return StStereoAnswer; }
+
+static int StS3MRow34;
+static void st_s3m_warn(int row, const char *msg)
+{
+    (void)msg;
+    if (row == 34)
+        StS3MRow34++;
+}
+
+/* play sample slot `smp1` (1-based) alone at pan `pan` for 8192 frames
+ * of 16-bit stereo; returns the left / right peaks */
+static void st_play(int smp1, int pan, int16_t *out, int *pl, int *pr)
+{
+    int i;
+
+    ed_lock();
+    Music_Stop();
+    WAVDriver_SetMixSpeed(44100);
+    WAVDriver_SetOutputFormat(0);
+    WAVDriver_SetOutputChannels(2);
+    WAVDriver_SetForceMono(0);
+    WAVDriver_SetSBFilter(0);
+    WAVDriver_SetSBFeedback(0);
+    Driver->InitSound();
+    Music_InitStereo();
+    Music_InitTempo();
+    Music_PlaySample(60, (uint8_t)smp1, 0);
+    if (HChn[0].Flags & HF_CHAN_ON) {
+        slavechn_t *sc = SLAVE(&HChn[0]);
+        sc->Pan = (uint8_t)pan;
+        sc->PS = (uint8_t)pan;
+        sc->Flags |= SF_RECALC_PAN;
+    }
+    ed_unlock();
+    WAVDriver_RenderAny(out, 4096);
+    WAVDriver_RenderAny(out + 8192, 4096);
+    *pl = *pr = 0;
+    for (i = 0; i < 8192; i++) {
+        int l = abs(out[i * 2]), r = abs(out[i * 2 + 1]);
+        if (l > *pl) *pl = l;
+        if (r > *pr) *pr = r;
+    }
+}
+
 int main(int argc, char **argv)
 {
     const char *startmod = NULL;
@@ -16736,12 +17275,24 @@ int main(int argc, char **argv)
                 LsView = (scr == 14);
                 LsFocus = 15;
                 ls_set_dir(d ? d : "testdata");
+                if (getenv("ITED_SHOT_MODULE")) {  /* enter a module row */
+                    int k;
+                    for (k = 0; k < LsN; k++)
+                        if (strstr(LsEnt[k].SrcFile,
+                                   getenv("ITED_SHOT_MODULE"))) {
+                            ls_enter_module(&LsEnt[k]);
+                            break;
+                        }
+                }
                 if (getenv("ITED_SHOT_ROW"))
                     LsCur = atoi(getenv("ITED_SHOT_ROW"));
                 if (LsCur >= LsN) LsCur = LsN ? LsN - 1 : 0;
                 if (getenv("ITED_SHOT_AUDITION") && LsN) {
+                    int (*keep)(void) = Load_StereoChoice;
                     ed_sync_key('q');       /* audition -> waveform */
+                    Load_StereoChoice = ls_preview_stereo;
                     lib_preview_key(&LsEnt[LsCur], LsCur, 'q');
+                    Load_StereoChoice = keep;
                 }
                 ls_draw();
             } else if (scr == 10 || scr == 11) { /* library browser */
@@ -17249,12 +17800,13 @@ int main(int argc, char **argv)
                 }
                 free(got.Data);
 
-                /* negatives: float tag / 24-bit must be refused */
+                /* IT 2.14 refuses float and 24-bit WAVs; it26 reads
+                 * them as 16-bit (feature 019 follow-up) */
                 if (RIS_ScanModule("testdata/lib_testf.wav", ents,
-                                   LIB_MAX) > 0 ||
+                                   LIB_MAX) != 1 || ents[0].Format != 7 ||
                     RIS_ScanModule("testdata/lib_test24.wav", ents,
-                                   LIB_MAX) > 0) {
-                    fprintf(stderr, "  wav negative fixture accepted\n");
+                                   LIB_MAX) != 1 || ents[0].Format != 7) {
+                    fprintf(stderr, "  wav float/24-bit fixture refused\n");
                     lib_ok = 0;
                 }
 
@@ -19859,21 +20411,26 @@ int main(int argc, char **argv)
                 int rows = pattern_rows_of(pat), expect = 0, i, slot;
                 render_job_t a, b;
                 uint32_t fr0;
+                int trunc0;
 
                 /* deterministic: the same render twice, same bytes */
                 memset(&a, 0, sizeof(a));
                 a.kind = RENDER_PATTERN; a.pattern = pat; a.rows = rows;
-                a.to_memory = 1; a.mem_cap_bytes = 1048576u;
+                a.to_memory = 1; a.mem_cap_bytes = 44100u * RENDER_IMPORT_SECONDS * 4u;
                 b = a;
                 render_begin();                 /* keep the live output out */
                 if (!Render_Run(&a, NULL) || !Render_Run(&b, NULL))
                     RFAIL();
                 render_end(0);
                 if (a.frames == 0 || a.frames != b.frames || !a.mem ||
-                    !b.mem || memcmp(a.mem, b.mem, (size_t)a.frames * 2))
+                    !b.mem || memcmp(a.mem, b.mem,
+                                     (size_t)a.frames * 2 * a.channels))
                     RFAIL();
-                if (a.channels != 1 || a.out_rate != 44100) RFAIL();
+                /* stereo songs import stereo (feature 019) */
+                if (a.channels != ((Song.Header.Flags & ITF_STEREO) ? 2 : 1)
+                    || a.out_rate != 44100) RFAIL();
                 fr0 = a.frames;
+                trunc0 = a.truncated;   /* not for itdemo (10 minutes) */
                 free(a.mem);
                 free(b.mem);
 
@@ -19890,13 +20447,17 @@ int main(int argc, char **argv)
                     char want[32];
                     snprintf(want, sizeof(want), "Pattern %03d", pat);
                     if (strcmp(ns->SampleName, want) ||
-                        ns->Flags != (1 | 2 | 0x10) || ns->C5Speed != 44100 ||
+                        ns->Flags != (1 | 2 | 0x10 |
+                                      ((Song.Header.Flags & ITF_STEREO)
+                                       ? SMP_STEREO : 0)) ||
+                        ns->C5Speed != 44100 ||
                         ns->Length != fr0 || ns->LoopEnd != fr0 ||
                         ns->LoopBeg != 0 || ns->Vol != 64 || ns->GvL != 64 ||
                         strncmp(ns->DOSFileName, "LL", 2))
                         RFAIL();
                     if ((Song.Header.Flags & ITF_INSTRUMENTS) &&
-                        !strstr(StatusMsg, " in inst "))
+                        !strstr(StatusMsg, " in inst ") &&
+                        !strstr(StatusMsg, "truncated"))
                         RFAIL();
                 }
 
@@ -19924,7 +20485,7 @@ int main(int argc, char **argv)
                         memcpy(&data, h + 40, 4);
                         if (h[20] != 3 || h[22] != ch || h[34] != 32 ||
                             rate != WAVDriver_GetMixSpeed() ||
-                            (rate == 44100 &&
+                            (rate == 44100 && !trunc0 &&
                              data != fr0 * 4u * (uint32_t)ch))
                             RFAIL();
                     }
@@ -20103,6 +20664,609 @@ int main(int argc, char **argv)
             fprintf(stderr, "ITED selftest: [%s]\n",
                     r_ok ? "RND OK" : "RND FAIL");
         }
+
+        /* STR (feature 019): stereo samples -- the OpenMPT reference
+         * file, balance playback, the requester, IT / ITS / ITI / S3M /
+         * WAV round trips, compressed-stereo reading, every F3 operation
+         * per channel, Alt-U, render imports */
+        {
+            int s_ok = 1, sfail_line = 0;
+#define SFAIL() do { if (s_ok) sfail_line = __LINE__; s_ok = 0; } while (0)
+            const char *wd = "st_str_work";
+            static const char ref[] = "testdata/openmpt-testpattern-stereo.it";
+            static int16_t pbuf[8192 * 2];
+            sample_t snap[3], m;
+            char path[300];
+            int i, keepsel = ListSel, keepscr = Screen;
+            uint8_t keepfmt = SaveFormat;
+            int (*keepch)(void) = Load_StereoChoice;
+
+            memset(snap, 0, sizeof(snap));
+            memset(&m, 0, sizeof(m));
+            if (Render_Exists(wd)) SFAIL();
+#ifdef _WIN32
+            _mkdir(wd);
+#else
+            mkdir(wd, 0777);
+#endif
+
+            /* load: three stereo samples, data = the file's planar blocks */
+            if (!do_load_named(ref))
+                SFAIL();
+            {
+                size_t n = 0;
+                uint8_t *d = NULL;
+                FILE *f = fopen(ref, "rb");
+                static const uint32_t lens[3] = { 228000, 54324, 24201 };
+                if (f) {
+                    fseek(f, 0, SEEK_END);
+                    n = (size_t)ftell(f);
+                    fseek(f, 0, SEEK_SET);
+                    d = (uint8_t *)malloc(n);
+                    if (d && fread(d, 1, n, f) != n) { free(d); d = NULL; }
+                    fclose(f);
+                }
+                if (!d) SFAIL();
+                for (i = 0; d && i < 3; i++) {
+                    const sample_t *s = &Song.Smp[i];
+                    uint32_t ordn = d[0x20] | (d[0x21] << 8);
+                    uint32_t insn = d[0x22] | (d[0x23] << 8);
+                    size_t pp = 0xC0 + ordn + insn * 4 + (size_t)i * 4, hp, dp;
+                    size_t nb = (size_t)s->Length * smp_width(s);
+                    hp = (size_t)d[pp] | ((size_t)d[pp + 1] << 8) |
+                         ((size_t)d[pp + 2] << 16) | ((size_t)d[pp + 3] << 24);
+                    dp = (size_t)d[hp + 0x48] | ((size_t)d[hp + 0x49] << 8) |
+                         ((size_t)d[hp + 0x4A] << 16) |
+                         ((size_t)d[hp + 0x4B] << 24);
+                    if (!(s->Flags & SMP_STEREO) || s->Length != lens[i] ||
+                        !s->Data || dp + nb * 2 > n)
+                        SFAIL();
+                    else if (memcmp(smp_chan(s, 0), d + dp, nb) ||
+                             memcmp(smp_chan(s, 1), d + dp + nb, nb))
+                        SFAIL();
+                }
+                free(d);
+                if (!(Song.Smp[0].Flags & 0x10) || !(Song.Smp[0].Flags & 2) ||
+                    (Song.Smp[2].Flags & 2) || !(Song.Smp[2].Flags & 0x40))
+                    SFAIL();
+            }
+            for (i = 0; i < 3; i++) {
+                snap[i] = Song.Smp[i];
+                snap[i].Data = smp_alloc_chans(snap[i].Length,
+                                               smp_width(&snap[i]), 2);
+                if (!snap[i].Data) { SFAIL(); continue; }
+                memcpy(snap[i].Data, Song.Smp[i].Data,
+                       smp_alloc_bytes(snap[i].Length, smp_width(&snap[i]),
+                                       2));
+            }
+
+            /* playback (SC-004): a left-only stereo sample at centre has
+             * a silent right output; hard left / right is balance; a
+             * stereo sample with equal channels sounds like its mono twin */
+            {
+                uint16_t keepflags = Song.Header.Flags;
+                uint8_t keepsep = Song.Header.Sep;
+                int pl, pr, pl2, pr2;
+                static int16_t ref2[8192 * 2];
+                Song.Header.Flags = (uint16_t)((keepflags | ITF_STEREO) &
+                                               ~ITF_INSTRUMENTS);
+                Song.Header.Sep = 128;
+                render_begin();
+                st_make_smp(&Song.Smp[40], 20000, 1, 1, 1);
+                st_play(41, 32, pbuf, &pl, &pr);
+                if (pl < 1000 || pr > 2) SFAIL();      /* 2 = dither */
+                st_make_smp(&Song.Smp[40], 20000, 1, 1, 0);
+                st_play(41, 0, pbuf, &pl, &pr);
+                if (pl < 1000 || pr > 2) SFAIL();
+                st_play(41, 64, pbuf, &pl2, &pr2);
+                if (pl2 > 2 || pr2 < 1000) SFAIL();
+                st_play(41, 32, pbuf, &pl, &pr);
+                if (pl < 1000 || pr < 1000) SFAIL();
+                /* equal channels == the mono twin, sample for sample */
+                st_make_smp(&Song.Smp[40], 20000, 1, 1, 2);
+                st_make_smp(&Song.Smp[41], 20000, 1, 0, 0);
+                st_play(41, 20, pbuf, &pl, &pr);
+                memcpy(ref2, pbuf, sizeof(ref2));
+                st_play(42, 20, pbuf, &pl2, &pr2);
+                if (memcmp(ref2, pbuf, sizeof(ref2)) || pl < 1000) SFAIL();
+                ed_lock();
+                Music_Stop();
+                ed_unlock();
+                render_end(0);
+                Song.Header.Flags = keepflags;
+                Song.Header.Sep = keepsep;
+                for (i = 40; i < 42; i++) {
+                    free(Song.Smp[i].Data);
+                    Music_InitSample(&Song.Smp[i]);
+                }
+            }
+
+            /* requester: S / L / R / Esc, Enter on the focused Stereo,
+             * Right + Enter = Left */
+            {
+                static const int ks[] = { 's' }, kl[] = { 'l' }, kr[] = { 'r' };
+                static const int ke[] = { ITK_ESC }, kn[] = { ITK_ENTER };
+                static const int krn[] = { ITK_RIGHT, ITK_ENTER };
+                st_feed(ks, 1);  if (stereo_choice_prompt() != 256) SFAIL();
+                st_feed(kl, 1);  if (stereo_choice_prompt() != 64) SFAIL();
+                st_feed(kr, 1);  if (stereo_choice_prompt() != 192) SFAIL();
+                st_feed(ke, 1);  if (stereo_choice_prompt() != 64) SFAIL();
+                st_feed(kn, 1);  if (stereo_choice_prompt() != 256) SFAIL();
+                st_feed(krn, 2); if (stereo_choice_prompt() != 64) SFAIL();
+            }
+
+            /* WAV out (stereo, interleaved) and back in with each answer */
+            {
+                static const int ans[3] = { 256, 64, 192 };
+                slibent_t ents[4];
+                uint8_t h[48];
+                FILE *f;
+                int a;
+                snprintf(path, sizeof(path), "%s/st.wav", wd);
+                if (!RIS_SaveWAV(&Song.Smp[2], path)) SFAIL();
+                f = fopen(path, "rb");
+                if (!f || fread(h, 1, 46, f) != 46) {
+                    SFAIL();
+                } else if (h[22] != 2 || h[32] != 2 || h[34] != 8 ||
+                           h[44] != (uint8_t)(((int8_t *)smp_chan(&Song.Smp[2], 0))[0] ^ 0x80) ||
+                           h[45] != (uint8_t)(((int8_t *)smp_chan(&Song.Smp[2], 1))[0] ^ 0x80)) {
+                    SFAIL();
+                }
+                if (f) fclose(f);
+                for (a = 0; a < 3; a++) {
+                    sample_t t;
+                    memset(&t, 0, sizeof(t));
+                    StStereoAnswer = ans[a];
+                    Load_StereoChoice = st_stereo_answer;
+                    if (RIS_ScanModule(path, ents, 4) < 1 ||
+                        !RIS_LoadSample(&ents[0], &t)) {
+                        SFAIL();
+                        continue;
+                    }
+                    /* WAV keeps no loops: the data alone */
+                    if (a == 0 ? !(t.Flags & SMP_STEREO) ||
+                                 t.Length != snap[2].Length ||
+                                 memcmp(smp_chan(&t, 0), smp_chan(&snap[2], 0),
+                                        t.Length) ||
+                                 memcmp(smp_chan(&t, 1), smp_chan(&snap[2], 1),
+                                        t.Length)
+                               : (t.Flags & SMP_STEREO) ||
+                                 t.Length != snap[2].Length ||
+                                 memcmp(t.Data, smp_chan(&snap[2], a - 1),
+                                        t.Length))
+                        SFAIL();
+                    free(t.Data);
+                }
+                Load_StereoChoice = keepch;
+                /* feature 018 export: the same 2-channel layout */
+                snprintf(path, sizeof(path), "%s/st18.wav", wd);
+                if (!Render_SaveSampleWav(&Song.Smp[0], path, 44100)) SFAIL();
+                f = Render_Fopen(path, "rb");
+                if (!f || fread(h, 1, 48, f) != 48) {
+                    SFAIL();
+                } else if (h[22] != 2 || h[32] != 4 ||
+                           memcmp(h + 44, smp_chan(&Song.Smp[0], 0), 2) ||
+                           memcmp(h + 46, smp_chan(&Song.Smp[0], 1), 2)) {
+                    SFAIL();
+                }
+                if (f) fclose(f);
+            }
+
+            /* it26 WAV extension: 24-bit stereo after bext / junk chunks
+             * (as Reaper writes it), WAVE_FORMAT_EXTENSIBLE, 32-bit int,
+             * 32-bit float -> 16-bit; and a sample past IT's 4 MB limit */
+            {
+                static const struct { uint16_t tag, bits, chans; int ext; }
+                    wv[4] = { { 1, 24, 2, 0 }, { 1, 24, 1, 1 },
+                              { 1, 32, 2, 0 }, { 3, 32, 1, 0 } };
+                int k;
+                for (k = 0; k < 4; k++) {
+                    uint8_t h[128];
+                    slibent_t ents[2];
+                    sample_t t;
+                    uint32_t f, nf = 1000, bpv = wv[k].bits / 8u;
+                    uint32_t align = bpv * wv[k].chans, dl = nf * align;
+                    uint32_t fl = wv[k].ext ? 40 : 16, rate = 96000;
+                    size_t hp = 0;
+                    FILE *f2;
+                    snprintf(path, sizeof(path), "%s/wide%d.wav", wd, k);
+                    f2 = fopen(path, "wb");
+                    if (!f2) { SFAIL(); continue; }
+                    memset(h, 0, sizeof(h));
+                    memcpy(h, "RIFF", 4);
+                    memcpy(h + 8, "WAVE", 4);
+                    hp = 12;
+                    memcpy(h + hp, "fmt ", 4); memcpy(h + hp + 4, &fl, 4);
+                    {
+                        uint16_t tag = wv[k].ext ? 0xFFFE : wv[k].tag;
+                        uint32_t bps = rate * align;
+                        uint16_t al = (uint16_t)align;
+                        memcpy(h + hp + 8, &tag, 2);
+                        memcpy(h + hp + 10, &wv[k].chans, 2);
+                        memcpy(h + hp + 12, &rate, 4);
+                        memcpy(h + hp + 16, &bps, 4);
+                        memcpy(h + hp + 20, &al, 2);
+                        memcpy(h + hp + 22, &wv[k].bits, 2);
+                        if (wv[k].ext) {
+                            uint16_t cb = 22;
+                            memcpy(h + hp + 24, &cb, 2);
+                            memcpy(h + hp + 26, &wv[k].bits, 2);
+                            memcpy(h + hp + 32, &wv[k].tag, 2);
+                        }
+                    }
+                    hp += 8 + fl;
+                    memcpy(h + hp, "bext", 4); h[hp + 4] = 6; hp += 14;
+                    memcpy(h + hp, "junk", 4); h[hp + 4] = 3; hp += 12; /* odd + pad */
+                    memcpy(h + hp, "data", 4); memcpy(h + hp + 4, &dl, 4);
+                    hp += 8;
+                    fwrite(h, 1, hp, f2);
+                    for (f = 0; f < nf * wv[k].chans; f++) {
+                        /* value v16 = f*13 - 6000 (16-bit), widened */
+                        int32_t v16 = (int32_t)(f * 13u) - 6000;
+                        uint8_t b[4];
+                        if (wv[k].tag == 3) {
+                            float x = (float)v16 / 32768.0f;
+                            memcpy(b, &x, 4);
+                        } else {
+                            int32_t x = v16 * (1 << (wv[k].bits - 16)) + 0x55;
+                            memcpy(b, &x, 4);
+                        }
+                        fwrite(b, 1, bpv, f2);
+                    }
+                    fclose(f2);
+                    memset(&t, 0, sizeof(t));
+                    StStereoAnswer = 256;
+                    Load_StereoChoice = st_stereo_answer;
+                    if (RIS_ScanModule(path, ents, 2) != 1 ||
+                        !RIS_LoadSample(&ents[0], &t)) {
+                        SFAIL();
+                        Load_StereoChoice = keepch;
+                        continue;
+                    }
+                    Load_StereoChoice = keepch;
+                    if (t.Length != nf || !(t.Flags & 2) ||
+                        !!(t.Flags & SMP_STEREO) != (wv[k].chans == 2) ||
+                        t.C5Speed != rate)
+                        SFAIL();
+                    else
+                        for (f = 0; f < nf * wv[k].chans; f++) {
+                            int c = (int)(f % wv[k].chans);
+                            int16_t got = ((int16_t *)smp_chan(&t, c))[f / wv[k].chans];
+                            if (got != (int16_t)((int32_t)(f * 13u) - 6000)) {
+                                SFAIL();
+                                break;
+                            }
+                        }
+                    free(t.Data);
+                }
+            }
+            {
+                /* 3,000,000 16-bit frames (6 MB; IT capped at 4177910
+                 * bytes): loads whole, survives an IT save + reload */
+                uint32_t nf = 3000000u, f, dl = nf * 2u, rate = 44100, bps = 88200;
+                uint8_t h[44];
+                uint16_t one = 1, al = 2, bits = 16;
+                slibent_t ents[2];
+                FILE *f2;
+                int16_t *buf = (int16_t *)malloc((size_t)dl);
+                snprintf(path, sizeof(path), "%s/long.wav", wd);
+                f2 = fopen(path, "wb");
+                if (!buf || !f2) {
+                    SFAIL();
+                } else {
+                    memset(h, 0, sizeof(h));
+                    memcpy(h, "RIFF", 4);
+                    memcpy(h + 8, "WAVEfmt ", 8);
+                    h[16] = 16;
+                    memcpy(h + 20, &one, 2); memcpy(h + 22, &one, 2);
+                    memcpy(h + 24, &rate, 4); memcpy(h + 28, &bps, 4);
+                    memcpy(h + 32, &al, 2); memcpy(h + 34, &bits, 2);
+                    memcpy(h + 36, "data", 4); memcpy(h + 40, &dl, 4);
+                    for (f = 0; f < nf; f++)
+                        buf[f] = (int16_t)(f * 7u);
+                    fwrite(h, 1, 44, f2);
+                    fwrite(buf, 2, nf, f2);
+                }
+                if (f2) fclose(f2);
+                if (buf && (RIS_ScanModule(path, ents, 2) != 1 ||
+                            !RIS_LoadSample(&ents[0], &Song.Smp[30]) ||
+                            Song.Smp[30].Length != nf ||
+                            memcmp(Song.Smp[30].Data, buf, dl)))
+                    SFAIL();
+                if (Song.Header.SmpNum < 31) Song.Header.SmpNum = 31;
+                snprintf(path, sizeof(path), "%s/long.it", wd);
+                SaveFormat = 3;
+                if (buf && (!Save_ITModule(path) || !do_load_named(path) ||
+                            Song.Smp[30].Length != nf ||
+                            memcmp(Song.Smp[30].Data, buf, dl)))
+                    SFAIL();
+                SaveFormat = keepfmt;
+                free(buf);
+                do_load_named(ref);
+            }
+
+            /* ITS and ITI round trips */
+            {
+                slibent_t ents[4];
+                ilibent_t ie;
+                sample_t t;
+                int k, tgt = 60, got;
+                memset(&t, 0, sizeof(t));
+                snprintf(path, sizeof(path), "%s/st.its", wd);
+                if (!RIS_SaveITS(&Song.Smp[1], path) ||
+                    RIS_ScanModule(path, ents, 4) < 1 ||
+                    !RIS_LoadSample(&ents[0], &t) ||
+                    !st_chan_eq(&t, 0, &snap[1], 0) ||
+                    !st_chan_eq(&t, 1, &snap[1], 1))
+                    SFAIL();
+                free(t.Data);
+                memset(&Song.Ins[0], 0, sizeof(Song.Ins[0]));
+                memcpy(&Song.Ins[0].ID, "IMPI", 4);
+                for (k = 0; k < 120; k++) {
+                    Song.Ins[0].NoteSampleTable[k * 2] = (uint8_t)k;
+                    Song.Ins[0].NoteSampleTable[k * 2 + 1] = 3;
+                }
+                snprintf(path, sizeof(path), "%s/st.iti", wd);
+                if (!RI_SaveITI(&Song.Ins[0], 1, path) ||
+                    !RI_IdentifyFile(path, &ie) ||
+                    RI_LoadInstrument(&ie, tgt) < 0)
+                    SFAIL();
+                got = Song.Ins[tgt].NoteSampleTable[61];
+                if (got < 1 || got > 99 ||
+                    !st_chan_eq(&Song.Smp[got - 1], 0, &snap[2], 0) ||
+                    !st_chan_eq(&Song.Smp[got - 1], 1, &snap[2], 1))
+                    SFAIL();
+            }
+
+            /* IT saves (IT214, uncompressed, IT215): stereo uncompressed
+             * with flag 04h, a mono sample beside it still compressed */
+            {
+                static const uint8_t fmts[3] = { 0, 2, 3 };
+                int fi;
+                for (fi = 0; fi < 3; fi++) {
+                    uint8_t hdr[0x50];
+                    FILE *f;
+                    do_load_named(ref);
+                    st_make_smp(&Song.Smp[9], 3000, 1, 0, 0);
+                    if (Song.Header.SmpNum < 10) Song.Header.SmpNum = 10;
+                    SaveFormat = fmts[fi];
+                    snprintf(path, sizeof(path), "%s/st%d.it", wd, fi);
+                    if (!Save_ITModule(path)) { SFAIL(); continue; }
+                    f = fopen(path, "rb");
+                    if (f) {
+                        uint8_t h[0xC0];
+                        uint32_t ordn, insn, k;
+                        if (fread(h, 1, 0xC0, f) == 0xC0) {
+                            ordn = h[0x20] | (h[0x21] << 8);
+                            insn = h[0x22] | (h[0x23] << 8);
+                            for (k = 0; k < 10; k++) {
+                                uint8_t p4[4];
+                                uint32_t hp;
+                                fseek(f, (long)(0xC0 + ordn + insn * 4 + k * 4), SEEK_SET);
+                                if (fread(p4, 1, 4, f) != 4) { SFAIL(); break; }
+                                hp = p4[0] | (p4[1] << 8) | (p4[2] << 16) |
+                                     ((uint32_t)p4[3] << 24);
+                                fseek(f, (long)hp, SEEK_SET);
+                                if (fread(hdr, 1, 0x50, f) != 0x50) { SFAIL(); break; }
+                                if (k < 3 && ((hdr[0x12] & 0x0C) != 0x04))
+                                    SFAIL();
+                                if (k == 9 && !!(hdr[0x12] & 8) != (fmts[fi] != 2))
+                                    SFAIL();
+                            }
+                        } else
+                            SFAIL();
+                        fclose(f);
+                    } else
+                        SFAIL();
+                    if (!do_load_named(path)) { SFAIL(); continue; }
+                    for (i = 0; i < 3; i++)
+                        if (!st_chan_eq(&Song.Smp[i], 0, &snap[i], 0) ||
+                            !st_chan_eq(&Song.Smp[i], 1, &snap[i], 1) ||
+                            Song.Smp[i].Flags != snap[i].Flags)
+                            SFAIL();
+                    if (Song.Smp[9].Length != 3000 ||
+                        (Song.Smp[9].Flags & SMP_STEREO))
+                        SFAIL();
+                }
+                SaveFormat = keepfmt;
+            }
+
+            /* compressed stereo from other writers: two mono samples
+             * saved IT214 back to back, the first one's header then
+             * flagged stereo = one stereo sample, two block sequences */
+            {
+                FILE *f;
+                do_load_named(ref);
+                st_mono_of(&snap[1], 0, &Song.Smp[20]);
+                st_mono_of(&snap[1], 1, &Song.Smp[21]);
+                if (Song.Header.SmpNum < 22) Song.Header.SmpNum = 22;
+                SaveFormat = 0;
+                snprintf(path, sizeof(path), "%s/stc.it", wd);
+                if (!Save_ITModule(path)) SFAIL();
+                SaveFormat = keepfmt;
+                f = fopen(path, "r+b");
+                if (f) {
+                    uint8_t h[0xC0], p4[4], fl;
+                    uint32_t ordn, insn, hp;
+                    if (fread(h, 1, 0xC0, f) != 0xC0) SFAIL();
+                    ordn = h[0x20] | (h[0x21] << 8);
+                    insn = h[0x22] | (h[0x23] << 8);
+                    fseek(f, (long)(0xC0 + ordn + insn * 4 + 20 * 4), SEEK_SET);
+                    if (fread(p4, 1, 4, f) != 4) SFAIL();
+                    hp = p4[0] | (p4[1] << 8) | (p4[2] << 16) |
+                         ((uint32_t)p4[3] << 24);
+                    fseek(f, (long)hp + 0x12, SEEK_SET);
+                    if (fread(&fl, 1, 1, f) != 1 || (fl & 0x0C) != 0x08)
+                        SFAIL();
+                    fl |= SMP_STEREO;
+                    fseek(f, (long)hp + 0x12, SEEK_SET);
+                    fwrite(&fl, 1, 1, f);
+                    fclose(f);
+                } else
+                    SFAIL();
+                if (!do_load_named(path) ||
+                    !(Song.Smp[20].Flags & SMP_STEREO) ||
+                    !st_chan_eq(&Song.Smp[20], 0, &snap[1], 0) ||
+                    !st_chan_eq(&Song.Smp[20], 1, &snap[1], 1))
+                    SFAIL();
+            }
+
+            /* S3M: the mono mix, row 34 warned */
+            {
+                do_load_named(ref);
+                StS3MRow34 = 0;
+                Save_S3MWarning = st_s3m_warn;
+                snprintf(path, sizeof(path), "%s/st.s3m", wd);
+                if (!Save_S3MModule(path)) SFAIL();
+                Save_S3MWarning = NULL;
+                if (!StS3MRow34) SFAIL();
+                if (!do_load_named(path)) {
+                    SFAIL();
+                } else {
+                    const sample_t *s = &Song.Smp[1];
+                    uint32_t f;
+                    if ((s->Flags & SMP_STEREO) || !(s->Flags & 2) ||
+                        s->Length != snap[1].Length || !s->Data)
+                        SFAIL();
+                    else
+                        for (f = 0; f < s->Length; f++)
+                            if (((const int16_t *)s->Data)[f] !=
+                                (int16_t)((((const int16_t *)smp_chan(&snap[1], 0))[f] +
+                                           ((const int16_t *)smp_chan(&snap[1], 1))[f]) / 2)) {
+                                SFAIL();
+                                break;
+                            }
+                }
+            }
+
+            /* F3 operations (SC-003): on a stereo sample = on each of
+             * its channels as a mono sample; 8- and 16-bit */
+            {
+                int op, w16;
+                do_load_named(ref);
+                Screen = SCR_SAMPLES;
+                for (w16 = 0; w16 < 2; w16++)
+                    for (op = 0; op < 10; op++) {
+                        st_make_smp(&Song.Smp[90], 2000, w16, 1, 0);
+                        st_mono_of(&Song.Smp[90], 0, &Song.Smp[91]);
+                        st_mono_of(&Song.Smp[90], 1, &Song.Smp[92]);
+                        for (i = 90; i < 93; i++) {
+                            ListSel = i;
+                            st_op(op);
+                        }
+                        if (!(Song.Smp[90].Flags & SMP_STEREO) ||
+                            !st_chan_eq(&Song.Smp[90], 0, &Song.Smp[91], 0) ||
+                            !st_chan_eq(&Song.Smp[90], 1, &Song.Smp[92], 0)) {
+                            if (s_ok)
+                                fprintf(stderr, "ITED selftest: STR op %d "
+                                        "(%d-bit) differs\n", op,
+                                        w16 ? 16 : 8);
+                            SFAIL();
+                        }
+                    }
+                /* amplify: one factor for both channels */
+                {
+                    static const int ke[] = { ITK_ENTER };
+                    st_make_smp(&Song.Smp[90], 2000, 1, 1, 0);
+                    st_mono_of(&Song.Smp[90], 0, &Song.Smp[91]);
+                    ListSel = 90;
+                    st_feed(ke, 1);
+                    smp_op_amplify();
+                    if (((int16_t *)smp_chan(&Song.Smp[90], 0))[25] <=
+                        ((int16_t *)Song.Smp[91].Data)[25])
+                        SFAIL();
+                }
+                /* Alt-U: mix / left / right, and mono -> stereo */
+                {
+                    static const int km[] = { 'm' }, ky[] = { 'y' };
+                    int how;
+                    for (how = 1; how <= 3; how++) {
+                        sample_t *s = &Song.Smp[90];
+                        uint32_t f;
+                        st_make_smp(s, 2000, 1, 1, 0);
+                        st_mono_of(s, 0, &Song.Smp[91]);
+                        st_mono_of(s, 1, &Song.Smp[92]);
+                        if (how == 1) {
+                            ListSel = 90;
+                            st_feed(km, 1);
+                            smp_op_stereo();
+                        } else
+                            smp_to_mono(s, how);
+                        if (s->Flags & SMP_STEREO) { SFAIL(); continue; }
+                        for (f = 0; f < s->Length; f++) {
+                            int16_t l = ((int16_t *)Song.Smp[91].Data)[f];
+                            int16_t r = ((int16_t *)Song.Smp[92].Data)[f];
+                            int16_t want = how == 1 ? (int16_t)((l + r) / 2)
+                                         : how == 2 ? l : r;
+                            if (((int16_t *)s->Data)[f] != want) {
+                                SFAIL();
+                                break;
+                            }
+                        }
+                    }
+                    ListSel = 91;
+                    st_feed(ky, 1);
+                    smp_op_stereo();
+                    if (!(Song.Smp[91].Flags & SMP_STEREO) ||
+                        !st_chan_eq(&Song.Smp[91], 0, &Song.Smp[91], 1))
+                        SFAIL();
+                }
+                for (i = 90; i < 93; i++) {
+                    free(Song.Smp[i].Data);
+                    Music_InitSample(&Song.Smp[i]);
+                }
+            }
+
+            /* render import from a stereo song: a stereo sample whose
+             * channels are the memory render's left and right */
+            {
+                int pat = Song.Orders[0] < 200 ? Song.Orders[0] : 0;
+                int rows = pattern_rows_of(pat), slot;
+                render_job_t a;
+                memset(&a, 0, sizeof(a));
+                a.kind = RENDER_PATTERN; a.pattern = pat; a.rows = rows;
+                a.to_memory = 1; a.mem_cap_bytes = 44100u * RENDER_IMPORT_SECONDS * 4u;
+                Song.Header.Flags |= ITF_STEREO;
+                render_begin();
+                if (!Render_Run(&a, NULL)) SFAIL();
+                render_end(0);
+                slot = render_free_slot();
+                if (a.channels != 2 || !a.mem || slot < 0 ||
+                    !render_import(pat, rows, 0)) {
+                    SFAIL();
+                } else {
+                    const sample_t *s = &Song.Smp[slot];
+                    uint32_t f;
+                    if (!(s->Flags & SMP_STEREO) || s->Length != a.frames)
+                        SFAIL();
+                    else
+                        for (f = 0; f < a.frames; f++)
+                            if (((const int16_t *)smp_chan(s, 0))[f] != a.mem[f * 2] ||
+                                ((const int16_t *)smp_chan(s, 1))[f] != a.mem[f * 2 + 1]) {
+                                SFAIL();
+                                break;
+                            }
+                }
+                free(a.mem);
+            }
+
+            for (i = 0; i < 3; i++)
+                free(snap[i].Data);
+            free(m.Data);
+            if (!Render_RemoveTree(wd) || Render_Exists(wd)) SFAIL();
+            SaveFormat = keepfmt;
+            Load_StereoChoice = keepch;
+            ListSel = keepsel;
+            Screen = keepscr;
+            if (!do_load_named("testdata/itdemo.it"))
+                SFAIL();
+            if (!s_ok)
+                fprintf(stderr, "ITED selftest: STR first failure at line %d\n", sfail_line);
+#undef SFAIL
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    s_ok ? "STR OK" : "STR FAIL");
+        }
+
 
         commit_current_pattern();
         fprintf(stderr, "ITED selftest: completed %zu actions, "

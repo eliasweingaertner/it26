@@ -364,13 +364,14 @@ share) stops the render before anything happens:
 
 The new sample goes into the first slot that is free in **both** the
 sample and the instrument list, so sample N and its instrument N line up.
-It is a 16-bit, 44.1 kHz mono sample (IT samples are mono: a stereo song
-is mixed down), loops over its whole length, and is named "Pattern 005";
+It is a 16-bit, 44.1 kHz sample -- stereo when the song plays in stereo
+(see [Stereo samples](#stereo-samples)), mono otherwise -- loops over its
+whole length, and is named "Pattern 005";
 default and global volume 64. In instrument mode an instrument is made
 for it (the same-numbered one if free). The F3/F4 cursor moves to it, and
 the status line says where it went: "Pat 005 -> LL153928.WAV -> sample
-012 in inst 012". A pattern longer than 1 MB of sample data (about 12
-seconds) is cut there ("Pattern truncated to 1MB"). No file is written;
+012 in inst 012". A render stops after 10 minutes ("Pattern truncated
+to 10 minutes"). No file is written;
 the 8.3 name in the sample's file-name field just labels it.
 
 ### Render a pattern as a WAV file
@@ -422,7 +423,7 @@ Exporting every sample makes a folder
 folder with one file per sample: `03 Kick hard.wav`, `04 Snare 909.wav`, …
 (slot number and sample name; empty slots are skipped). The selected
 sample becomes `Believe in your dreams - 03 Kick hard.wav`. The files
-hold the sample data as it is stored: 8- or 16-bit, mono, at the sample's
+hold the sample data as it is stored: 8- or 16-bit, mono or stereo, at the sample's
 own speed; the single-sample export writes 44.1 kHz into the header, as
 Esa's does. The song itself is not touched, and playback continues.
 
@@ -503,6 +504,55 @@ The help of each screen lists its render keys at the bottom, under
   on-screen diagnostic markers, the CTRLOLOG.TXT / PATLOG.TXT logs, and the
   MIDI-clock trigger for resuming (part of his MIDI sync feature).
 
+## Stereo samples
+
+IT's samples are mono. it26 keeps stereo samples in stereo, the way
+OpenMPT and Schism Tracker store them in IT files (sample flag 04h, the
+left channel's data followed by the right channel's).
+
+- **Loading:** a stereo WAV asks "Loading Stereo Sample" with three
+  buttons: **Stereo** (focused, S), Left (L) and Right (R) -- the last
+  two are IT's. Esc keeps IT's answer, Left. Stereo samples inside IT
+  modules, ITS samples and ITI instruments load as stereo without asking.
+- **Playing:** both channels play. Panning (the sample's and channel's
+  pan, pan envelope, X / Y commands) works as balance: hard left plays
+  the left channel only, centre plays both unchanged. Surround plays the
+  mono mix. Interpolation, filters, loops, ping-pong and NNA act on both
+  channels alike. A stereo sample whose channels are equal sounds exactly
+  like the mono sample.
+- **F3:** the waveform shows the left channel in the upper half and the
+  right one in the lower half; the info box says "16 bit Stereo". Every
+  sample operation works on both channels (Alt-M uses one factor for
+  both). **Alt-U** converts: a stereo sample to mono (Mix, Left or Right),
+  a mono sample to stereo (both channels the same).
+- **Saving:** IT modules, ITS and ITI keep stereo samples. They are always
+  written uncompressed, as OpenMPT writes them; mono samples are
+  compressed as chosen in F10. WAV export (Alt-W on F3, the sample
+  exports) writes 2-channel WAVs. S3M has no stereo samples: they are
+  mixed down to mono ("Warning: Stereo samples converted to mono").
+- **Pattern renders** (Ctrl-O & co.) of a stereo song become stereo
+  samples.
+- **IT 2.14** opens these files too and plays the left channel, as it
+  always did with stereo samples from other trackers. Such modules exist:
+  `testdata/beyond_network.it` (saved as IT 2.17-compatible) has 37
+  stereo samples that it26 now plays in stereo.
+- **Size:** see [Sample size and WAV formats](#sample-size-and-wav-formats).
+
+## Sample size and WAV formats
+
+- **Length:** a sample can be up to 268,435,456 frames long (0x10000000,
+  per channel) -- the limit OpenMPT and Schism Tracker use, so anything
+  it26 keeps opens untruncated there and their long samples load here.
+  IT capped samples at about 4 MB. IT 2.14 is unlikely to load samples
+  far beyond its own limit. The F3 loop and speed fields stay IT's seven
+  digits (up to 9,999,999).
+- **WAV files:** besides IT's 8- and 16-bit PCM, it26 reads 24- and 32-bit
+  PCM, 32- and 64-bit float and WAVE_FORMAT_EXTENSIBLE files (what DAWs
+  like Reaper write), and finds the data chunk behind any number of
+  metadata chunks (bext, junk, LIST, ...). Wider data becomes 16-bit
+  when loaded -- IT samples are 8- or 16-bit -- and the file's full sample
+  rate is used.
+
 ## Classic IT, with a twist
 
 The playback engine and the classic interface behave like IT, bugs
@@ -529,6 +579,17 @@ system does. These are the places where it26 is not the DOS binary.
   F10 gets two more format buttons and F12 a Quicksave row (the directory
   box is one row taller, "Save all Preferences" one row lower), laid out
   as in his fork.
+- **Stereo samples** play, edit and save in stereo (IT keeps only one
+  channel); see [Stereo samples](#stereo-samples). A module with stereo
+  samples sounds different from IT 2.14, which plays their left channel.
+- **Load Sample waveform:** the waveform box shows the sample under the
+  cursor once the cursor rests on it (IT drew it only after a note key
+  auditioned the entry). Nothing plays and the song keeps running; the
+  first note key still stops the song as in IT. Stereo samples show two
+  lanes, left above right.
+- **Sample size and WAV formats:** samples up to OpenMPT's / Schism's
+  length limit; 24/32-bit and float WAVs load as 16-bit (see
+  [Sample size and WAV formats](#sample-size-and-wav-formats)).
 - **Replacing a sample while the song plays (hot swap):** loading a
   sample into a slot that already has one keeps the song playing; notes
   still sounding with the old sample stop, every later note plays the new

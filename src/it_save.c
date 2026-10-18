@@ -12,11 +12,13 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "it_music.h"
 #include "it_save.h"
+#include "it_sample.h"      /* feature 019: stereo samples */
 
 uint8_t SaveFormat = 3;                 /* SWITCH.INC DEFAULTFORMAT = 3 */
 
@@ -287,6 +289,10 @@ static void convert_block16(const uint16_t *deltas, const uint8_t *bt,
 static int save_sample_raw(const sample_t *s)   /* D_SaveSampleData */
 {
     uint32_t bytes = s->Length << ((s->Flags & 2) ? 1 : 0);
+    if (s->Flags & SMP_STEREO) {        /* it26: left block, right block */
+        save_block(smp_chan(s, 0), bytes);
+        return save_block(smp_chan(s, 1), bytes);
+    }
     return save_block(s->Data, bytes);
 }
 
@@ -548,9 +554,11 @@ int Save_ITModule(const char *path)
             if (sh[0x12] & 1) {         /* sample present */
                 uint8_t fl = sh[0x12], cv = 1;
                 fl |= 8;                /* compressed */
-                if (SaveFormat == 2)
+                /* it26: stereo samples are always stored uncompressed,
+                 * as OpenMPT stores them (feature 019) */
+                if (SaveFormat == 2 || (fl & SMP_STEREO))
                     fl &= (uint8_t)~8;
-                if (SaveFormat == 3)
+                if (SaveFormat == 3 && (fl & 8))
                     cv |= 4;            /* IT215 double delta */
                 sh[0x12] = fl;
                 sh[0x2E] = cv;
@@ -558,6 +566,8 @@ int Save_ITModule(const char *path)
                 {
                     uint32_t len = Song.Smp[i].Length;
                     if (fl & 2)
+                        len += len;
+                    if (fl & SMP_STEREO)
                         len += len;
                     spos += len;
                 }
@@ -593,7 +603,7 @@ int Save_ITModule(const char *path)
         if (!(s->Flags & 1) || s->Length == 0 || !s->Data)
             continue;
         progress(4, i + 1);             /* "Sample n" */
-        if (SaveFormat == 2)
+        if (SaveFormat == 2 || (s->Flags & SMP_STEREO))
             save_sample_raw(s);
         else
             save_sample_compressed(s);
@@ -963,6 +973,29 @@ int Save_S3MModule(const char *path)
 
         bytes = s->Length << ((s->Flags & 2) ? 1 : 0);
         src = (const uint8_t *)s->Data;
+        if (s->Flags & SMP_STEREO) {
+            /* it26: S3M samples are mono -- write the mix (L+R)/2 */
+            uint8_t *mix = (uint8_t *)malloc(bytes);
+            uint32_t f;
+            s3m_warn(34, "Warning: Stereo samples converted to mono");
+            if (!mix) {
+                NoSaveError = 1;
+                break;
+            }
+            for (f = 0; f < s->Length; f++) {
+                if (s->Flags & 2) {
+                    int v = (((const int16_t *)smp_chan(s, 0))[f] +
+                             ((const int16_t *)smp_chan(s, 1))[f]) / 2;
+                    mix[f * 2] = (uint8_t)v;
+                    mix[f * 2 + 1] = (uint8_t)((unsigned)v >> 8);
+                } else {
+                    mix[f] = (uint8_t)((((const int8_t *)smp_chan(s, 0))[f] +
+                                        ((const int8_t *)smp_chan(s, 1))[f])
+                                       / 2);
+                }
+            }
+            src = mix;
+        }
         for (k = 0; k < bytes && !NoSaveError; ) {
             uint32_t c = bytes - k, j;
             if (c > sizeof(buf))
@@ -977,6 +1010,8 @@ int Save_S3MModule(const char *path)
             save_block(buf, c);
             k += c;
         }
+        if (src != (const uint8_t *)s->Data)
+            free((void *)src);
         filepos += bytes;
     }
 

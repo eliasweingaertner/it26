@@ -20,6 +20,7 @@
 #include <time.h>
 #include "it_music.h"
 #include "it_save.h"                    /* song message buffer */
+#include "it_sample.h"                  /* feature 019: stereo samples */
 
 /* ---------------------------------------------------------------- */
 
@@ -258,7 +259,8 @@ static int DecompressIT16(reader_t *r, int16_t *dst, uint32_t length,
  * paths, DisableStereoMenu parity) takes the left channel.
  * Exported for the sample/instrument library (it_ris.c).
  * ---------------------------------------------------------------- */
-int (*Load_StereoChoice)(void);         /* returns 64 left / 192 right */
+int (*Load_StereoChoice)(void);         /* returns 64 left / 192 right,
+                                           256 = keep stereo (it26) */
 void (*Load_Progress)(int row, int what, int n);
 
 static void load_progress(int row, int what, int n)
@@ -272,6 +274,7 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
     reader_t rr = { filedata, size, 0 };
     reader_t *r = &rr;
     int is16, compressed, it215, bswap, delta, bytedelta, stereo, tx12;
+    int planar, keep2 = 0, choice = 0;
     uint32_t len = s->Length;
     uint32_t units;
     size_t bytes;
@@ -280,7 +283,7 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
     s->Data = NULL;
     if (len == 0 || !(s->Flags & 1))
         return 1;                       /* D_NoLoadSample */
-    if (len > 0x0FFFFFFF)
+    if (len > SMP_MAXFRAMES)
         return 0;
 
     is16       = (s->Flags & 2) != 0;
@@ -294,10 +297,14 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
     bytedelta  = !compressed && (s->Cvt & 8) != 0;
     stereo     = !compressed && (s->Cvt & 32) != 0;
     tx12       = !compressed && (s->Cvt & 0x10) != 0;   /* TX Wave */
+    /* it26 (feature 019): flag 0x04 without Cvt bit 32 = an IT-format
+     * stereo sample, left block then right block (as OpenMPT / Schism
+     * Tracker write it); IT 2.14 reads the left block only */
+    planar     = (s->Flags & SMP_STEREO) && !(s->Cvt & 32) && !tx12;
 
     /* stereo reads both channels (the ASM doubles EDX again) and
      * compacts to one after conversion */
-    units = len << (stereo ? 1 : 0);
+    units = len << ((stereo || planar) ? 1 : 0);
     bytes = (size_t)units << (is16 ? 1 : 0);
     data = (uint8_t *)calloc((size_t)units + 4, is16 ? 2 : 1);
     if (!data)
@@ -308,10 +315,17 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
         /* missing data: keep silence */
     } else {
         if (compressed) {
-            if (is16)
+            /* planar stereo: the right channel's block sequence
+             * follows the left one's */
+            if (is16) {
                 DecompressIT16(r, (int16_t *)data, len, it215);
-            else
+                if (planar)
+                    DecompressIT16(r, (int16_t *)data + len, len, it215);
+            } else {
                 DecompressIT8(r, (int8_t *)data, len, it215);
+                if (planar)
+                    DecompressIT8(r, (int8_t *)data + len, len, it215);
+            }
         } else {
             size_t avail = r->size - r->pos;
             size_t rd = bytes;
@@ -349,19 +363,23 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
             }
         }
         if (delta) {
-            if (is16 && !bytedelta) {
-                int16_t *p = (int16_t *)data, acc = 0;
-                uint32_t n;
-                for (n = 0; n < units; n++) {
-                    acc = (int16_t)(acc + p[n]);
-                    p[n] = acc;
-                }
-            } else {
-                uint32_t n, cnt = is16 ? units * 2 : units;
-                uint8_t acc = 0;
-                for (n = 0; n < cnt; n++) {
-                    acc = (uint8_t)(acc + data[n]);
-                    data[n] = acc;
+            /* planar stereo: each channel is its own delta stream */
+            uint32_t seg, segs = planar ? 2 : 1, su = units / segs;
+            for (seg = 0; seg < segs; seg++) {
+                if (is16 && !bytedelta) {
+                    int16_t *p = (int16_t *)data + seg * su, acc = 0;
+                    uint32_t n;
+                    for (n = 0; n < su; n++) {
+                        acc = (int16_t)(acc + p[n]);
+                        p[n] = acc;
+                    }
+                } else {
+                    uint32_t n, cnt = is16 ? su * 2 : su;
+                    uint8_t *p = data + (size_t)seg * cnt, acc = 0;
+                    for (n = 0; n < cnt; n++) {
+                        acc = (uint8_t)(acc + p[n]);
+                        p[n] = acc;
+                    }
                 }
             }
         }
@@ -382,9 +400,15 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
              * other sample; left starts at 0, right at +1 per the
              * O1_StereoSampleList choice (BP bit 128) */
             uint32_t n, ch = 0;
-            if (Load_StereoChoice && Load_StereoChoice() & 128)
+            if (Load_StereoChoice)
+                choice = Load_StereoChoice();
+            if (choice == 256)
+                keep2 = 1;              /* it26: keep both channels */
+            else if (choice & 128)
                 ch = 1;
-            if (is16) {
+            if (keep2) {
+                /* deinterleave below */
+            } else if (is16) {
                 int16_t *p = (int16_t *)data;
                 for (n = 0; n < len; n++)
                     p[n] = p[n * 2 + ch];
@@ -399,8 +423,33 @@ int Load_SampleData(const uint8_t *filedata, size_t size, sample_t *s)
     s->Flags &= (uint8_t)~0x0C;
     s->Cvt = 1;
 
-    /* pad for the cubic interpolator (reads pos+1, pos+2) */
-    if (is16) {
+    if (planar || keep2) {
+        /* it26: two channel blocks with padding between them
+         * (it_sample.h); the file data is planar or interleaved */
+        int w = is16 ? 2 : 1;
+        uint8_t *two = (uint8_t *)calloc(smp_alloc_bytes(len, w, 2), 1);
+        if (!two) {
+            free(data);
+            s->Data = NULL;
+            return 0;
+        }
+        s->Flags |= SMP_STEREO;
+        s->Data = two;
+        if (planar) {
+            memcpy(smp_chan(s, 0), data, (size_t)len * w);
+            memcpy(smp_chan(s, 1), data + (size_t)len * w, (size_t)len * w);
+        } else {
+            uint8_t *l = (uint8_t *)smp_chan(s, 0);
+            uint8_t *rt = (uint8_t *)smp_chan(s, 1);
+            uint32_t n;
+            for (n = 0; n < len; n++) {
+                memcpy(l + (size_t)n * w, data + (size_t)n * 2 * w, w);
+                memcpy(rt + (size_t)n * w, data + ((size_t)n * 2 + 1) * w, w);
+            }
+        }
+        free(data);
+        smp_pad(s);
+    } else if (is16) {
         int16_t *p = (int16_t *)data;
         p[len] = p[len + 1] = (len > 0) ? p[len - 1] : 0;
         p[len + 2] = p[len + 3] = 0;
@@ -623,8 +672,17 @@ int Music_LoadIT(const char *path)
 
         if (!(s->Flags & 1) || s->Length == 0)
             continue;
-        if (s->Length > 0x0FFFFFFF)
+        if (s->Length > SMP_MAXFRAMES)
             goto fail;
+
+        /* it26 (feature 019): stereo samples (flag 04h, left block then
+         * right block) through the shared loader, which keeps both
+         * channels; mono samples load below exactly as before */
+        if (s->Flags & SMP_STEREO) {
+            if (!Load_SampleData(r->data, r->size, s))
+                goto fail;
+            continue;
+        }
 
         {
             int is16 = (s->Flags & 2) != 0;

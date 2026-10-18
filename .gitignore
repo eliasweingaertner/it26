@@ -44,3 +44,6 @@ Thumbs.db
 /tools/compare/.venv/
 /tools/compare/.work/
 __pycache__/
+
+# large local copies of test modules
+testdata/*.bak

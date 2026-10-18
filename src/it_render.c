@@ -30,6 +30,7 @@
 #include "it_pattern.h"
 #include "it_screen.h"                  /* CP437 <-> Unicode */
 #include "it_render.h"
+#include "it_sample.h"                  /* feature 019: stereo samples */
 
 void     WAVDriver_RenderAny(void *dst, uint32_t frames);
 void     WAVDriver_SetMixSpeed(uint32_t hz);
@@ -334,12 +335,14 @@ int Render_RemoveTree(const char *path)
 }
 
 /* the sample as a WAV: mono, 8-bit unsigned or 16-bit signed (as
- * RIS_SaveWAV), the header at `rate` */
+ * RIS_SaveWAV), the header at `rate`; a stereo sample (feature 019)
+ * as two interleaved channels */
 int Render_SaveSampleWav(const sample_t *s, const char *path, uint32_t rate)
 {
     uint8_t h[44];
     int is16 = (s->Flags & 2) != 0;
-    uint32_t bytes = s->Length << (is16 ? 1 : 0), i;
+    uint32_t chans = (uint32_t)smp_channels(s);
+    uint32_t bytes = (uint32_t)smp_data_bytes(s), i;
     FILE *f;
     int ok;
 
@@ -349,10 +352,10 @@ int Render_SaveSampleWav(const sample_t *s, const char *path, uint32_t rate)
     memcpy(h + 8, "WAVEfmt ", 8);
     put32(h + 16, 16);
     h[20] = 1;
-    h[22] = 1;
+    h[22] = (uint8_t)chans;
     put32(h + 24, rate);
-    put32(h + 28, rate * (is16 ? 2u : 1u));
-    h[32] = (uint8_t)(is16 ? 2 : 1);
+    put32(h + 28, rate * (is16 ? 2u : 1u) * chans);
+    h[32] = (uint8_t)((is16 ? 2 : 1) * chans);
     h[34] = (uint8_t)(is16 ? 16 : 8);
     memcpy(h + 36, "data", 4);
     put32(h + 40, bytes);
@@ -361,7 +364,24 @@ int Render_SaveSampleWav(const sample_t *s, const char *path, uint32_t rate)
     if (!f)
         return 0;
     ok = fwrite(h, 1, 44, f) == 44;
-    if (ok && bytes && s->Data) {
+    if (ok && bytes && s->Data && chans == 2) {
+        uint8_t buf[4096];
+        uint32_t w = is16 ? 2 : 1, fb = w * 2, per = 4096 / fb, k, m;
+        const uint8_t *l = (const uint8_t *)smp_chan(s, 0);
+        const uint8_t *r = (const uint8_t *)smp_chan(s, 1);
+        for (i = 0; ok && i < s->Length; i += m) {
+            m = s->Length - i < per ? s->Length - i : per;
+            for (k = 0; k < m; k++) {
+                memcpy(buf + k * fb, l + (size_t)(i + k) * w, w);
+                memcpy(buf + k * fb + w, r + (size_t)(i + k) * w, w);
+                if (!is16) {
+                    buf[k * fb] ^= 0x80;
+                    buf[k * fb + 1] ^= 0x80;
+                }
+            }
+            ok = fwrite(buf, 1, m * fb, f) == m * fb;
+        }
+    } else if (ok && bytes && s->Data) {
         if (is16) {
             ok = fwrite(s->Data, 1, bytes, f) == bytes;
         } else {                        /* signed -> unsigned, a copy */
@@ -387,6 +407,8 @@ int Render_SaveSampleWav(const sample_t *s, const char *path, uint32_t rate)
 static void engine_lock(void)   { if (Engine_Lock) Engine_Lock(); }
 static void engine_unlock(void) { if (Engine_Unlock) Engine_Unlock(); }
 
+static uint32_t MemFrames;              /* frames job->mem holds now */
+
 /* append `n` frames (stereo from the driver) to the job's output */
 static int render_emit(render_job_t *job, render_wav_t *w,
                        const void *buf, uint32_t n, uint32_t *mem_cap)
@@ -400,11 +422,31 @@ static int render_emit(render_job_t *job, render_wav_t *w,
             n = *mem_cap - job->frames;
             job->truncated = 1;
         }
-        d = job->mem + job->frames;     /* IT samples are mono: the
-                                           stereo mix is mixed down, as
-                                           IT's "Both" for stereo WAVs */
-        for (i = 0; i < n; i++)
-            d[i] = (int16_t)(((int32_t)s[i * 2] + s[i * 2 + 1]) >> 1);
+        if (job->frames + n > MemFrames) {  /* grow, doubling */
+            uint32_t want = MemFrames * 2u;
+            int16_t *nm;
+            if (want < job->frames + n)
+                want = job->frames + n;
+            if (want > *mem_cap)
+                want = *mem_cap;
+            nm = (int16_t *)realloc(job->mem, (size_t)want * 2u *
+                                    (size_t)job->channels + 2);
+            if (!nm)
+                return 0;
+            job->mem = nm;
+            MemFrames = want;
+        }
+        /* stereo songs keep both channels, interleaved (it26 stereo
+         * samples, feature 019); mono songs play the same left and
+         * right, their mix is the mono sample */
+        if (job->channels == 2) {
+            memcpy(job->mem + (size_t)job->frames * 2, s,
+                   (size_t)n * 4u);
+        } else {
+            d = job->mem + job->frames;
+            for (i = 0; i < n; i++)
+                d[i] = (int16_t)(((int32_t)s[i * 2] + s[i * 2 + 1]) >> 1);
+        }
     } else if (job->channels == 2) {
         if (!Render_WavWrite(w, buf, n * 8))
             return 0;
@@ -431,8 +473,7 @@ int Render_Run(render_job_t *job, const char *path)
     job->aborted = 0;
     job->truncated = 0;
     job->mem = NULL;
-    job->channels = job->to_memory ? 1
-                  : (Song.Header.Flags & ITF_STEREO) ? 2 : 1;
+    job->channels = (Song.Header.Flags & ITF_STEREO) ? 2 : 1;
 
     engine_lock();
     Music_Stop();
@@ -453,7 +494,8 @@ int Render_Run(render_job_t *job, const char *path)
 
     if (job->to_memory) {
         mem_cap = job->mem_cap_bytes / (uint32_t)(2 * job->channels);
-        job->mem = (int16_t *)malloc((size_t)mem_cap * 2u *
+        MemFrames = mem_cap < 44100u ? mem_cap : 44100u;
+        job->mem = (int16_t *)malloc((size_t)MemFrames * 2u *
                                      (size_t)job->channels + 2);
         if (!job->mem)
             return 0;

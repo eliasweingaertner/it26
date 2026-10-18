@@ -23,16 +23,17 @@ typedef struct render_job_t {
     int      to_memory;     /* 1: 44.1 kHz 16-bit into mem (import);
                                0: WAV file, 32-bit float unclamped       */
     uint32_t rate;          /* file jobs: the mixing rate                */
-    uint32_t mem_cap_bytes; /* memory jobs: data cap (1 MB for imports)  */
+    uint32_t mem_cap_bytes; /* memory jobs: data cap (10 min. for imports)*/
     int    (*abort_cb)(void); /* nonzero = stop (Esc, a second gesture)  */
     /* out */
-    int      channels;      /* files: 2 when the song plays stereo, else
-                               1; memory: always 1 (IT samples are mono) */
+    int      channels;      /* 2 when the song plays stereo, else 1
+                               (memory: a stereo sample, feature 019)    */
     uint32_t out_rate;      /* rate actually mixed at                    */
     uint32_t frames;        /* frames written                            */
     int      aborted;       /* stopped by abort_cb                       */
     int      truncated;     /* memory job hit mem_cap_bytes              */
-    int16_t *mem;           /* memory jobs: mono frames (malloc)         */
+    int16_t *mem;           /* memory jobs: frames, interleaved when
+                               channels = 2 (malloc)                     */
 } render_job_t;
 
 /* Render `job` into the WAV file `path` (to_memory = 0) or into job->mem

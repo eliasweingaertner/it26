@@ -26,6 +26,7 @@
 #include <string.h>
 #include "it_music.h"
 #include "it_ris.h"
+#include "it_sample.h"                  /* feature 019: stereo samples */
 
 #ifdef _WIN32
 #include <windows.h>                    /* feature 015: directory listing */
@@ -272,8 +273,9 @@ static size_t xm_first_instrument(const uint8_t *d, size_t n)
 /* shared with the XI conversion: XM sample header -> ITS fields */
 static uint32_t xm_conv_len(uint32_t v, int is16)
 {
-    if (v >= 4177910)
-        v = 4177910;
+    /* it26: OpenMPT's / Schism's frame limit, not IT's 4177910 bytes */
+    if (v >= SMP_MAXFRAMES << (is16 ? 1 : 0))
+        v = SMP_MAXFRAMES << (is16 ? 1 : 0);
     return is16 ? v >> 1 : v;
 }
 
@@ -768,8 +770,10 @@ static int scan_wav(const uint8_t *d, size_t n, const char *path,
     st = (b16(d, n, 22) == 2);
 
     dlen = b32(d, n, bp);
-    if (dlen > 4177910)
-        dlen = 4177910;
+    /* IT capped at 4177910 bytes; it26 at OpenMPT's / Schism's frame
+     * limit (it_sample.h) */
+    if (dlen > (SMP_MAXFRAMES << (is16 ? 1 : 0)) << (st ? 1 : 0))
+        dlen = (SMP_MAXFRAMES << (is16 ? 1 : 0)) << (st ? 1 : 0);
 
     s = ent_init(&ents[0], path, (uint8_t)(is16 ? 7 : 5));
     /* name = the DOS filename, as the synthesis copies it */
@@ -783,6 +787,78 @@ static int scan_wav(const uint8_t *d, size_t n, const char *path,
     s->C5Speed = b16(d, n, 24);
     s->OffsetInFile = (uint32_t)(bp + 4);
     ents[0].FileSize = dlen;
+    return 1;
+}
+
+/* it26 extension: WAV files IT's reader above refuses -- 24- and 32-bit
+ * PCM, 32/64-bit float, WAVE_FORMAT_EXTENSIBLE, and files whose data
+ * chunk comes after more than IT's three chunks (Reaper, DAWs write
+ * bext / junk / LIST first). A proper RIFF chunk walk; mono or stereo;
+ * 8/16-bit data loads as IT's, wider data is converted to 16-bit when
+ * loaded (RIS_LoadSample, slibent_t.WavFmt). The rate is used whole. */
+static int scan_wav_ext(const uint8_t *d, size_t n, const char *path,
+                        slibent_t *ents)
+{
+    sample_t *s;
+    size_t p = 12, fmt = 0, data = 0;
+    uint32_t dlen = 0, frames, rate;
+    uint16_t tag, chans, bits, align;
+    uint8_t wf = 0;
+    int is16;
+
+    if (n < 12 || memcmp(d, "RIFF", 4) || memcmp(d + 8, "WAVE", 4))
+        return -1;
+    while (p + 8 <= n) {
+        uint32_t sz = b32(d, n, p + 4);
+        if (!memcmp(d + p, "fmt ", 4) && sz >= 16)
+            fmt = p + 8;
+        else if (!memcmp(d + p, "data", 4)) {
+            data = p + 8;
+            dlen = sz;
+            break;
+        }
+        if ((uint64_t)p + 8 + sz + (sz & 1) > n)
+            break;
+        p += 8 + (size_t)sz + (sz & 1);
+    }
+    if (!fmt || !data)
+        return -1;
+    tag = b16(d, n, fmt);
+    chans = b16(d, n, fmt + 2);
+    rate = b32(d, n, fmt + 4);
+    align = b16(d, n, fmt + 12);
+    bits = b16(d, n, fmt + 14);
+    if (tag == 0xFFFE && b16(d, n, fmt + 16) >= 22)
+        tag = b16(d, n, fmt + 24);      /* SubFormat GUID's first word */
+    if ((chans != 1 && chans != 2) || align != chans * ((bits + 7) / 8))
+        return -1;
+    if (tag == 1 && (bits == 8 || bits == 16))
+        wf = 0;
+    else if (tag == 1 && (bits == 24 || bits == 32))
+        wf = (uint8_t)bits;
+    else if (tag == 3 && (bits == 32 || bits == 64))
+        wf = (uint8_t)(0x80 | bits);
+    else
+        return -1;
+    if (dlen > n - data)
+        dlen = (uint32_t)(n - data);
+    frames = dlen / align;
+    if (frames > SMP_MAXFRAMES)
+        frames = SMP_MAXFRAMES;
+    is16 = bits != 8;
+
+    s = ent_init(&ents[0], path, (uint8_t)(is16 ? 7 : 5));
+    memset(s->SampleName, 0, 26);
+    memcpy(s->SampleName, s->DOSFileName, 12);
+    s->Vol = 64;
+    s->Flags = (uint8_t)(1 | (is16 ? 2 : 0) | (chans == 2 ? 4 : 0));
+    s->Cvt = (uint8_t)((is16 ? 1 : 0) | (chans == 2 ? 32 : 0));
+    s->DfP = 0;
+    s->Length = frames;
+    s->C5Speed = rate > 9999999u ? 9999999u : rate;
+    s->OffsetInFile = (uint32_t)data;
+    ents[0].FileSize = dlen;
+    ents[0].WavFmt = wf;
     return 1;
 }
 
@@ -861,6 +937,11 @@ int RIS_ScanModule(const char *path, slibent_t *ents, int max)
         cnt = scan_pat(d, n, path, ents, max);
     } else if (n >= 16 && !memcmp(d + 8, "WAVEfmt ", 8)) {
         cnt = scan_wav(d, n, path, ents);
+        if (cnt < 0)                    /* it26: what IT's reader refuses */
+            cnt = scan_wav_ext(d, n, path, ents);
+    } else if (n >= 12 && !memcmp(d, "RIFF", 4) &&
+               !memcmp(d + 8, "WAVE", 4)) {     /* it26: JUNK before fmt */
+        cnt = scan_wav_ext(d, n, path, ents);
     } else if (n >= 12 && !memcmp(d, "FORM", 4)) {
         cnt = scan_iff(d, n, path, ents);
     } else if (n >= 16 && !memcmp(d, "LM8953", 6)) {
@@ -877,6 +958,47 @@ int RIS_ScanModule(const char *path, slibent_t *ents, int max)
     return cnt;
 }
 
+/* it26: a 24/32-bit or float WAV (scan_wav_ext) -> 16-bit signed in
+ * place at the data offset, so Load_SampleData reads it as a 16-bit
+ * WAV. Each value shrinks to two bytes, so the write never overtakes
+ * the read. */
+static void wav_to16(uint8_t *d, size_t n, const slibent_t *e)
+{
+    uint8_t wf = e->WavFmt;
+    size_t w = (size_t)(wf & 0x7F) / 8, i, cnt;
+    size_t off = e->hdr.OffsetInFile;
+    uint8_t *src = d + off;
+    int16_t v;
+
+    cnt = (size_t)e->hdr.Length * ((e->hdr.Flags & 4) ? 2 : 1);
+    if (off > n || cnt > (n - off) / w)
+        cnt = off > n ? 0 : (n - off) / w;
+    for (i = 0; i < cnt; i++) {
+        const uint8_t *q = src + i * w;
+        if (wf == 24) {
+            v = (int16_t)(q[1] | (q[2] << 8));
+        } else if (wf == 32) {
+            v = (int16_t)(q[2] | (q[3] << 8));
+        } else {
+            double f;
+            if (wf == (0x80 | 32)) {
+                float ff;
+                memcpy(&ff, q, 4);
+                f = ff;
+            } else
+                memcpy(&f, q, 8);
+            f *= 32768.0;
+            if (!(f > -32768.0))        /* also NaN */
+                f = -32768.0;
+            if (f > 32767.0)
+                f = 32767.0;
+            v = (int16_t)(f < 0 ? f - 0.5 : f + 0.5);
+        }
+        src[i * 2] = (uint8_t)v;
+        src[i * 2 + 1] = (uint8_t)((uint16_t)v >> 8);
+    }
+}
+
 int RIS_LoadSample(const slibent_t *e, sample_t *dst)
 {
     size_t n;
@@ -891,6 +1013,8 @@ int RIS_LoadSample(const slibent_t *e, sample_t *dst)
     d = load_file(e->SrcFile, &n);
     if (!d)
         return 0;
+    if (e->WavFmt)                      /* it26: wide WAV -> 16-bit */
+        wav_to16(d, n, e);
     if (!Load_SampleData(d, n, &tmp)) {
         free(d);
         return 0;
@@ -1054,6 +1178,7 @@ static void ls_identify(slibent_t *e)
             e->hdr = one.hdr;
             memcpy(e->hdr.DOSFileName, keep, sizeof(keep));
             e->Format = one.Format;
+            e->WavFmt = one.WavFmt;     /* it26 */
             e->SortPri = 2;             /* D_GetSampleInfo default */
         }
     }
@@ -1814,16 +1939,55 @@ int RI_ListDirectory(const char *dir, ilibent_t *ents, int max)
  * write it verbatim; ST3 and 8-bit WAV convert to unsigned.
  * ================================================================= */
 
-static size_t smp_bytes(const sample_t *s)
+static size_t smp_bytes(const sample_t *s)   /* all channels */
 {
-    return (size_t)s->Length << ((s->Flags & 2) ? 1 : 0);
+    return smp_data_bytes(s);
 }
 
+/* ITS / ITI layout: a stereo sample is its left block, then its right
+ * block (it26, feature 019) */
 static int write_data_raw(FILE *f, const sample_t *s)
 {
+    size_t nb = (size_t)s->Length * (size_t)smp_width(s);
+    int c, ok = 1;
+
     if (!(s->Flags & 1) || !s->Data || s->Length == 0)
         return 1;
-    return fwrite(s->Data, 1, smp_bytes(s), f) == smp_bytes(s);
+    for (c = 0; c < smp_channels(s) && ok; c++)
+        ok = fwrite(smp_chan(s, c), 1, nb, f) == nb;
+    return ok;
+}
+
+/* frame f of a stereo sample: both channels (WAV, interleaved) or
+ * their mix (ST3 samples are mono) */
+static int write_stereo_frames(FILE *f, const sample_t *s, int mix,
+                               int to_unsigned)
+{
+    uint32_t i;
+    int ok = 1;
+
+    for (i = 0; i < s->Length && ok; i++) {
+        if (s->Flags & 2) {
+            int16_t l = ((const int16_t *)smp_chan(s, 0))[i];
+            int16_t r = ((const int16_t *)smp_chan(s, 1))[i];
+            uint16_t v[2];
+            if (mix)
+                l = (int16_t)((l + r) / 2);
+            v[0] = (uint16_t)(l ^ (to_unsigned ? 0x8000 : 0));
+            v[1] = (uint16_t)(r ^ (to_unsigned ? 0x8000 : 0));
+            ok = fwrite(v, 2, mix ? 1 : 2, f) == (size_t)(mix ? 1 : 2);
+        } else {
+            int8_t l = ((const int8_t *)smp_chan(s, 0))[i];
+            int8_t r = ((const int8_t *)smp_chan(s, 1))[i];
+            uint8_t v[2];
+            if (mix)
+                l = (int8_t)((l + r) / 2);
+            v[0] = (uint8_t)(l ^ (to_unsigned ? 0x80 : 0));
+            v[1] = (uint8_t)(r ^ (to_unsigned ? 0x80 : 0));
+            ok = fwrite(v, 1, mix ? 1 : 2, f) == (size_t)(mix ? 1 : 2);
+        }
+    }
+    return ok;
 }
 
 static int write_data_unsigned(FILE *f, const sample_t *s)
@@ -1834,6 +1998,8 @@ static int write_data_unsigned(FILE *f, const sample_t *s)
 
     if (!(s->Flags & 1) || !p || s->Length == 0)
         return 1;
+    if (s->Flags & SMP_STEREO)          /* ST3: the mono mix */
+        return write_stereo_frames(f, s, 1, 1);
     if (s->Flags & 2) {
         for (i = 0; i < s->Length && ok; i++) {
             uint16_t v = (uint16_t)(((const int16_t *)s->Data)[i] ^ 0x8000);
@@ -1857,7 +2023,7 @@ int RIS_SaveITS(const sample_t *s, const char *path)
     if (!f)
         return 0;
     hdr.Cvt = 1;
-    hdr.Flags &= (uint8_t)~0x0C;
+    hdr.Flags &= (uint8_t)~0x08;             /* it26: keeps stereo */
     hdr.OffsetInFile = 80;
     ok = fwrite(&hdr, 1, 80, f) == 80 && write_data_raw(f, s);
     fclose(f);
@@ -1874,7 +2040,7 @@ int RIS_SaveST(const sample_t *s, const char *path)
     h[0] = 1;                                /* type: sample */
     memcpy(h + 1, s->DOSFileName, 12);       /* 13 bytes incl. Zero */
     h[14] = 5;                               /* memseg word = 5 */
-    memcpy(h + 16, &s->Length, 4);
+    memcpy(h + 16, &s->Length, 4);           /* frames (stereo: mixed) */
     memcpy(h + 20, &s->LoopBeg, 4);
     memcpy(h + 24, &s->LoopEnd, 4);
     h[28] = s->Vol;
@@ -1895,8 +2061,9 @@ int RIS_SaveWAV(const sample_t *s, const char *path)
 {
     uint8_t h[44];
     uint32_t rate = s->C5Speed, dsz = (uint32_t)smp_bytes(s);
-    uint32_t bps = (s->Flags & 2) ? rate * 2 : rate;
-    uint16_t align = (s->Flags & 2) ? 2 : 1;
+    uint16_t chans = (uint16_t)smp_channels(s);
+    uint16_t align = (uint16_t)(((s->Flags & 2) ? 2 : 1) * chans);
+    uint32_t bps = rate * align;
     uint16_t bits = (s->Flags & 2) ? 16 : 8;
     FILE *f;
     int ok;
@@ -1907,7 +2074,7 @@ int RIS_SaveWAV(const sample_t *s, const char *path)
     memcpy(h + 8, "WAVEfmt ", 8);
     h[16] = 16;
     h[20] = 1;                               /* PCM */
-    h[22] = 1;                               /* mono */
+    h[22] = (uint8_t)chans;                  /* mono (it26: or stereo) */
     memcpy(h + 24, &rate, 4);
     memcpy(h + 28, &bps, 4);
     memcpy(h + 32, &align, 2);
@@ -1920,7 +2087,9 @@ int RIS_SaveWAV(const sample_t *s, const char *path)
         return 0;
     ok = fwrite(h, 1, 44, f) == 44;
     if (ok) {
-        if (s->Flags & 2)
+        if ((s->Flags & SMP_STEREO) && s->Data && s->Length)
+            ok = write_stereo_frames(f, s, 0, !(s->Flags & 2));
+        else if (s->Flags & 2)
             ok = write_data_raw(f, s);       /* 16-bit: signed */
         else
             ok = write_data_unsigned(f, s);  /*  8-bit: unsigned */
@@ -1972,7 +2141,7 @@ int RI_SaveITI(const instrument_t *in, int insnum1, const char *path)
         sh = Song.Smp[i - 1];
         sh.Data = NULL;
         sh.Cvt = 1;                      /* memory data is flat signed */
-        sh.Flags &= (uint8_t)~0x0C;
+        sh.Flags &= (uint8_t)~0x08;      /* it26: keeps stereo */
         sh.OffsetInFile = ptr;
         if (sh.Flags & 1)
             ptr += (uint32_t)smp_bytes(&Song.Smp[i - 1]);

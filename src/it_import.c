@@ -25,6 +25,7 @@
 #include "it_pattern.h"
 #include "it_save.h"
 #include "it_import.h"
+#include "it_sample.h"                  /* SMP_MAXFRAMES */
 
 int  Music_LoadIT(const char *path);
 void Music_FreeIT(void);
@@ -130,7 +131,7 @@ static int import_sample_data(rd_t *r, sample_t *s)
 
     if (!(s->Flags & 1) || len == 0)
         return 1;
-    if (len > 0x0FFFFFFF)
+    if (len > SMP_MAXFRAMES)
         return 0;
     data = (uint8_t *)calloc((size_t)len + 4, is16 ? 2 : 1);
     if (!data)
@@ -1373,10 +1374,13 @@ static int load_xm(rd_t *r)
                 sm->DfP = (uint8_t)(((h[15] >> 2) +
                                      ((h[15] >> 1) & 1)) | 0x80);
                 {
+                    /* it26: OpenMPT's / Schism's frame limit instead
+                     * of IT's 4177910 bytes */
                     uint32_t a = len, b = lbeg, cc = lbeg + llen;
-                    if (a > 4177910) a = 4177910;
-                    if (b > 4177910) b = 4177910;
-                    if (cc > 4177910) cc = 4177910;
+                    uint32_t cap = SMP_MAXFRAMES << (is16 ? 1 : 0);
+                    if (a > cap) a = cap;
+                    if (b > cap) b = cap;
+                    if (cc > cap) cc = cap;
                     if (is16) { a >>= 1; b >>= 1; cc >>= 1; }
                     sm->Length = a;
                     sm->LoopBeg = b;

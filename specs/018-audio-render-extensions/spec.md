@@ -252,3 +252,7 @@ the README describes them as extensions after Esa's fork.
 - The F11 order-list tools (clone, extend, mute-wipe toggle, PATLOG.TXT) and the F5 Enter jump are separate features, not part of rendering.
 - Imports follow Esa's WAV driver (44100 Hz, 16-bit, stereo by song flag). WAV files deliberately go beyond Esa's 16-bit: 32-bit float without clipping at the Shift-F5 mixing rate (user decision). Shift-F5's output format and SB16 filter/feedback options do not apply to renders.
 - The whole-song end is IT's own end-of-song (order list end or the song looping back), as `itplay -w` uses.
+
+## Later changes
+
+- Feature 019 (stereo samples): imports from a stereo song are stereo samples, and the import cap is the editor's 4 MB sample size limit instead of 1 MB; sample exports write 2-channel WAVs for stereo samples. See `specs/019-stereo-samples/`.

@@ -45,6 +45,7 @@
 #include <string.h>
 #include "it_music.h"
 #include "it_pattern.h"     /* Engine_Lock / Engine_Unlock hooks */
+#include "it_sample.h"      /* feature 019: stereo samples */
 
 /* WAVSWITC.INC */
 #define VOLUMERAMP      1
@@ -99,6 +100,12 @@ typedef struct chnfilter_t {
     float fa, fb;     /* coefficients a and b      */
 } chnfilter_t;
 static chnfilter_t FilterValues[MAXSLAVECHANNELS];
+/* it26 (feature 019): the right channel's filter state of a stereo
+ * sample (slavechn_t is layout-pinned, so it lives beside FilterValues;
+ * coefficients always equal the left channel's) */
+static chnfilter_t FilterValuesR[MAXSLAVECHANNELS];
+/* right channel data of the voice being mixed, NULL for mono samples */
+static const void *MixRight;
 
 /* current chunk's filter c coefficient (1 - a - b, computed per tick) */
 static float FilterC;
@@ -285,6 +292,60 @@ static inline int32_t GetWaveform(const void *smpdata, int is16,
  * zero-volume position-only variants.
  * pos64 = (position << 16) | fraction, advanced by the 16.16 step.
  * ===================================================================== */
+/* it26 (feature 019): a stereo sample. Each channel is interpolated
+ * and filtered on its own; the voice's left volume scales the left
+ * channel and its right volume the right one, so pan acts as balance.
+ * Surround plays the mono mix through IT's surround formula. */
+static int64_t MixInnerStereo(slavechn_t *sc, const void *smpdata,
+                              int is16, int surround, int backwards,
+                              int64_t pos64, uint32_t frames)
+{
+    chnfilter_t *flt = &FilterValues[sc - SChn];
+    chnfilter_t *fltr = &FilterValuesR[sc - SChn];
+    int32_t *si = MixBufPos;
+    uint32_t step = sc->MixStep;
+    uint32_t n;
+
+    for (n = frames; n != 0; n--) {
+        int32_t pos = (int32_t)(pos64 >> 16);
+        uint16_t frac = (uint16_t)pos64;
+        int32_t sl = GetWaveform(smpdata, is16, pos, frac, flt);
+        int32_t sr = GetWaveform(MixRight, is16, pos, frac, fltr);
+        int32_t eax;
+
+        if (surround) {
+            eax = (int32_t)((uint32_t)((sl + sr) / 2) * (uint32_t)LVC);
+            si[0] = (int32_t)((uint32_t)si[0] - (uint32_t)eax);
+            LastLeftValue = eax;
+            si[1] = (int32_t)((uint32_t)si[1] + (uint32_t)eax);
+
+            LVC += (LVSet - LVC) >> RampShift;
+        } else {
+            eax = (int32_t)((uint32_t)sl * (uint32_t)LVC);
+            si[0] = (int32_t)((uint32_t)si[0] - (uint32_t)eax);
+            LastLeftValue = eax;
+
+            eax = (int32_t)((uint32_t)sr * (uint32_t)RVC);
+            si[1] = (int32_t)((uint32_t)si[1] - (uint32_t)eax);
+            LastRightValue = eax;
+
+            LVC += (LVSet - LVC) >> RampShift;
+            RVC += (RVSet - RVC) >> RampShift;
+        }
+
+        si += 2;
+        if (backwards)
+            pos64 -= step;
+        else
+            pos64 += step;
+    }
+
+    if (surround)
+        LastRightValue = -LastLeftValue;
+
+    return pos64;
+}
+
 static int64_t MixInner(slavechn_t *sc, const void *smpdata, int is16,
                         int surround, int backwards,
                         int64_t pos64, uint32_t frames)
@@ -293,6 +354,10 @@ static int64_t MixInner(slavechn_t *sc, const void *smpdata, int is16,
     int32_t *si = MixBufPos;
     uint32_t step = sc->MixStep;
     uint32_t n;
+
+    if (MixRight)
+        return MixInnerStereo(sc, smpdata, is16, surround, backwards,
+                              pos64, frames);
 
     for (n = frames; n != 0; n--) {
         int32_t pos = (int32_t)(pos64 >> 16);
@@ -779,6 +844,8 @@ static void M32MixHandler(void)
             flt->y2 = 0.0f;
             flt->fa = 1.0f;
             flt->fb = 0.0f;
+            FilterValuesR[ch].y1 = 0.0f;
+            FilterValuesR[ch].y2 = 0.0f;
         }
 
         if (cx & (SF_RECALC_FINALVOL | SF_LOOP_CHANGED | SF_PAN_CHANGED)) {
@@ -892,10 +959,15 @@ HaveRow:
 
         /* load filter c for this chunk: c = 1 - a - b */
         FilterC = 1.0f - flt->fa - flt->fb;
+        FilterValuesR[ch].fa = flt->fa;
+        FilterValuesR[ch].fb = flt->fb;
 
         {
             sample_t *s = SAMPLEHDR(sc->SmpOffs);
             const void *smp = s->Data;
+
+            MixRight = (smp != NULL && (s->Flags & SMP_STEREO))
+                       ? smp_chan(s, 1) : NULL;
             int is16 = (row >= 90);
             int volpart = (is16 ? row - 90 : row);
             int looppart = volpart % 30;
@@ -929,8 +1001,10 @@ HaveRow:
         sc->Flags &= 0x788D;
 
         /* sample mode: mirror filter state into the ghost channel */
-        if (!(Song.Header.Flags & ITF_INSTRUMENTS) && ch < 64)
+        if (!(Song.Header.Flags & ITF_INSTRUMENTS) && ch < 64) {
             FilterValues[ch + 64] = *flt;
+            FilterValuesR[ch + 64] = FilterValuesR[ch];
+        }
     }
 
     /* output EQ (4-band crossover) - bypassed unless configured */
@@ -1008,6 +1082,7 @@ static int WAV_InitSound(void)
     OutPos = 0;
 
     memset(FilterValues, 0, sizeof(FilterValues));
+    memset(FilterValuesR, 0, sizeof(FilterValuesR));
     memset(EQBand, 0, sizeof(EQBand));
     memset(MixBuffer, 0, sizeof(MixBuffer));    /* no stale feedback */
     SBFilterL = SBFilterR = 0;
