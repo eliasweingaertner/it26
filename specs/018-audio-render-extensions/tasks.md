@@ -89,10 +89,10 @@ description: "Task list for feature 018: Audio Rendering Extensions (after Esa R
 
 ## Phase 5: User Story 3 — Export the samples as WAVs (P2)
 
-**Independent Test**: spec US3 — F5 D → one `HHMMSSnn.WAV` per sample, "Dumped N samples as SMPnn.WAV", playback continues.
+**Independent Test**: spec US3 — F5 D → one `HHMMSSnn.WAV` per sample, "Dumped N samples as <HHMMSS>nn.WAV in <folder>", playback continues.
 
 - [X] T024 [US3] Confirm samples in memory are always mono (IT converts stereo WAVs on load; the mixer has no stereo samples) so `RIS_SaveWAV`'s mono header is right; no change to `src/it_ris.c` if so
-- [X] T025 [US3] `export_samples(int only_slot)` in `src/it_editor.c`: `render_dir` check; "Starting batch export of samples as .WAV..." painted at once; HHMMSS taken once; each non-empty slot (or `only_slot`) → `RIS_SaveWAV` with `Render_NameSampleExport`; for `only_slot` a header copy with `C5Speed = 44100` and the messages "Saving selected sample as C-4 44.1kHz WAV..." / "Saved C-4 44.1kHz WAV (sample N)" / "Selected sample is empty."; all: "Dumped N samples as SMPnn.WAV" or "No samples to dump"; playback not stopped (read-only)
+- [X] T025 [US3] `export_samples(int only_slot)` in `src/it_editor.c`: `render_dir` check; "Starting batch export of samples as .WAV..." painted at once; HHMMSS taken once; each non-empty slot (or `only_slot`) → `RIS_SaveWAV` with `Render_NameSampleExport`; for `only_slot` a header copy with `C5Speed = 44100` and the messages "Saving selected sample as C-4 44.1kHz WAV..." / "Saved C-4 44.1kHz WAV (sample N)" / "Selected sample is empty."; all: "Dumped N samples as <HHMMSS>nn.WAV in <folder>" (Esa's text said SMPnn.WAV, fixed 2026-10-18) or "No samples to dump"; playback not stopped (read-only)
 - [X] T026 [US3] Gestures in `src/it_editor.c`: F5 'd'/'D' and Ctrl-Shift-Right (`ITK_SHIFT_RIGHT` with `ITKF_CTRL`, or `ITK_CTRL_RIGHT` with `ITKF_SHIFT`, whichever the backends deliver); F11 Ctrl-Shift-Right; F3 `sample_list_lkey`: `ITK_CTRL_RIGHT` without Shift → selected, with Shift → all (check first that IT 2.14 binds nothing to Ctrl-Right on F3)
 - [X] T027 [US3] RND selftest: export itdemo.it's samples → file count = non-empty slots; one 8-bit sample's bytes = signed data + 128; a 16-bit one byte-identical to its data; selected export header rate 44100; the song's sample memory unchanged (checksum before/after)
 
@@ -155,6 +155,14 @@ description: "Task list for feature 018: Audio Rendering Extensions (after Esa R
 - T041: `test_pattern` IDENTICAL for all four modules with the known hashes.
 - T042: F10 captures differ only by the two new buttons, F12 only in rows 45–49 (Quicksave row, box, moved button).
 - T044: not run — listening on a real device (only render files and status lines were checked), the F12 Enter / Ctrl-O folder dialog for the Quicksave row (the remote backend has no dialogs), Linux/macOS builds (CI on push).
+
+## Phase 11: Follow-up — descriptive file names (2026-10-18)
+
+- [X] T045 Path layer in `src/it_render.c` / `src/it_render.h`: UTF-8 paths internally; `Render_Fopen`, `Render_Exists`, `Render_MkDir` (Windows: UTF-8 → UTF-16, `_wfopen` / `_wstat` / `CreateDirectoryW`; POSIX: as is), `Render_DirFromNative` (Windows ANSI code page → UTF-8), `Render_ToDisplay` (UTF-8 → CP437 for the status line, `?` for the rest); the WAV writer opens through `Render_Fopen`
+- [X] T046 Name building in `src/it_render.c`: `Render_CleanName` (CP437 → UTF-8, forbidden characters → `_`, trim, ≤ 80 bytes on a character boundary), `Render_Stamp` ("YYYY-MM-DD HH.MM.SS"), `Render_Unique` (` (2)` …), `Render_SongTitle` input from the editor
+- [X] T047 `Render_SaveSampleWav(const sample_t *, path, rate)` in `src/it_render.c` (mono, 8-bit unsigned / 16-bit signed, as `RIS_SaveWAV`, through `Render_Fopen`)
+- [X] T048 Switch every file-writing path in `src/it_editor.c` to the new names: `render_to_folder`, `export_samples` (folder per export; single sample), `render_sweep` (stems folder; F10 MWAV `<typed base> - chNN.wav`), F10 WAV (typed name as typed), `batch_run` (patterns folder; dump as export); status texts show the display form; the import keeps `LL<HHMMSS>.WAV` in the sample field
+- [X] T049 RND selftest and port-only scripts updated to the new names (incl. a song name with `?`, `:` and a CP437 umlaut, a clash → ` (2)`); README / CHANGELOG / HANDOFF names updated
 
 ## Dependencies & Execution Order
 

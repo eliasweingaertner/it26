@@ -49,6 +49,17 @@ except for the one bug listed under Clarifications.
 - Q: F3 Ctrl-Right is IT 2.14's global "next order"; Esa's F3 export shadows it. → A: Keep IT's next order; the single-sample export moves to Ctrl-Alt-Right.
 - Q: Esa's F5 Ctrl-O dumps the samples (his handler treats a held Ctrl as Ctrl-Shift-Right), while his comment says it renders "for the muscle memory from F2/F11". → A: it26 renders, as the comment intends; the README notes the difference.
 
+### Session 2026-10-18 (follow-up: file names)
+
+- Q: Esa's 8.3 names (`LL163422.WAV`, `13424803.WAV`, `TWI0001.WAV`) say nothing about the content. What scheme instead? → A: Long, descriptive names and one folder per multi-file export (user, 2026-10-18), replacing the earlier "exactly Esa's names" decision:
+  - pattern → file: `<Song> - pattern NNN - YYYY-MM-DD HH.MM.SS.wav`
+  - sample export: folder `<Song> - samples YYYY-MM-DD HH.MM.SS` with `NN <sample name>.wav` (`NN.wav` when the sample has no name); one sample: `<Song> - NN <sample name>.wav`
+  - Shift-Alt-M stems: folder `<Song> - pattern NNN stems YYYY-MM-DD HH.MM.SS` with `chNN.wav`
+  - F10 WAV: the typed name as typed (`.wav` added without an extension); F10 MWAV: `<typed base> - chNN.wav`
+  - batch: folder `<Song> - patterns YYYY-MM-DD HH.MM.SS` with `pattern NNN.wav`; `--dump-samples` as the sample export
+  - `<Song>` = the song name, else the module's file name without extension, else `untitled`; IT's CP437 characters become their Unicode equivalents; `\ / : * ? " < > |` and control characters become `_`; trailing dots/spaces trimmed; each name at most 80 bytes; an existing name gets ` (2)`, ` (3)` … — nothing is overwritten.
+  - Unchanged: an imported sample's file-name field inside the module stays 8.3 (`LL<HHMMSS>.WAV`; the IT field is 12 bytes) — no file is written for imports.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Turn the pattern into a sample (Priority: P1)
@@ -113,7 +124,7 @@ with one key, or just the selected one.
 
 **Independent Test**: A song with 12 samples, F5, press D: twelve WAVs named
 `HHMMSSnn.WAV` (nn = slot) appear in the render folder; the status line reads
-"Dumped 12 samples as SMPnn.WAV"; the song keeps playing.
+"Dumped 12 samples as <HHMMSS>nn.WAV in <folder>"; the song keeps playing.
 
 **Acceptance Scenarios**:
 
@@ -204,7 +215,7 @@ the README describes them as extensions after Esa's fork.
 - **FR-002**: A song or pattern that was playing MUST be stopped for a single-pattern render and resumed afterwards in the same play mode and position; a sweep or whole-song render MUST NOT resume it; nothing MUST start when playback was stopped.
 - **FR-003**: Import renders MUST create the sample described in User Story 1 (slot rule, name, file name, loop, volumes, speed, 1 MB cap, host instrument in instrument mode, cursors, status text) and MUST NOT leave the WAV in the Quicksave folder.
 - **FR-004**: Quicksave-only renders MUST write `LL<HHMMSS>.WAV` into the render folder (Quicksave → sample folder → current folder) and report "Saved pat NNN as <file> in <folder>"; an invalid Quicksave folder MUST abort before anything changes.
-- **FR-005**: Sweep, whole-song and batch renders MUST be named `<PFX><NNNN>.WAV`: PFX = the song name's first 3 characters upper-cased, non-alphanumerics as X, padded with X, "PTN" for an empty name; NNNN a per-session counter starting at 0001. F10's typed names MUST win as described in User Story 4.
+- **FR-005**: Files written by renders and exports MUST carry the descriptive names and folders of Clarifications "follow-up: file names" (song, pattern / slot / channel, date and time), cleaned for Windows and macOS, never overwriting an existing file. F10's typed names MUST be used as typed. (Supersedes Esa's 8.3 names, 2026-10-18.)
 - **FR-006**: The key bindings in the Context table MUST be available on exactly those screens; every key IT 2.14 binds there MUST keep its behaviour (F11 Right/Shift-Right away from the right-most digit, plain G, F5 plain Right, F3 Alt-W, Ctrl-O on F3/F4/F12).
 - **FR-007**: Sample export MUST write each non-empty slot (or the selected one) as a WAV named HHMMSS + 2-digit slot, converting 8-bit data to unsigned, keeping 16-bit and stereo, without modifying the song, while playback continues.
 - **FR-008**: Shift-Alt-M MUST render the current pattern per non-empty, unmuted channel, solo, without import, restore the mutes, and stop after the current channel on Esc.

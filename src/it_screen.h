@@ -253,6 +253,7 @@ int Key_GetEvent(it_key_t *k);
 /* Unicode -> CP437; 0 = the character has no CP437 code and the
  * keystroke must be rejected (the module format cannot carry it). */
 uint16_t Screen_UnicodeToCP437(uint32_t u);
+uint16_t Screen_CP437ToUnicode(uint8_t c);     /* feature 018 */
 
 /* Character -> US set-1 scancode; 0 = unknown. For backends that report
  * characters but no physical position (the terminal). */

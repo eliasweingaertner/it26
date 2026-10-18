@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stddef.h>
 
 enum { RENDER_PATTERN = 0, RENDER_SONG = 1 };
 
@@ -49,6 +50,25 @@ void Render_NameUser(char *out, const char *typed);   /* song.wav -> SONG.WAV */
 void Render_NameChannel(char *out, const char *typed, int chan1); /* SONG03.WAV */
 void Render_ClockHHMMSS(char *out7);                  /* "163422"      */
 void Render_ResetCounter(void);                       /* selftest      */
+
+/* paths and names (2026-10-18: descriptive names instead of Esa's 8.3).
+ * Paths are UTF-8; Render_DirFromNative converts a folder the rest of
+ * it26 keeps (ANSI code page on Windows). */
+#define RENDER_NAME_MAX 80
+struct sample_t;
+FILE *Render_Fopen(const char *path_utf8, const char *mode);
+int   Render_Exists(const char *path_utf8);
+int   Render_MkDir(const char *path_utf8);
+void  Render_DirFromNative(char *out, size_t n, const char *native);
+void  Render_PathJoin(char *out, size_t n, const char *dir, const char *name);
+void  Render_ToDisplay(char *out, size_t n, const char *utf8);
+void  Render_CleanName(char *out, size_t n, const char *cp437, size_t len);
+void  Render_Stamp(char *out20);
+void  Render_Unique(char *out, size_t n, const char *dir, const char *base,
+                    const char *ext);
+int   Render_RemoveTree(const char *path_utf8);   /* selftest clean-up */
+int   Render_SaveSampleWav(const struct sample_t *s, const char *path_utf8,
+                           uint32_t rate);
 
 /* minimal WAV writer: 16-bit PCM (fmt 1) or 32-bit float (fmt 3) */
 typedef struct render_wav_t {

@@ -70,7 +70,7 @@ a folder picker. Saved as `quicksavedir=`.
 - `Saved pat NNN as <file> in <folder>`
 - `Render halted -- finalizing to Quicksave ...`
 - `Render aborted: Quicksave folder invalid (check F12)`
-- `Dumped N samples as SMPnn.WAV` · `No samples to dump`
+- `Dumped N samples as <HHMMSS>nn.WAV in <folder>` (it26: Esa's text says SMPnn.WAV, which his build no longer writes) · `No samples to dump`
 - `Saving selected sample as C-4 44.1kHz WAV...` · `Saved C-4 44.1kHz WAV (sample N)` · `Selected sample is empty.`
 - `Quick-save folder not configured.` · `Quick-save folder memorized.`
 - it26: stems / whole song progress `Rendering channel NN ...` / `Rendering song ...`

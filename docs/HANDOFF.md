@@ -1019,6 +1019,15 @@ Spec, plan, research (Esa's assembly cited per behaviour) and tasks:
   `DirQuicksave` (`quicksavedir=`), row 45, box to 46, button 47..49.
 - Batch: `ited --render-patterns <mod> [--pattern N]`, `--dump-samples
   <mod>` (`batch_run`, before mutex/window/device).
+- **Names** (2026-10-18, replacing Esa's 8.3 names on disk): paths are
+  UTF-8 inside the render layer (`Render_Fopen` / `Render_Exists` /
+  `Render_MkDir` use the wide API on Windows; `Render_DirFromNative`
+  converts the ANSI-code-page folders it26 keeps), `Render_CleanName`
+  (CP437 → UTF-8 via `Screen_CP437ToUnicode`, `\ / : * ? " < > |`,
+  controls and box glyphs → `_`, ≤ 80 bytes), `Render_Stamp`,
+  `Render_Unique` (` (2)`…), `Render_SaveSampleWav`; the editor's
+  `song_title`, `sample_file_label`, `RenderLastPath`. Imports keep the
+  8.3 `LL<HHMMSS>.WAV` only in the sample's 12-byte file-name field.
 - Tests: selftest block **RND** (21 blocks now); port-only scripts
   `build-compare/_work/rnd_gestures.py` (19 gestures) and `rnd_f10.py`.
 

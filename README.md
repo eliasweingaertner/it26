@@ -310,55 +310,198 @@ The defaults are the original's (44.1 kHz, 16-bit dithered, stereo, no
 filter, no feedback), and with them playback is bit-identical. Save
 Prefs stores the settings in `ited.cfg`.
 
-## Rendering (after Esa Ruoho's IT 2.354)
+## Rendering and exporting audio
 
-Esa Juhani Ruoho ([@esaruoho](https://github.com/esaruoho)) extends the
-original DOS source in his fork,
-[esaruoho/impulse-tracker](https://github.com/esaruoho/impulse-tracker),
-for working next to a DAW. it26 takes over his rendering set with his keys,
-file names and messages. Every render runs the real engine, faster than real
-time; a song that was playing stops for a pattern render and carries on where
-it was.
+it26 can bounce a pattern into a new sample, write patterns, single
+channels or the whole song as WAV files for a DAW, and export the samples
+of a song as WAV files. The idea and the key layout come from Esa Juhani
+Ruoho ([@esaruoho](https://github.com/esaruoho)), who added this set to
+the original DOS source in his fork
+[esaruoho/impulse-tracker](https://github.com/esaruoho/impulse-tracker)
+(IT 2.354) to use IT next to a DAW. it26 follows his keys and behaviour;
+the differences are listed at the end of this section.
 
-| Key | Where | What it does |
+### How a render works
+
+- **It is the real engine.** A render plays the pattern or song through
+  the same engine and mixer as live playback, just offline, so the file
+  sounds exactly like what you hear.
+- **Faster than real time.** A pattern takes a fraction of a second; a
+  whole song typically 15–100× faster than real time (measured: a
+  4:43 song in about 7 seconds).
+- **One pass of a pattern.** A pattern render plays the pattern once,
+  from its first to its last row, and stops there: no extra tail for
+  release or echo. Use the whole-song render if you need what rings on.
+- **Playback carries on.** If the song (or a pattern loop) is playing,
+  it pauses for a pattern render and continues at the same position
+  afterwards. Channel sweeps and whole-song renders don't resume.
+- **Stopping.** Esc, or pressing a render key again, stops a render; the
+  file is still finished properly. A channel sweep finishes the channel
+  it is on, then stops.
+- **The screen waits.** Keys pressed during a render (other than the stop
+  keys) are ignored.
+
+### The Quicksave folder
+
+Most renders and all sample exports go to the **Quicksave folder**. Set
+it in F12, on the new **Quicksave** row under Instrument: type a path,
+or press Enter (or Ctrl-O) for the system's folder picker. Save all
+Preferences stores it in `ited.cfg`. Shift-Alt-W makes the folder of
+the current module the Quicksave folder (and saves the preferences).
+
+Without a Quicksave folder, files go to the sample folder (F12 Sample).
+A Quicksave folder that doesn't exist (an unplugged drive, a gone network
+share) stops the render before anything happens:
+"Render aborted: Quicksave folder invalid (check F12)".
+
+### Render a pattern into a new sample
+
+| Key | Where | Pattern |
 |---|---|---|
-| Ctrl-O | F2 | render the pattern into a new sample |
-| Shift-Ctrl-O | F2 | render the pattern as a WAV into the Quicksave folder |
-| Ctrl-O, Shift-G, Right on an order's last digit | F11 | the playing pattern (stopped: the one at the cursor) into a new sample |
-| Shift-Ctrl-O, Ctrl-G, Shift-Right on the last digit | F11 | the same pattern as a WAV into the Quicksave folder |
-| Shift-Right, Ctrl-O | F5 | the playing pattern (stopped: the editor's) as a WAV into the Quicksave folder |
-| D, Ctrl-Shift-Right | F5 | every sample as its own WAV |
-| Ctrl-Shift-Right | F3, F11 | every sample as its own WAV |
-| Ctrl-Alt-Right | F3 | this sample as a WAV |
-| Shift-Alt-M | F2 | one WAV per channel of the pattern (channels with notes, not muted) |
-| "WAV" / "MWAV" format button | F10 | the whole song as one WAV / one WAV per unmuted channel, under the name you type |
-| Alt-W / Shift-Alt-W | any screen without its own Alt-W | save the module into the Quicksave folder / make the current folder the Quicksave folder |
+| Ctrl-O | F2 | the pattern in the editor |
+| Ctrl-O, Shift-G | F11 | the playing pattern; stopped: the one at the order cursor |
+| Right on the last digit of an order | F11 | the same |
 
-- **The Quicksave folder** is a new row in F12 (Enter or Ctrl-O picks a
-  folder). Renders and sample exports go there; without one, to the
-  sample folder.
-- **Into a sample**: the pattern plays once, from its first to its last
-  row, at 44.1 kHz into a 16-bit sample in the first slot free in both
-  the sample and instrument lists, looped, named "Pattern NNN" (1 MB at
-  most). In instrument mode an instrument is made for it. Stereo songs
-  are mixed to mono: IT samples are mono.
-- **As a WAV file**: 32-bit float at the Shift-F5 mixing rate, not
-  clipped — peaks above full scale stay in the file for the DAW.
-- **Names** are Esa's: `LL<HHMMSS>.WAV` for a pattern, `<song><NNNN>.WAV`
-  for channel and command-line renders, `HHMMSS<slot>.WAV` for samples,
-  `SONG01.WAV`… for MWAV.
-- **Esc** stops a render (a channel sweep stops after the channel it is
-  on); pressing a render key again does the same.
-- **From the command line**: `ited --render-patterns <module>` writes
-  every pattern that holds data (`--pattern N` for one), `ited
-  --dump-samples <module>` every sample, both into the Quicksave folder
-  from `ited.cfg`, and exit without opening a window.
+The new sample goes into the first slot that is free in **both** the
+sample and the instrument list, so sample N and its instrument N line up.
+It is a 16-bit, 44.1 kHz mono sample (IT samples are mono: a stereo song
+is mixed down), loops over its whole length, and is named "Pattern 005";
+default and global volume 64. In instrument mode an instrument is made
+for it (the same-numbered one if free). The F3/F4 cursor moves to it, and
+the status line says where it went: "Pat 005 -> LL153928.WAV -> sample
+012 in inst 012". A pattern longer than 1 MB of sample data (about 12
+seconds) is cut there ("Pattern truncated to 1MB"). No file is written;
+the 8.3 name in the sample's file-name field just labels it.
 
-Where it26 differs from Esa's build: F5's Ctrl-O renders, as his source
-comment intends (his build exports the samples there); F3's Ctrl-Right
-stays IT's "next order", so exporting one sample is Ctrl-Alt-Right;
-imported renders are mono (his keep IT's stereo bit, which IT's mixer
-doesn't play); WAV files are 32-bit float instead of 16-bit.
+### Render a pattern as a WAV file
+
+| Key | Where | Pattern |
+|---|---|---|
+| Shift-Ctrl-O | F2 | the pattern in the editor |
+| Shift-Ctrl-O, Ctrl-G | F11 | the playing pattern; stopped: the one at the order cursor |
+| Shift-Right on the last digit of an order | F11 | the same |
+| Shift-Right, Ctrl-O | F5 | the playing pattern; stopped: the one in the editor |
+
+The file lands in the Quicksave folder as
+`Believe in your dreams - pattern 005 - 2026-10-18 15.39.28.wav`.
+
+### Stems: one WAV per channel
+
+| Key / control | Where | What |
+|---|---|---|
+| Shift-Alt-M | F2 | the pattern in the editor, once per channel that has at least one note and isn't muted |
+| "MWAV" format button | F10 | the whole song, once per channel that isn't muted |
+
+Each file contains that channel alone; the mutes are as before
+afterwards. Shift-Alt-M writes a folder
+`Believe in your dreams - pattern 005 stems 2026-10-18 15.39.28` in the
+Quicksave folder with `ch01.wav`, `ch05.wav`, …; MWAV writes
+`<name> - ch01.wav`, `<name> - ch02.wav`, … next to where F10 saves,
+using the name you type. Mute the channels you don't want first: MWAV
+renders every unmuted channel, including empty ones (as in Esa's build),
+and each is a full pass through the song.
+
+### The whole song as one WAV
+
+In F10, select the **WAV** format button, type a name and press Enter:
+the song from its first order to its end is written under that name
+(`.wav` is added if you type no extension). Ctrl-S and Alt-W also render
+while WAV or MWAV is the selected format. A song that loops back on
+itself never ends; the render stops after 30 minutes or with Esc.
+
+### Export the samples
+
+| Key | Where | What |
+|---|---|---|
+| D, Ctrl-Shift-Right | F5 | every sample |
+| Ctrl-Shift-Right | F3, F11 | every sample |
+| Ctrl-Alt-Right | F3 | the selected sample |
+
+Exporting every sample makes a folder
+`Believe in your dreams - samples 2026-10-18 15.39.28` in the Quicksave
+folder with one file per sample: `03 Kick hard.wav`, `04 Snare 909.wav`, …
+(slot number and sample name; empty slots are skipped). The selected
+sample becomes `Believe in your dreams - 03 Kick hard.wav`. The files
+hold the sample data as it is stored: 8- or 16-bit, mono, at the sample's
+own speed; the single-sample export writes 44.1 kHz into the header, as
+Esa's does. The song itself is not touched, and playback continues.
+
+### Save the module to the Quicksave folder
+
+**Alt-W** saves the module into the Quicksave folder under its file name
+and format, without the F10 screen (an existing file is confirmed first).
+Without a Quicksave folder it says so and opens F10. F2, F3 and F4 keep
+IT's own Alt-W (wipe volumes, save sample, clear instrument); Alt-W works
+on every other screen. **Shift-Alt-W** works everywhere.
+
+### Formats
+
+| Render | Format |
+|---|---|
+| into a sample | 16-bit, 44.1 kHz, mono — what an IT sample can hold |
+| WAV files (patterns, stems, whole song, command line) | 32-bit float at the Shift-F5 mixing rate, stereo when the song is stereo |
+| sample export | the sample's own data: 8- or 16-bit mono |
+
+WAV files are **not clipped**: a loud mix keeps its peaks above full scale,
+so you can set the level in the DAW. (This float mode is used only for
+renders; Shift-F5's live output formats are unchanged.)
+
+### File names
+
+Files are named after what they hold, so they read well in a DAW's
+browser:
+
+| Render | Name |
+|---|---|
+| pattern | `<Song> - pattern 005 - 2026-10-18 15.39.28.wav` |
+| stems (Shift-Alt-M) | folder `<Song> - pattern 005 stems <date time>` with `ch01.wav` … |
+| whole song / MWAV (F10) | the name you type / `<name> - ch01.wav` … |
+| all samples | folder `<Song> - samples <date time>` with `03 <sample name>.wav` … |
+| one sample | `<Song> - 03 <sample name>.wav` |
+| command line | folder `<Song> - patterns <date time>` with `pattern 005.wav` … |
+
+`<Song>` is the song name, or the module's file name if the song has no
+name. Characters a file name can't hold (`\ / : * ? " < > |`) become `_`;
+IT's special characters keep their look (`ü` stays `ü`); names are kept
+under 80 characters. Nothing is ever overwritten: an existing name gets
+` (2)`, ` (3)`, ….
+
+### From the command line
+
+```
+ited --render-patterns song.it              # every pattern that holds data
+ited --render-patterns song.it --pattern 5  # just pattern 5
+ited --dump-samples song.it                 # every sample
+```
+
+These run without a window or a sound device, write into the Quicksave
+folder from `ited.cfg` (in the folder you run them from), print one
+`wrote <file>` line per file, and exit with status 0 (1 on an error: the
+module can't be loaded, the folder is invalid, a pattern number outside
+0–199). `-r <rate>` sets the mixing rate.
+
+### F1
+
+The help of each screen lists its render keys at the bottom, under
+"it26 additions".
+
+### Differences from Esa's build
+
+- **File names:** long, descriptive names and a folder per export instead
+  of his 8.3 names (`LL153928.WAV`, `16342203.WAV`, `TWI0001.WAV`).
+- **WAV files** are 32-bit float, unclipped, at the Shift-F5 rate; his are
+  16-bit.
+- **Renders into a sample are mono.** His set IT's stereo bit, which IT's
+  mixer doesn't play (the sample sounds at twice the speed).
+- **F3:** exporting the selected sample is Ctrl-Alt-Right; his Ctrl-Right
+  would hide IT's "next order" there.
+- **F5 Ctrl-O renders the pattern**, as his source comment says it should;
+  his build exports the samples on that key.
+- **Whole songs render faster than real time;** his run in real time
+  because of the DOS driver model. The file is the same.
+- Left out as DOS specifics: driver swapping, the C:\TEMP staging folder,
+  on-screen diagnostic markers, the CTRLOLOG.TXT / PATLOG.TXT logs, and the
+  MIDI-clock trigger for resuming (part of his MIDI sync feature).
 
 ## Classic IT, with a twist
 
@@ -382,7 +525,7 @@ system does. These are the places where it26 is not the DOS binary.
   `Keyboard/*.ASM` tables).
 - **Rendering** (Ctrl-O, Shift-Ctrl-O, the F11 / F5 / F3 render keys,
   Shift-Alt-M, F10's WAV / MWAV buttons, Alt-W, the command-line options):
-  after Esa Ruoho's IT 2.354 fork, see [Rendering](#rendering-after-esa-ruohos-it-2354).
+  after Esa Ruoho's IT 2.354 fork, see [Rendering and exporting audio](#rendering-and-exporting-audio).
   F10 gets two more format buttons and F12 a Quicksave row (the directory
   box is one row taller, "Save all Preferences" one row lower), laid out
   as in his fork.

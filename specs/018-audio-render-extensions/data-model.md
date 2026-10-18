@@ -50,7 +50,21 @@ current folder.
 Per-session integer, 0 at start, incremented before each counter-named
 render; formatted as 4 digits.
 
-## File names (Esa's rules)
+## File names (2026-10-18: descriptive; Esa's 8.3 rules below are historical)
+
+| Render | Name |
+|---|---|
+| pattern → file | `<Song> - pattern NNN - YYYY-MM-DD HH.MM.SS.wav` |
+| import (no file; the sample's file-name field only) | `LL` + HHMMSS + `.WAV` (8.3: the IT field is 12 bytes) |
+| sample export | folder `<Song> - samples <stamp>` / `NN <sample name>.wav` |
+| one sample | `<Song> - NN <sample name>.wav` |
+| Shift-Alt-M | folder `<Song> - pattern NNN stems <stamp>` / `chNN.wav` |
+| F10 WAV / MWAV | typed name / `<typed base> - chNN.wav` |
+| batch patterns | folder `<Song> - patterns <stamp>` / `pattern NNN.wav` |
+
+Cleaning: CP437 → Unicode (UTF-8), `\ / : * ? " < > |` and controls → `_`, trailing dots/spaces trimmed, ≤ 80 bytes per name, ` (2)` … on a clash.
+
+### Esa's rules (historical)
 
 | Render | Name |
 |---|---|

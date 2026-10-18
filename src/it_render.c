@@ -16,9 +16,19 @@
 #include <string.h>
 #include <time.h>
 #include <ctype.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <direct.h>
+#include <wchar.h>
+#else
+#include <dirent.h>
+#include <unistd.h>
+#endif
 
 #include "it_music.h"
 #include "it_pattern.h"
+#include "it_screen.h"                  /* CP437 <-> Unicode */
 #include "it_render.h"
 
 void     WAVDriver_RenderAny(void *dst, uint32_t frames);
@@ -68,7 +78,7 @@ int Render_WavOpen(render_wav_t *w, const char *path, int is_float,
     w->is_float = is_float;
     w->channels = channels;
     w->rate = rate;
-    w->fp = fopen(path, "wb");
+    w->fp = Render_Fopen(path, "wb");
     if (!w->fp)
         return 0;
     wav_header(h, w);                   /* sizes patched on close */
@@ -94,6 +104,279 @@ int Render_WavClose(render_wav_t *w)
     ok = fseek(w->fp, 0, SEEK_SET) == 0 && fwrite(h, 1, 44, w->fp) == 44;
     ok = (fclose(w->fp) == 0) && ok;
     w->fp = NULL;
+    return ok;
+}
+
+
+/* ---- paths: UTF-8 inside, the platform's own calls outside ------------
+ * File names now carry the song and sample names (2026-10-18), so they
+ * can hold any character IT's CP437 has. Windows needs the wide API for
+ * that; the folder names the rest of it26 keeps (DirSample, the
+ * Quicksave folder) are in the ANSI code page there. */
+#ifdef _WIN32
+static int utf8_to_wide(const char *s, wchar_t *w, int cap)
+{
+    return MultiByteToWideChar(CP_UTF8, 0, s, -1, w, cap) > 0;
+}
+#endif
+
+FILE *Render_Fopen(const char *path, const char *mode)
+{
+#ifdef _WIN32
+    wchar_t wp[1024], wm[8];
+    if (!utf8_to_wide(path, wp, 1024) || !utf8_to_wide(mode, wm, 8))
+        return NULL;
+    return _wfopen(wp, wm);
+#else
+    return fopen(path, mode);
+#endif
+}
+
+int Render_Exists(const char *path)
+{
+#ifdef _WIN32
+    wchar_t wp[1024];
+    return utf8_to_wide(path, wp, 1024) &&
+           GetFileAttributesW(wp) != INVALID_FILE_ATTRIBUTES;
+#else
+    struct stat st;
+    return stat(path, &st) == 0;
+#endif
+}
+
+int Render_MkDir(const char *path)
+{
+#ifdef _WIN32
+    wchar_t wp[1024];
+    return utf8_to_wide(path, wp, 1024) && CreateDirectoryW(wp, NULL);
+#else
+    return mkdir(path, 0777) == 0;
+#endif
+}
+
+void Render_DirFromNative(char *out, size_t n, const char *native)
+{
+#ifdef _WIN32
+    wchar_t w[1024];
+    if (!MultiByteToWideChar(CP_ACP, 0, native, -1, w, 1024) ||
+        !WideCharToMultiByte(CP_UTF8, 0, w, -1, out, (int)n, NULL, NULL))
+        snprintf(out, n, "%s", native);
+#else
+    snprintf(out, n, "%s", native);
+#endif
+}
+
+void Render_PathJoin(char *out, size_t n, const char *dir, const char *name)
+{
+    size_t l = strlen(dir);
+    int sep = l && (dir[l - 1] == '/' || dir[l - 1] == '\\');
+    snprintf(out, n, "%s%s%s", dir, sep ? "" : "/", name);
+}
+
+/* decode one UTF-8 character; returns its length (1 on a bad byte) */
+static int utf8_next(const unsigned char *s, uint32_t *u)
+{
+    if (s[0] < 0x80) { *u = s[0]; return 1; }
+    if ((s[0] & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80) {
+        *u = ((uint32_t)(s[0] & 0x1F) << 6) | (s[1] & 0x3F);
+        return 2;
+    }
+    if ((s[0] & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80) {
+        *u = ((uint32_t)(s[0] & 0x0F) << 12) |
+             ((uint32_t)(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+        return 3;
+    }
+    if ((s[0] & 0xF8) == 0xF0 && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+        *u = 0x10000;                   /* outside CP437 anyway */
+        return 4;
+    }
+    *u = '?';
+    return 1;
+}
+
+/* UTF-8 -> CP437 for the status line ('?' where CP437 has nothing) */
+void Render_ToDisplay(char *out, size_t n, const char *utf8)
+{
+    const unsigned char *s = (const unsigned char *)utf8;
+    size_t o = 0;
+
+    while (*s && o + 1 < n) {
+        uint32_t u;
+        uint16_t c;
+        s += utf8_next(s, &u);
+        c = u >= 32 ? Screen_UnicodeToCP437(u) : 0;
+        out[o++] = (char)(c ? c : '?');
+    }
+    out[o] = 0;
+}
+
+static size_t put_utf8(char *o, uint32_t u)
+{
+    if (u < 0x80) { o[0] = (char)u; return 1; }
+    if (u < 0x800) {
+        o[0] = (char)(0xC0 | (u >> 6));
+        o[1] = (char)(0x80 | (u & 0x3F));
+        return 2;
+    }
+    o[0] = (char)(0xE0 | (u >> 12));
+    o[1] = (char)(0x80 | ((u >> 6) & 0x3F));
+    o[2] = (char)(0x80 | (u & 0x3F));
+    return 3;
+}
+
+/* A name for the file system from IT text (CP437, up to `len` bytes, 0
+ * ends it): characters as Unicode in UTF-8, \ / : * ? " < > | and
+ * controls as '_', runs of spaces kept, leading/trailing spaces and
+ * trailing dots dropped, at most RENDER_NAME_MAX bytes on a character
+ * boundary. Empty when nothing is left. */
+void Render_CleanName(char *out, size_t n, const char *cp437, size_t len)
+{
+    size_t o = 0, i;
+    size_t cap = n - 1 < RENDER_NAME_MAX ? n - 1 : RENDER_NAME_MAX;
+
+    for (i = 0; i < len && cp437[i]; i++) {
+        uint8_t c = (uint8_t)cp437[i];
+        uint32_t u = Screen_CP437ToUnicode(c);
+        char tmp[4];
+        size_t k;
+        if (c < 32 || u < 32 || strchr("\\/:*?\"<>|", (int)c) ||
+            (u >= 0x2500 && u <= 0x25FF))   /* box drawing / blocks */
+            u = '_';
+        if (o == 0 && u == ' ')
+            continue;
+        k = put_utf8(tmp, u);
+        if (o + k > cap)
+            break;
+        memcpy(out + o, tmp, k);
+        o += k;
+    }
+    while (o && (out[o - 1] == ' ' || out[o - 1] == '.'))
+        o--;
+    out[o] = 0;
+}
+
+/* "2026-10-18 15.39.28" (no ':' -- Windows forbids it in names) */
+void Render_Stamp(char *out20)
+{
+    time_t t = time(NULL);
+    struct tm *lt = localtime(&t);
+    if (lt)
+        strftime(out20, 20, "%Y-%m-%d %H.%M.%S", lt);
+    else
+        snprintf(out20, 20, "0000-00-00 00.00.00");
+}
+
+/* `dir`/`base``ext` if free, else `base (2)``ext`, (3) ... */
+void Render_Unique(char *out, size_t n, const char *dir, const char *base,
+                   const char *ext)
+{
+    char name[RENDER_NAME_MAX + 32];
+    int k;
+
+    snprintf(name, sizeof(name), "%s%s", base, ext);
+    Render_PathJoin(out, n, dir, name);
+    for (k = 2; Render_Exists(out) && k < 1000; k++) {
+        snprintf(name, sizeof(name), "%s (%d)%s", base, k, ext);
+        Render_PathJoin(out, n, dir, name);
+    }
+}
+
+/* delete a folder with everything in it (the selftest's clean-up) */
+int Render_RemoveTree(const char *path)
+{
+#ifdef _WIN32
+    wchar_t wp[1024], pat[1040];
+    WIN32_FIND_DATAW fd;
+    HANDLE h;
+    if (!utf8_to_wide(path, wp, 1024))
+        return 0;
+    swprintf(pat, 1040, L"%ls\\*", wp);
+    h = FindFirstFileW(pat, &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            wchar_t child[1100];
+            if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L".."))
+                continue;
+            swprintf(child, 1100, L"%ls\\%ls", wp, fd.cFileName);
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                char c8[1100];
+                if (WideCharToMultiByte(CP_UTF8, 0, child, -1, c8, sizeof(c8),
+                                        NULL, NULL))
+                    Render_RemoveTree(c8);
+            } else {
+                DeleteFileW(child);
+            }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    return RemoveDirectoryW(wp) != 0;
+#else
+    DIR *d = opendir(path);
+    struct dirent *e;
+    if (d) {
+        while ((e = readdir(d))) {
+            char child[1100];
+            struct stat st;
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+                continue;
+            snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+            if (stat(child, &st) == 0 && S_ISDIR(st.st_mode))
+                Render_RemoveTree(child);
+            else
+                remove(child);
+        }
+        closedir(d);
+    }
+    return rmdir(path) == 0;
+#endif
+}
+
+/* the sample as a WAV: mono, 8-bit unsigned or 16-bit signed (as
+ * RIS_SaveWAV), the header at `rate` */
+int Render_SaveSampleWav(const sample_t *s, const char *path, uint32_t rate)
+{
+    uint8_t h[44];
+    int is16 = (s->Flags & 2) != 0;
+    uint32_t bytes = s->Length << (is16 ? 1 : 0), i;
+    FILE *f;
+    int ok;
+
+    memset(h, 0, 44);
+    memcpy(h, "RIFF", 4);
+    put32(h + 4, 36 + bytes);
+    memcpy(h + 8, "WAVEfmt ", 8);
+    put32(h + 16, 16);
+    h[20] = 1;
+    h[22] = 1;
+    put32(h + 24, rate);
+    put32(h + 28, rate * (is16 ? 2u : 1u));
+    h[32] = (uint8_t)(is16 ? 2 : 1);
+    h[34] = (uint8_t)(is16 ? 16 : 8);
+    memcpy(h + 36, "data", 4);
+    put32(h + 40, bytes);
+
+    f = Render_Fopen(path, "wb");
+    if (!f)
+        return 0;
+    ok = fwrite(h, 1, 44, f) == 44;
+    if (ok && bytes && s->Data) {
+        if (is16) {
+            ok = fwrite(s->Data, 1, bytes, f) == bytes;
+        } else {                        /* signed -> unsigned, a copy */
+            const int8_t *d = (const int8_t *)s->Data;
+            uint8_t buf[4096];
+            for (i = 0; ok && i < bytes; ) {
+                uint32_t k, m = bytes - i < 4096 ? bytes - i : 4096;
+                for (k = 0; k < m; k++)
+                    buf[k] = (uint8_t)(d[i + k] + 128);
+                ok = fwrite(buf, 1, m, f) == m;
+                i += m;
+            }
+        }
+    }
+    ok = (fclose(f) == 0) && ok;
     return ok;
 }
 

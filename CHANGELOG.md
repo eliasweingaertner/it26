@@ -17,7 +17,9 @@
   folder; `ited --render-patterns` / `--dump-samples` from the command
   line. Renders run faster than real time and resume playback; WAV files
   are 32-bit float, not clipped, at the Shift-F5 rate; imports are
-  IT-compatible 44.1 kHz 16-bit mono samples.
+  IT-compatible 44.1 kHz 16-bit mono samples. Files are named after what
+  they hold (song, pattern / sample, date and time), multi-file exports
+  get their own folder, and nothing is overwritten.
 
 ## v0.8.0 — 2026-10-13
 

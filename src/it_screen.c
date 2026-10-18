@@ -1187,6 +1187,12 @@ static const uint16_t CP437High[128] = {
     0x00B0,0x2219,0x00B7,0x221A,0x207F,0x00B2,0x25A0,0x00A0  /* F8 */
 };
 
+/* CP437 -> Unicode (feature 018: module text in file names) */
+uint16_t Screen_CP437ToUnicode(uint8_t c)
+{
+    return c < 0x80 ? c : CP437High[c - 0x80];
+}
+
 /* Unicode -> CP437. Returns 0 when the character has no CP437 code,
  * which the caller must treat as "reject the keystroke". */
 uint16_t Screen_UnicodeToCP437(uint32_t u)

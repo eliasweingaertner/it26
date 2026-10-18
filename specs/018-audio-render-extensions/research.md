@@ -45,16 +45,19 @@ README; it26 `src/`. Line numbers refer to his tree at that commit.
 
 ## R7 — Names
 
+> **Superseded for files on disk (2026-10-18)**: it26 writes descriptive long names, one folder per multi-file export (spec Clarifications "follow-up: file names"). Esa's rules below remain for reference and for the imported sample's 8.3 file-name field.
+
+
 - **Decision**:
   - single-pattern renders: `LL` + HHMMSS (local 24-hour clock) + `.WAV` (`WAV_BuildTimestampBasename`, 2870);
   - Shift-Alt-M sweep, whole-song without a typed name, batch: `<PFX><NNNN>.WAV` — PFX = song name bytes 0..2 upper-cased, non-alphanumeric → `X`, a 0 or space before 3 characters pads the rest with `X`, empty name (first byte 0 or space) → `PTN`; NNNN = `WAV_RenderCounter`, incremented before use, starting at 0 per session (`WAV_BuildCounterName`, 6189);
   - F10 WAV with a typed name: the name as typed, upper-cased, `.WAV` if none; MWAV: base cut to 6 characters + 2-digit 1-based channel + extension (`WAV_BuildChannelFilename`, 2714);
-  - sample export: HHMMSS of the export start + 2-digit slot + `.WAV` (`D_DumpBuildRunPrefix` / `D_DumpBuildName`); status text still says "SMPnn.WAV" (`DumpAllSamplesMsg`), kept verbatim.
+  - sample export: HHMMSS of the export start + 2-digit slot + `.WAV` (`D_DumpBuildRunPrefix` / `D_DumpBuildName`); Esa's status text still says "SMPnn.WAV" (`DumpAllSamplesMsg`); it26 shows the real pattern and folder instead ("Dumped N samples as HHMMSSnn.WAV in <folder>", 2026-10-18, user report).
 - **Rationale**: as cited. Batch forces counter naming (`WAV_BatchNaming`) because several renders finish within one second.
 
 ## R8 — Sample export
 
-- **Decision**: slots 1..99, non-empty only, each through `RIS_SaveWAV` (8-bit written unsigned, 16-bit signed) into the render folder; stereo samples keep 2 channels (to be added to `RIS_SaveWAV`'s header path if not yet handled — check in implementation); playback continues. Selected-sample export (F3 Ctrl-Right) writes from a header copy whose C5 speed is set to 44100 ("Saving selected sample as C-4 44.1kHz WAV..." / "Saved C-4 44.1kHz WAV (sample N)"), "Selected sample is empty." on an empty slot. "No samples to dump" when there is nothing; otherwise "Dumped N samples as SMPnn.WAV".
+- **Decision**: slots 1..99, non-empty only, each through `RIS_SaveWAV` (8-bit written unsigned, 16-bit signed) into the render folder; stereo samples keep 2 channels (to be added to `RIS_SaveWAV`'s header path if not yet handled — check in implementation); playback continues. Selected-sample export (F3 Ctrl-Right) writes from a header copy whose C5 speed is set to 44100 ("Saving selected sample as C-4 44.1kHz WAV..." / "Saved C-4 44.1kHz WAV (sample N)"), "Selected sample is empty." on an empty slot. "No samples to dump" when there is nothing; otherwise "Dumped N samples as <HHMMSS>nn.WAV in <folder>".
 - **Rationale**: `D_DumpAllSamplesWAV` with `DumpOnlySample` (IT_DISK.ASM), `D_DumpAll_KeepSampleRate`, messages at IT_DISK.ASM 768–803. The EMS interlock and the in-place sign-flip bug fix are DOS specifics; it26 reads sample memory without modifying it.
 
 ## R9 — Gestures and precedence
