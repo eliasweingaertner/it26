@@ -1,25 +1,60 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 — 2026-10-18
+
+**Rendering and exporting audio.** Bounce a pattern into a new sample with
+one key, write patterns, single channels or the whole song as WAV files for
+your DAW, and export a song's samples. The idea and the key layout come
+from **Esa Juhani Ruoho (@esaruoho)**, who added this set to the original
+DOS source in his fork
+[esaruoho/impulse-tracker](https://github.com/esaruoho/impulse-tracker)
+(IT 2.354). Thanks, Esa! README → "Rendering and exporting audio" has the
+whole guide.
 
 ### New
 
-- **Rendering, after Esa Juhani Ruoho's IT 2.354 fork**
-  ([esaruoho/impulse-tracker](https://github.com/esaruoho/impulse-tracker)):
-  Ctrl-O renders the pattern into a new sample (looped, "Pattern NNN"),
-  Shift-Ctrl-O renders it as a WAV into a new **Quicksave folder** (F12);
-  the same from F11 (Ctrl-O / Shift-G / Ctrl-G, Right and Shift-Right on an
-  order's last digit) and F5 (Shift-Right); every sample as a WAV (F5 D,
-  Ctrl-Shift-Right on F3/F5/F11, one sample with Ctrl-Alt-Right on F3);
-  one WAV per channel (Shift-Alt-M); the whole song as one WAV or one per
-  channel (F10's new WAV / MWAV buttons); Alt-W saves the module into the
-  Quicksave folder, Shift-Alt-W makes the current folder the Quicksave
-  folder; `ited --render-patterns` / `--dump-samples` from the command
-  line. Renders run faster than real time and resume playback; WAV files
-  are 32-bit float, not clipped, at the Shift-F5 rate; imports are
-  IT-compatible 44.1 kHz 16-bit mono samples. Files are named after what
-  they hold (song, pattern / sample, date and time), multi-file exports
-  get their own folder, and nothing is overwritten.
+| Key | Where | What |
+|---|---|---|
+| Ctrl-O | F2 | the pattern → a new sample (looped, "Pattern 005") |
+| Shift-Ctrl-O | F2 | the pattern → a WAV in the Quicksave folder |
+| Ctrl-O, Shift-G, Right on an order's last digit | F11 | the playing pattern → a new sample |
+| Shift-Ctrl-O, Ctrl-G, Shift-Right on the last digit | F11 | the playing pattern → a WAV |
+| Shift-Right, Ctrl-O | F5 | the playing pattern → a WAV |
+| D, Ctrl-Shift-Right | F5 (Ctrl-Shift-Right also F3, F11) | every sample → its own WAV |
+| Ctrl-Alt-Right | F3 | the selected sample → a WAV |
+| Shift-Alt-M | F2 | one WAV per channel of the pattern |
+| WAV / MWAV buttons | F10 | the whole song → one WAV / one WAV per channel |
+| Alt-W / Shift-Alt-W | screens without their own Alt-W / everywhere | save the module into the Quicksave folder / make this folder the Quicksave folder |
+
+- **Quicksave folder:** a new row in F12 (Enter or Ctrl-O picks a folder).
+  Renders and sample exports go there.
+- **Fast and seamless:** renders use the real engine, run 15–100× faster
+  than real time, and a playing song carries on where it was.
+- **WAV files for the DAW** are 32-bit float at the Shift-F5 rate and are
+  not clipped. **Renders into a sample** are IT-compatible 16-bit,
+  44.1 kHz mono samples, in the first slot free in both the sample and
+  the instrument list (with an instrument in instrument mode).
+- **Readable file names:** `Believe in your dreams - pattern 005 -
+  2026-10-18 15.39.28.wav`; sample exports and stems get their own folder
+  (`03 Kick hard.wav`, `ch01.wav`, …). Nothing is ever overwritten.
+- **Command line:** `ited --render-patterns <module> [--pattern N]` and
+  `ited --dump-samples <module>` write the files and exit, without a
+  window or a sound device.
+- **Esc** (or the render key again) stops a render; F1 lists every new
+  key under "it26 additions".
+
+### Notes
+
+- Where it26 differs from Esa's build: long file names instead of DOS
+  8.3 names, 32-bit float WAVs, mono imports (IT can't play stereo
+  samples), F3's selected-sample export on Ctrl-Alt-Right (Ctrl-Right
+  stays IT's "next order"), and F5's Ctrl-O renders, as his source says
+  it should.
+- F10 has two more format buttons and F12 a Quicksave row (the
+  directory box is one row taller, "Save all Preferences" one row lower),
+  laid out as in Esa's fork.
+
+**Full commit list:** https://github.com/eliasweingaertner/it26/compare/v0.8.0...v0.9.0
 
 ## v0.8.0 — 2026-10-13
 
