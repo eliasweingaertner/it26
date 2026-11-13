@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+**SFZ and SoundFont 2 instruments.** The Load Instrument screen reads
+`.sfz` instruments and the presets of `.sf2` files and turns them into IT
+instruments, one sound per key (README → "SFZ and SoundFont 2
+instruments").
+
+- `.sfz`: WAV (8..32-bit, float), AIFF and FLAC samples; `#include`,
+  `#define`, `default_path`, the global/master/group/region hierarchy;
+  loudest velocity layer, first round robin, default key switch and
+  controllers; loops from the SFZ or the sample file.
+- `.sf2`: listed like a module, presets as `bank:program name`; preset and
+  instrument zones layered as the SoundFont spec says; left/right sample
+  pairs become stereo samples. Large SoundFonts open without being read
+  whole.
+- Pitch, loops, volume, pan, the amplitude envelope and a low-pass filter
+  carry over; instruments needing more samples than are free are thinned
+  to fit (every key keeps the right pitch).
+- `ited --sfi-test <folder>` checks whole libraries from the command line.
+
 **Stereo samples.** Stereo samples load, play, edit and save in stereo
 instead of being cut to one channel (README → "Stereo samples").
 

@@ -553,6 +553,74 @@ left channel's data followed by the right channel's).
   when loaded -- IT samples are 8- or 16-bit -- and the file's full sample
   rate is used.
 
+## SFZ and SoundFont 2 instruments
+
+The Load Instrument screen (F4 → Enter, Ctrl-F4, Ctrl-O's system dialog)
+reads two more formats besides IT's .ITI, .XI and the instruments inside
+IT / XM modules:
+
+- **`.sfz`** -- a text file that maps sample files (WAV, AIFF, FLAC) to
+  keys. It is listed as an instrument named after the file; Enter loads it
+  into the current instrument.
+- **`.sf2`** (SoundFont 2) -- one file holding samples and many presets.
+  It is listed like a module ("SoundFont2"); Enter opens it and lists the
+  presets as `bank:program name`, Enter on a preset loads it.
+
+The result is an ordinary IT instrument with ordinary IT samples, so the
+song plays in IT 2.14, OpenMPT and Schism Tracker as well. An IT
+instrument is simpler than an SFZ / SF2 one -- one sample per key, no
+velocity layers, one volume envelope -- so the conversion picks **one
+sound per key**, always the same way:
+
+- **Velocity layers:** the loudest layer (the one reaching the highest
+  velocity). IT plays a note at full volume unless you set a volume.
+- **Round robins / random alternatives:** the first one. **Stacked
+  layers** on the same key: the first in the file.
+- **Key switches and controllers:** the default switch (`sw_default`, else
+  the lowest switch used) and the controllers at their default values
+  (`set_ccN`, else 0). A file gated as a whole on a controller still
+  loads.
+- **Release-trigger regions** are left out, unless the file has nothing
+  else.
+- **Pitch:** root key, transpose and tuning are built into each sample's
+  C-5 speed, so every key plays the note it plays in the SFZ / SF2 (MIDI
+  note 60 = IT's C-5). The same audio used with different root keys
+  becomes separate IT samples; identical uses share one.
+- **Loops:** from the SFZ, else from the sample file (WAV `smpl`, AIFF
+  markers); from the SF2 sample. A loop that plays only while the key is
+  held (`loop_sustain`, SF2 mode 3) becomes an IT sustain loop.
+- **Stereo:** stereo sample files and SF2 left/right sample pairs become
+  stereo IT samples (see [Stereo samples](#stereo-samples)).
+- **Volume and pan** go into each sample's global volume and default pan.
+  IT cannot make a sample louder than it is, so gains above 0 dB are cut.
+- **Envelope:** the amplitude envelope (delay, attack, hold, decay,
+  sustain, release) of the sound at C-5 becomes the instrument's volume
+  envelope, with a sustain point so the release plays at note-off. IT's
+  envelopes run in ticks, so the times are right at IT's default tempo
+  (125, 50 ticks a second) and scale with other tempos.
+- **Filter:** a low-pass filter becomes the instrument's filter cutoff
+  and resonance; above about 5 kHz (the top of IT's filter) it is left
+  off.
+- **Big instruments:** a song holds 99 samples. An instrument that needs
+  more than are free (a piano with a sample per key) is **thinned**:
+  samples spread evenly over the keyboard are kept, and every key plays
+  the nearest one, still at the right pitch. The status line says "reduced
+  from N to M samples".
+- **Missing or unreadable sample files** are skipped and named on the
+  status line; their keys play the nearest sample that loaded. Sample
+  paths are looked up next to the .sfz, then in up to three parent
+  folders (libraries that keep their programs in a subfolder), and
+  without regard to upper/lower case.
+- **Not converted:** velocity curves, LFOs, modulators, EQ and effects,
+  filter types other than low-pass, pitch key-tracking other than 100 %,
+  Ogg Vorbis samples, SF3 (compressed SoundFonts) and presets that use a
+  sound card's ROM samples (old AWE32 / SB Live GM sets).
+
+Command line, for checking a whole library at once:
+`ited --sfi-test <folder or file>...` loads every .sfz and every SF2
+preset into an empty song and prints one line each (`OK` / `FAIL`,
+samples needed / loaded / skipped, time, reason), then a summary.
+
 ## Classic IT, with a twist
 
 The playback engine and the classic interface behave like IT, bugs
@@ -587,6 +655,9 @@ system does. These are the places where it26 is not the DOS binary.
   auditioned the entry). Nothing plays and the song keeps running; the
   first note key still stops the song as in IT. Stereo samples show two
   lanes, left above right.
+- **SFZ and SoundFont 2 instruments** load on the Load Instrument screen,
+  converted to IT instruments with one sound per key; see
+  [SFZ and SoundFont 2 instruments](#sfz-and-soundfont-2-instruments).
 - **Sample size and WAV formats:** samples up to OpenMPT's / Schism's
   length limit; 24/32-bit and float WAVs load as 16-bit (see
   [Sample size and WAV formats](#sample-size-and-wav-formats)).

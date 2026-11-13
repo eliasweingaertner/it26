@@ -12,6 +12,7 @@
 #define IT_RIS_H
 
 #include "it_music.h"
+#include "it_sfimport.h"                /* feature 020 */
 
 /* ---- sample library ----------------------------------------------
  * One entry mirrors a 96-byte DiskDataArea record: an ITS header
@@ -62,7 +63,8 @@ int RIS_KnownExt(const char *name);
 
 /* ---- instrument library ------------------------------------------
  * 48-byte record equivalent. Formats (InstrumentLoaderTable codes):
- * 3=.ITI file, 4=.XI file, 5=instrument in .IT, 6=instrument in .XM */
+ * 3=.ITI file, 4=.XI file, 5=instrument in .IT, 6=instrument in .XM;
+ * it26 (feature 020): RI_FMT_SFZ / RI_FMT_SF2PRESET / RI_FMT_SF2 below */
 typedef struct ilibent_t {
     uint8_t  Format;
     char     Name[27];
@@ -76,6 +78,15 @@ typedef struct ilibent_t {
 } ilibent_t;
 
 int RI_ScanModule(const char *path, ilibent_t *ents, int max);
+
+/* it26, feature 020: SFZ / SoundFont 2. Bit 3 marks a library (opens in
+ * place, sorts with the modules), as formats 8 and 9 do. */
+#define RI_FMT_SFZ        0x10      /* .sfz file: one instrument          */
+#define RI_FMT_SF2PRESET  0x11      /* preset inside an .sf2 (Offset)     */
+#define RI_FMT_SF2        0x18      /* .sf2 file: library of presets      */
+static inline int RI_IsLibrary(int fmt) { return (fmt & 8) != 0; }
+/* what the last RI_LoadInstrument of an SFZ / SF2 preset did */
+extern sfi_report_t RI_LastReport;
 
 /* #27: D_LoadInstrumentFiles + D_GetInstrumentInfo + D_SlowInstrumentSort
  * for the Load Instrument screen. Formats as the original's record byte

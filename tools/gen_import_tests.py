@@ -527,6 +527,254 @@ def gen_ls_fixture(root):
     open(root + '/README.TXT', 'w').write('not a sample\n')
 
 
+# ---------------------------------------------------------------------
+# Feature 020: SFZ / SoundFont 2 fixture (testdata/sfi_fixture). Sample
+# values follow the formulas below; the selftest block SFI recomputes
+# them (src/it_editor.c). Expected conversions: specs/020-sfz-sf2-import.
+# ---------------------------------------------------------------------
+
+def sfi_tone16(i):
+    return (i * 37) % 20000 - 10000
+
+
+def sfi_st24(i):
+    return i * 50 - 12000, 12000 - i * 50
+
+
+def sfi_aif(i):
+    return (i * 13) % 4000 - 2000
+
+
+def sfi_flac(i):
+    return (i * 101) % 30000 - 15000
+
+
+def sfi_sf2mono(i):
+    return (i * 29) % 16000 - 8000
+
+
+def _riff_chunk(cid, data):
+    return cid + struct.pack('<I', len(data)) + data + \
+        (b'\x00' if len(data) & 1 else b'')
+
+
+def _sfi_wav(path, rate, nch, bits, frames, smpl=None):
+    """frames: list of per-frame tuples of 16-bit values; 24-bit data is
+    written as value << 8 (decodes back to the same 16-bit value)"""
+    bps = bits // 8
+    data = bytearray()
+    for fr in frames:
+        for v in fr:
+            if bits == 16:
+                data += struct.pack('<h', v)
+            else:
+                data += struct.pack('<i', v << 8)[:3]
+    fmt = struct.pack('<HHIIHH', 1, nch, rate, rate * nch * bps,
+                      nch * bps, bits)
+    body = b'WAVE' + _riff_chunk(b'fmt ', fmt)
+    if smpl:
+        start, end_incl = smpl
+        s = struct.pack('<9I', 0, 0, 1000000000 // rate, 60, 0, 0, 0, 1, 0)
+        s += struct.pack('<6I', 0, 0, start, end_incl, 0, 0)
+        body += _riff_chunk(b'smpl', s)
+    body += _riff_chunk(b'data', bytes(data))
+    with open(path, 'wb') as f:
+        f.write(b'RIFF' + struct.pack('<I', len(body)) + body)
+
+
+def _ext80(rate):
+    bl = rate.bit_length()
+    return struct.pack('>HQ', 16383 + bl - 1, rate << (64 - bl))
+
+
+def _sfi_aiff(path):
+    n = 600
+    comm = struct.pack('>hIh', 1, n, 16) + _ext80(8000)
+    mark = struct.pack('>H', 2)
+    for mid, pos, name in ((1, 100, b'beg'), (2, 500, b'end')):
+        ps = bytes([len(name)]) + name
+        if len(ps) & 1:
+            ps += b'\x00'
+        mark += struct.pack('>HI', mid, pos) + ps
+    inst = struct.pack('>bbbbbbh', 60, 0, 0, 127, 1, 127, 0)
+    inst += struct.pack('>hHH', 1, 1, 2) + struct.pack('>hHH', 0, 0, 0)
+    ssnd = struct.pack('>II', 0, 0) + b''.join(
+        struct.pack('>h', sfi_aif(i)) for i in range(n))
+
+    def ck(cid, d):
+        return cid + struct.pack('>I', len(d)) + d + \
+            (b'\x00' if len(d) & 1 else b'')
+    body = b'AIFF' + ck(b'COMM', comm) + ck(b'MARK', mark) + \
+        ck(b'INST', inst) + ck(b'SSND', ssnd)
+    with open(path, 'wb') as f:
+        f.write(b'FORM' + struct.pack('>I', len(body)) + body)
+
+
+def _crc8(data):
+    c = 0
+    for b in data:
+        c ^= b
+        for _ in range(8):
+            c = ((c << 1) ^ 0x07) & 0xFF if c & 0x80 else (c << 1) & 0xFF
+    return c
+
+
+def _crc16(data):
+    c = 0
+    for b in data:
+        c ^= b << 8
+        for _ in range(8):
+            c = ((c << 1) ^ 0x8005) & 0xFFFF if c & 0x8000 else \
+                (c << 1) & 0xFFFF
+    return c
+
+
+def _sfi_flac(path):
+    """mono 16-bit 32 kHz, one frame with a VERBATIM subframe"""
+    n, rate = 300, 32000
+    si = struct.pack('>HH', n, n) + b'\x00' * 6
+    si += struct.pack('>Q', (rate << 44) | (0 << 41) | (15 << 36) | n)
+    si += b'\x00' * 16                                  # MD5 unknown
+    meta = bytes([0x80]) + struct.pack('>I', len(si))[1:] + si
+    hdr = bytes([0xFF, 0xF8, (7 << 4) | 0, (0 << 4) | (4 << 1), 0x00])
+    hdr += struct.pack('>H', n - 1)
+    hdr += bytes([_crc8(hdr)])
+    frame = hdr + bytes([0x02]) + b''.join(
+        struct.pack('>h', sfi_flac(i)) for i in range(n))
+    frame += struct.pack('>H', _crc16(frame))
+    with open(path, 'wb') as f:
+        f.write(b'fLaC' + meta + frame)
+
+
+def _sfi_sf2(path):
+    smp = [  # name, data, loop (abs added later), pitch, type, link
+        ('mono', [sfi_sf2mono(i) for i in range(1000)], (100, 900), 1, 0),
+        ('left', [i * 20 for i in range(400)], (0, 0), 4, 2),
+        ('right', [-i * 20 for i in range(400)], (0, 0), 2, 1),
+        ('soft', [500] * 300, (0, 0), 1, 0),
+    ]
+    data = bytearray()
+    shdr = bytearray()
+    for name, d, (ls, le), typ, link in smp:
+        start = len(data) // 2
+        data += b''.join(struct.pack('<h', v) for v in d)
+        data += b'\x00' * 92                        # 46 zero frames
+        shdr += name.encode().ljust(20, b'\x00')
+        shdr += struct.pack('<5I', start, start + len(d),
+                            start + ls, start + le, 22050)
+        shdr += struct.pack('<BbHH', 60, 0, link, typ)
+    shdr += b'EOS'.ljust(20, b'\x00') + b'\x00' * 26
+
+    def rng(lo, hi):
+        return lo | (hi << 8)
+
+    def zones(zl):
+        """list of zones (list of (op, amount)) -> bag, gen bytes"""
+        bag, gen, gi = bytearray(), bytearray(), 0
+        for z in zl:
+            bag += struct.pack('<HH', gi, 0)
+            for op, amt in z:
+                gen += struct.pack('<Hh' if amt < 0 else '<HH', op, amt)
+                gi += 1
+        return bag, gen, gi
+
+    izones = [
+        [(48, 60), (38, 0)],                                # global
+        [(43, rng(0, 59)), (54, 1), (58, 48), (53, 0)],
+        [(43, rng(60, 127)), (44, rng(0, 63)), (53, 3)],
+        [(43, rng(60, 127)), (44, rng(64, 127)), (51, 1), (52, -50),
+         (54, 3), (53, 0)],
+        [(17, -500), (53, 1)],
+        [(17, 500), (53, 2)],
+    ]
+    ibag, igen, ign = zones(izones)
+    ibag += struct.pack('<HH', ign, 0)
+    igen += b'\x00' * 4
+    inst = b'MonoInst'.ljust(20, b'\x00') + struct.pack('<H', 0)
+    inst += b'StereoInst'.ljust(20, b'\x00') + struct.pack('<H', 4)
+    inst += b'EOI'.ljust(20, b'\x00') + struct.pack('<H', 6)
+
+    pzones = [
+        [(52, 10)],                                         # global
+        [(43, rng(24, 96)), (41, 0)],
+        [(41, 1)],
+    ]
+    pbag, pgen, pgn = zones(pzones)
+    pbag += struct.pack('<HH', pgn, 0)
+    pgen += b'\x00' * 4
+    phdr = b''
+    for name, prog, bank, bag in (('Mono Preset', 5, 0, 0),
+                                  ('Stereo', 0, 1, 2),
+                                  ('EOP', 0, 0, 3)):
+        phdr += name.encode().ljust(20, b'\x00')
+        phdr += struct.pack('<HHHIII', prog, bank, bag, 0, 0, 0)
+
+    info = b'INFO' + _riff_chunk(b'ifil', struct.pack('<HH', 2, 1)) + \
+        _riff_chunk(b'isng', b'EMU8000\x00') + \
+        _riff_chunk(b'INAM', b'it26 fixture\x00')
+    sdta = b'sdta' + _riff_chunk(b'smpl', bytes(data))
+    pdta = b'pdta' + _riff_chunk(b'phdr', phdr) + \
+        _riff_chunk(b'pbag', bytes(pbag)) + \
+        _riff_chunk(b'pmod', b'\x00' * 10) + \
+        _riff_chunk(b'pgen', bytes(pgen)) + \
+        _riff_chunk(b'inst', inst) + \
+        _riff_chunk(b'ibag', bytes(ibag)) + \
+        _riff_chunk(b'imod', b'\x00' * 10) + \
+        _riff_chunk(b'igen', bytes(igen)) + \
+        _riff_chunk(b'shdr', bytes(shdr))
+    body = b'sfbk' + _riff_chunk(b'LIST', info) + \
+        _riff_chunk(b'LIST', sdta) + _riff_chunk(b'LIST', pdta)
+    with open(path, 'wb') as f:
+        f.write(b'RIFF' + struct.pack('<I', len(body)) + body)
+
+
+SFI_SFZ = r'''// it26 feature 020 fixture -- see specs/020-sfz-sf2-import
+/* block
+   comment <region> sample=ignored.wav */
+#define $ROOT 60
+<control>
+default_path=samples\
+<global> ampeg_attack=0.1 ampeg_decay=1 ampeg_sustain=50 ampeg_release=0.5 cutoff=1000 resonance=6
+<group> lokey=c4 hikey=b4 pitch_keycenter=$ROOT
+<region> sample=tone16.wav lovel=64 hivel=127 seq_position=1 volume=-6 pan=50
+<region> sample=rr2.wav lovel=64 hivel=127 seq_position=2
+<region> sample=soft.wav lovel=1 hivel=63
+<region> sample=rel.wav trigger=release
+<group> key=72 tune=50 transpose=1
+<region> sample=st 24.wav tune=50
+#include "inc/inc.sfz"
+'''
+
+SFI_INC = r'''// included by test.sfz; sample paths use test.sfz's default_path
+<group> lokey=36 hikey=47 pitch_keycenter=40 loop_mode=loop_sustain
+<region> sample=loop.aif
+<group> lokey=84 hikey=95 sw_last=24
+<region> sample=tone.flac locc1=0 hicc1=10
+<region> sample=rr2.wav sw_last=25
+<region> sample=soft.wav lokey=96 hikey=100 locc64=64
+'''
+
+
+def gen_sfi_fixture(root):
+    import os
+    os.makedirs(root + '/samples', exist_ok=True)
+    os.makedirs(root + '/inc', exist_ok=True)
+    _sfi_wav(root + '/samples/tone16.wav', 22050, 1, 16,
+             [(sfi_tone16(i),) for i in range(1000)], smpl=(200, 799))
+    for name, v in (('rr2', 1111), ('soft', 2222), ('rel', 3333)):
+        _sfi_wav(root + '/samples/%s.wav' % name, 22050, 1, 16,
+                 [(v,)] * 100)
+    _sfi_wav(root + '/samples/st 24.wav', 44100, 2, 24,
+             [sfi_st24(i) for i in range(500)])
+    _sfi_aiff(root + '/samples/loop.aif')
+    _sfi_flac(root + '/samples/tone.flac')
+    with open(root + '/test.sfz', 'w', newline='\r\n') as f:
+        f.write(SFI_SFZ)
+    with open(root + '/inc/inc.sfz', 'w', newline='\n') as f:
+        f.write(SFI_INC)
+    _sfi_sf2(root + '/test.sf2')
+
+
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else '.'
     gen_s3m(outdir + '/import_test.s3m')
@@ -547,6 +795,7 @@ def main():
     gen_iff(outdir + '/lib_test.iff')
     gen_txw(outdir + '/lib_test.txw')
     gen_ls_fixture(outdir + '/ls_fixture')
+    gen_sfi_fixture(outdir + '/sfi_fixture')       # feature 020
     print('wrote import_test.{s3m,mod,mtm,669,xm} + '
           'lib_test.{xi,ptm,far,krz,pat,iff,txw} + '
           'lib_test{8,16,st,f,24}.wav to', outdir)

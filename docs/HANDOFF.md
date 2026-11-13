@@ -5,7 +5,7 @@
 > code is organised**, and **what to do next**. For the staged editor plan
 > see `EDITOR-PORT-PLAN.md`; for the user-facing overview see `../README.md`.
 
-Last updated: 2026-09-26.
+Last updated: 2026-11-13 (feature 020: SFZ / SoundFont 2 import, §5h).
 
 **Feature 015 (Load Sample screen) landed 2026-09-26.** F3 Enter and
 Ctrl-F3 now open a transliteration of `O1_LoadSampleList` /
@@ -639,7 +639,7 @@ required to *regenerate* it (`make vgadata`).
 
 ### MSVC directly (Windows) — the command used this session
 ```
-cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" >nul 2>&1 && cl /nologo /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c src\it_load.c src\it_pattern.c src\it_save.c src\it_import.c src\it_ris.c src\it_screen.c src\it_screen_win32.c src\it_cornerart.c src\it_vgadata.c src\it_editor.c src\it_dialog_win32.c src\it_dialog_mac.c src\it_dialog_posix.c user32.lib gdi32.lib ole32.lib shell32.lib uuid.lib"
+cmd /c "call \"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat\" >nul 2>&1 && cl /nologo /std:c11 /O2 /W3 /D_CRT_SECURE_NO_WARNINGS /Fe:ited.exe src\it_music.c src\it_effects.c src\it_tables.c src\it_driver.c src\it_load.c src\it_pattern.c src\it_save.c src\it_import.c src\it_ris.c src\it_sfimport.c src\it_screen.c src\it_screen_win32.c src\it_cornerart.c src\it_vgadata.c src\it_editor.c src\it_dialog_win32.c src\it_dialog_mac.c src\it_dialog_posix.c user32.lib gdi32.lib ole32.lib shell32.lib uuid.lib"
 ```
 `/std:c11` is **required** (for `_Static_assert`); `/D_CRT_SECURE_NO_WARNINGS`
 silences CRT warnings. The editor needs `user32.lib gdi32.lib` (pixel
@@ -778,6 +778,8 @@ it26/
     it_import.c            whole-module importers S3M/XM/MOD/MTM/669 (feature 007)
     it_ris.c               sample/instrument library: scanners, rip loaders,
                            .ITS/.ITI/ST/WAV saves (feature 006, IT_D_RIS/RI.INC)
+    it_sfimport.c          it26: SFZ / SoundFont 2 -> IT instrument (feature 020);
+                           decoding via SFI_DecodeAudio in it_editor.c
     it_music.h   (218)     engine API; Music_ResetRNG added for deterministic tests
     it_structs.h (400)     host/slave channel + instrument/sample layouts, _Static_assert pinned
     --- EDITOR (faithful UI/behaviour port over the engine) ---
@@ -1086,6 +1088,70 @@ Spec, plan, research (Esa's assembly cited per behaviour) and tasks:
   file's blocks, balance playback (`st_play`), requester keys, WAV / ITS /
   ITI / IT (IT214, raw, IT215) / S3M round trips, compressed stereo read,
   F3 ops per channel (8/16-bit), Alt-U, render import.
+
+## 5h. SFZ and SoundFont 2 instruments (feature 020, 2026-11-13, local until release)
+
+- Spec / plan / research (format facts, every conversion rule with its
+  reason, the survey of the user's library) / tasks:
+  `specs/020-sfz-sf2-import/`. README "SFZ and SoundFont 2 instruments".
+- **`src/it_sfimport.c`** (editor-side, in `EDITOR_SOURCES`): SFZ parser
+  (comments, `#define`, `#include`, `<control>` default_path /
+  note_offset / set_ccN, global/master/group/region inheritance) and SF2
+  reader (RIFF walk with fseek, only `pdta` read; samples read per sample
+  at load) both produce `sfi_region_t`s. `plan_select` picks one region
+  per IT note (highest hivel, then lowest seq_position, lowest lorand,
+  file order; SF2 linked left/right zones -> one stereo voice);
+  per-file fallbacks: CC conditions at default values, release/legato
+  regions and the default key switch apply only if something is left.
+  Missing SFZ sample files are looked up next to the root .sfz, then in
+  up to three parent folders (ARIA banks), case-insensitively on POSIX;
+  a missing file drops its regions and the selection reruns.
+  `plan_reduce` thins to the free slots (even spread by root key, keys to
+  the nearest root). `SFI_Build` decodes, builds samples (C5Speed =
+  rate·2^((60−root)/12 + cents/1200)), the volume envelope (50 ticks/s,
+  sustain point, release ending on 0 -> engine `TurnOff17`) and the
+  filter (IFC = 24·log2(f/130.81), from the driver's coefficient
+  formula). `SFI_ScanSF2`, `SFI_CountSFZ`, `SFI_BatchTest`.
+- **Decoding** lives in `it_editor.c` (`SFI_DecodeAudio`, right after the
+  miniaudio implementation): miniaudio declares dr_wav / dr_flac only
+  inside its implementation. `MA_NO_DECODING` is gone there, `MA_NO_MP3`
+  added; `itplay` is unaffected. AIFF loops: own MARK/INST reader.
+- **`it_ris.c`**: `RI_FMT_SFZ` 0x10, `RI_FMT_SF2PRESET` 0x11, `RI_FMT_SF2`
+  0x18, `RI_IsLibrary()` = bit 3 (every former `>= 8` test in the Load
+  Instrument code uses it). `RI_LoadInstrument` was split: the release /
+  allocate / transfer tail is `ri_commit()`, shared by the IT/XI paths
+  and `ri_load_sfi()` (which sizes the instrument to
+  `ri_free_after_release()`). `RI_LastReport` feeds the status line.
+  `RI_ScanModule` checks the SF2 header before `load_file` (no whole-file
+  read).
+- **Editor**: library rows show "SoundFont2" in the samples column;
+  `lib_load_instrument_entry` skips IT's out-of-space pre-check for the
+  new formats and reports reduced / unreadable counts; Open Instrument
+  dialog filter `sfz;sf2`; F1 line in the instrument list's it26 block;
+  `ITED_SHOT_SCREEN=18` captures the Load Instrument screen
+  (`ITED_SHOT_DIR`, `ITED_SHOT_MODULE` enters a library row,
+  `ITED_SHOT_ROW`).
+- **Tests**: selftest block **SFI** (23 blocks now) over
+  `testdata/sfi_fixture` (`gen_sfi_fixture` in `tools/gen_import_tests.py`:
+  16-bit WAV with smpl loop, 24-bit stereo WAV with a space in its name,
+  AIFF with MARK/INST loop, hand-built FLAC, SFZ with every selection
+  rule, SF2 with layered generators and a linked stereo pair): listing,
+  every key, C5Speed, loops, GvL/DfP, data frame by frame, envelope nodes,
+  filter, playback + note-off through the engine, reduce-to-fit, no-slot
+  refusal. `ited --sfi-test <path>...` over whole libraries (2026-11-13,
+  the user's D:\CommonHome\sound): **SFZ** 1384 / 1387 files load (worst 1.7 s; 9 thinned to fit, 115
+with some unreadable sample files -- mostly include fragments whose paths
+only resolve from their program file). The 3 failures are genuine: two
+ARIA "Full" programs whose include folder is not in the library, and a
+macOS `__MACOSX/._*.sfz` resource fork. **SF2** 1190 files, 7790
+presets: 7437 load (worst 93 ms); the 353 others are 349 presets built on
+an EMU sound card's ROM samples (AWE32 GM sets, reported as such), 3
+empty "E-mu Systems" credit presets and one SFPack-compressed file. Field
+fixes from these runs: round robins / random alternatives as preferences
+(not filters), per-file fallbacks for CC gates, release-only files and a
+`sw_default` nobody answers to, the parent-folder sample lookup (ARIA
+banks), missing files re-selecting the next region (Keppy's Steinway
+"with keypress"), a truncated `pdta` read as far as it goes.
 
 ## 6. Next phase
 

@@ -1353,9 +1353,30 @@ static void ilib_name(ilibent_t *e, const uint8_t *d, size_t n,
 int RI_ScanModule(const char *path, ilibent_t *ents, int max)
 {
     size_t n;
-    uint8_t *d = load_file(path, &n);
+    uint8_t *d;
     int cnt = -1;
 
+    /* feature 020: an .sf2 can be hundreds of MB -- never load it whole */
+    {
+        uint8_t h[12];
+        FILE *fp = fopen(path, "rb");
+        size_t hn = fp ? fread(h, 1, sizeof(h), fp) : 0;
+        if (fp)
+            fclose(fp);
+        if (SFI_IsSF2(h, hn))
+            return SFI_ScanSF2(path, ents, max);
+        if (has_ext(path, ".SFZ") && max > 0) {
+            char nm[27];
+            int ns = SFI_CountSFZ(path, nm);
+            if (ns < 0)
+                return -1;
+            ilib_init(&ents[0], path, RI_FMT_SFZ);
+            memcpy(ents[0].Name, nm, sizeof(nm));
+            ents[0].NumSamples = (uint16_t)ns;
+            return 1;
+        }
+    }
+    d = load_file(path, &n);
     if (!d)
         return -1;
 
@@ -1585,15 +1606,69 @@ static void xi_chain(const uint8_t *p, size_t pbase, size_t pn,
 #undef XPW
 }
 
+sfi_report_t RI_LastReport;
+
+static int ri_commit(int target, const instrument_t *ins, sample_t *sh,
+                     int nos, const uint8_t *d, size_t n, int preloaded);
+
+/* sample slots free once the target's exclusive samples are released
+ * (the release loop covers slots 1..98, as the original) */
+static int ri_free_after_release(int target)
+{
+    uint8_t used[256];
+    int i, k, n = 0;
+
+    memset(used, 0, sizeof(used));
+    for (k = 0; k < 120; k++)
+        used[Song.Ins[target].NoteSampleTable[k * 2 + 1]] = 1;
+    for (i = 0; i < 99; i++) {
+        if (i == target)
+            continue;
+        for (k = 0; k < 120; k++)
+            used[Song.Ins[i].NoteSampleTable[k * 2 + 1]] = 0;
+    }
+    for (i = 1; i <= 99; i++) {
+        if (!(Song.Smp[i - 1].Flags & 1))
+            n++;
+        else if (i <= 98 && used[i])
+            n++;
+    }
+    return n;
+}
+
+/* feature 020: SFZ file / SF2 preset -> instrument + samples */
+static int ri_load_sfi(const ilibent_t *e, int target)
+{
+    static sample_t sh[100];
+    instrument_t ins;
+    int avail = ri_free_after_release(target), nos, r, i;
+
+    memset(&RI_LastReport, 0, sizeof(RI_LastReport));
+    if (avail < 1)
+        return RI_ERR_SLOTS;
+    nos = SFI_Build(e, avail, &ins, sh, &RI_LastReport);
+    if (nos < 1)
+        return RI_ERR_OPEN;
+    r = ri_commit(target, &ins, sh, nos, NULL, 0, 1);
+    if (r != RI_OK)
+        for (i = 0; i < nos; i++) {
+            free(sh[i].Data);
+            sh[i].Data = NULL;
+        }
+    return r;
+}
+
 int RI_LoadInstrument(const ilibent_t *e, int target)
 {
     size_t n;
-    uint8_t *d = load_file(e->SrcFile, &n);
+    uint8_t *d;
     instrument_t ins;
     sample_t sh[100];
-    uint8_t map[256];
-    int nos = 0, i, k, slot;
+    int nos = 0, i, k, r;
 
+    if (e->Format == RI_FMT_SFZ || e->Format == RI_FMT_SF2PRESET)
+        return ri_load_sfi(e, target);
+    d = load_file(e->SrcFile, &n);
     if (!d)
         return RI_ERR_OPEN;
 
@@ -1680,6 +1755,21 @@ int RI_LoadInstrument(const ilibent_t *e, int target)
         return RI_ERR_OPEN;
     }
 
+    r = ri_commit(target, &ins, sh, nos, d, n, 0);
+    free(d);
+    return r;
+}
+
+/* release the target's exclusive samples, allocate free slots, move
+ * the samples in (their data read from `d` unless `preloaded`) and
+ * write the instrument with its note table remapped */
+static int ri_commit(int target, const instrument_t *ins_in, sample_t *sh,
+                     int nos, const uint8_t *d, size_t n, int preloaded)
+{
+    const instrument_t ins = *ins_in;
+    uint8_t map[256];
+    int i, k, slot;
+
     /* release samples used only by the target instrument */
     {
         uint8_t used[256];
@@ -1704,10 +1794,8 @@ int RI_LoadInstrument(const ilibent_t *e, int target)
         do {
             slot++;
         } while (slot <= 99 && (Song.Smp[slot - 1].Flags & 1));
-        if (slot > 99) {
-            free(d);
+        if (slot > 99)
             return RI_ERR_SLOTS;             /* guarded by caller */
-        }
         map[i + 1] = (uint8_t)slot;
     }
 
@@ -1715,6 +1803,13 @@ int RI_LoadInstrument(const ilibent_t *e, int target)
         sample_t *dst = &Song.Smp[map[i + 1] - 1];
         sample_t tmp = sh[i];
 
+        if (preloaded) {                     /* feature 020 */
+            free(dst->Data);
+            *dst = tmp;
+            sh[i].Data = NULL;
+            dst->OffsetInFile = 0;
+            continue;
+        }
         tmp.Data = NULL;
         if ((tmp.Flags & 1) && tmp.Length != 0) {
             if (!Load_SampleData(d, n, &tmp))
@@ -1735,8 +1830,6 @@ int RI_LoadInstrument(const ilibent_t *e, int target)
             di->NoteSampleTable[k * 2 + 1] =
                 map[ins.NoteSampleTable[k * 2 + 1]];
     }
-
-    free(d);
     return RI_OK;
 }
 
@@ -1747,6 +1840,9 @@ const char *RI_FormatName(uint8_t fmt)
     case 4:  return "Fast Tracker 2 Instrument";
     case 5:  return "Impulse Tracker Module";
     case 6:  return "Fast Tracker 2 Module";
+    case RI_FMT_SFZ:       return "SFZ Instrument";        /* it26 */
+    case RI_FMT_SF2PRESET: return "SoundFont 2 Preset";    /* it26 */
+    case RI_FMT_SF2:       return "SoundFont 2 Library";   /* it26 */
     default: return "Unknown format";
     }
 }
@@ -1754,7 +1850,8 @@ const char *RI_FormatName(uint8_t fmt)
 int RI_KnownExt(const char *name)
 {
     return has_ext(name, ".ITI") || has_ext(name, ".XI") ||
-           has_ext(name, ".IT") || has_ext(name, ".XM");
+           has_ext(name, ".IT") || has_ext(name, ".XM") ||
+           has_ext(name, ".SFZ") || has_ext(name, ".SF2");   /* 020 */
 }
 
 /* ---- #27: the Load Instrument directory listing ------------------- */
@@ -1804,6 +1901,22 @@ static int ilib_identify(ilibent_t *e)
         e->Format = 4;                          /* .XI */
         ilib_name(e, d, n, 21, 22);
         e->NumSamples = b16(d, n, 0x128);
+        return 1;
+    }
+    /* it26, feature 020 */
+    if (SFI_IsSF2(d, n)) {
+        e->Format = RI_FMT_SF2;
+        ilib_marker(e, 9, "Library");
+        return 1;
+    }
+    if (has_ext(e->SrcFile, ".SFZ")) {
+        char nm[27];
+        int ns = SFI_CountSFZ(e->SrcFile, nm);
+        if (ns < 0)
+            return 0;
+        e->Format = RI_FMT_SFZ;
+        memcpy(e->Name, nm, sizeof(nm));
+        e->NumSamples = (uint16_t)ns;
         return 1;
     }
     return 0;

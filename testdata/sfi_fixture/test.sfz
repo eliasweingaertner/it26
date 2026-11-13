@@ -1,0 +1,15 @@
+// it26 feature 020 fixture -- see specs/020-sfz-sf2-import
+/* block
+   comment <region> sample=ignored.wav */
+#define $ROOT 60
+<control>
+default_path=samples\
+<global> ampeg_attack=0.1 ampeg_decay=1 ampeg_sustain=50 ampeg_release=0.5 cutoff=1000 resonance=6
+<group> lokey=c4 hikey=b4 pitch_keycenter=$ROOT
+<region> sample=tone16.wav lovel=64 hivel=127 seq_position=1 volume=-6 pan=50
+<region> sample=rr2.wav lovel=64 hivel=127 seq_position=2
+<region> sample=soft.wav lovel=1 hivel=63
+<region> sample=rel.wav trigger=release
+<group> key=72 tune=50 transpose=1
+<region> sample=st 24.wav tune=50
+#include "inc/inc.sfz"

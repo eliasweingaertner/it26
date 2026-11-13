@@ -58,9 +58,74 @@
 #include "it_vgadata.h"                 /* IT_FontROM (selftest checks) */
 
 #define MINIAUDIO_IMPLEMENTATION
-#define MA_NO_DECODING
+/* feature 020: the WAV/AIFF and FLAC decoders read SFZ samples */
+#define MA_NO_MP3
 #define MA_NO_ENCODING
 #include "../external/miniaudio.h"
+
+/* feature 020: SFZ sample decoding for it_sfimport.c. miniaudio
+ * declares its dr_wav / dr_flac decoders only inside the
+ * implementation, so the call lives here. */
+#include "it_sfimport.h"
+
+int SFI_DecodeAudio(const char *path, sfi_pcm_t *o, uint64_t maxframes)
+{
+    ma_dr_wav w;
+    ma_dr_flac *fl;
+
+    memset(o, 0, sizeof(*o));
+    o->unity = -1;
+    if (ma_dr_wav_init_file_with_metadata(&w, path, 0, NULL)) {
+        ma_uint32 i;
+
+        o->ch = (int)w.channels;
+        o->rate = w.sampleRate;
+        o->frames = w.totalPCMFrameCount;
+        o->aiff = w.container == ma_dr_wav_container_aiff;
+        if (o->ch < 1 || o->frames == 0 || o->frames > maxframes ||
+            !(o->pcm = (int16_t *)malloc((size_t)o->frames *
+                                         (size_t)o->ch * 2))) {
+            ma_dr_wav_uninit(&w);
+            return -1;
+        }
+        o->frames = ma_dr_wav_read_pcm_frames_s16(&w, o->frames, o->pcm);
+        for (i = 0; i < w.metadataCount; i++) {
+            const ma_dr_wav_metadata *m = &w.pMetadata[i];
+            const ma_dr_wav_smpl *s;
+            if (m->type != ma_dr_wav_metadata_type_smpl)
+                continue;
+            s = &m->data.smpl;
+            if (s->midiUnityNote <= 127)
+                o->unity = (int)s->midiUnityNote;
+            if (s->sampleLoopCount > 0 && s->pLoops &&
+                s->pLoops[0].lastSampleOffset >
+                    s->pLoops[0].firstSampleOffset) {
+                o->loopmode = s->pLoops[0].type ==
+                              ma_dr_wav_smpl_loop_type_pingpong ? 3 : 1;
+                o->ls = s->pLoops[0].firstSampleOffset;
+                o->le = (int64_t)s->pLoops[0].lastSampleOffset + 1;
+            }
+        }
+        ma_dr_wav_uninit(&w);
+        return o->frames ? 1 : -1;
+    }
+    fl = ma_dr_flac_open_file(path, NULL);
+    if (fl) {
+        o->ch = (int)fl->channels;
+        o->rate = fl->sampleRate;
+        o->frames = fl->totalPCMFrameCount;
+        if (o->ch < 1 || o->frames == 0 || o->frames > maxframes ||
+            !(o->pcm = (int16_t *)malloc((size_t)o->frames *
+                                         (size_t)o->ch * 2))) {
+            ma_dr_flac_close(fl);
+            return -1;
+        }
+        o->frames = ma_dr_flac_read_pcm_frames_s16(fl, o->frames, o->pcm);
+        ma_dr_flac_close(fl);
+        return o->frames ? 1 : -1;
+    }
+    return 0;
+}
 
 extern const sounddriver_t WAVDriver;
 void WAVDriver_Render(int16_t *dst, uint32_t frames);
@@ -5266,6 +5331,9 @@ static const char PortHelpRenInfo2[] =
     "\x05" "D                 Save every sample as a WAV";
 static const char PortHelpRenSmp[] =
     "\x05" "Ctrl-Alt-Right    Save this sample as a WAV";
+/* feature 020: SFZ / SoundFont 2 instruments */
+static const char PortHelpSfi[] =
+    "\x05" "Enter / Ctrl-F4   Load also .sfz instruments, .sf2 presets";
 /* feature 019: stereo samples */
 static const char PortHelpStereo[] =
     "\x05" "Alt-U             Convert sample: stereo <-> mono";
@@ -5336,6 +5404,8 @@ static const uint8_t *const *help_lines(int ctx)
         buf[n++] = HL(PortHelpRenInfo2);
         buf[n++] = HL(PortHelpRenDump);
         buf[n++] = HL(PortHelpRenStop);
+    } else if (ctx == 7) {              /* instrument list */
+        buf[n++] = HL(PortHelpSfi);     /* feature 020 */
     } else if (ctx == 2) {              /* sample list */
         buf[n++] = HL(PortHelpStereo);  /* feature 019 */
         buf[n++] = HL(PortHelpRenSmp);
@@ -12287,12 +12357,15 @@ static int lib_load_instrument_entry(const ilibent_t *e)
     int occupied = dst->InstrumentName[0] != 0;
     int k, r;
     char msg[64];
+    /* feature 020: SFZ / SF2 presets are reduced to the free slots by
+     * the converter itself, so IT's pre-check does not apply */
+    int sfi = e->Format == RI_FMT_SFZ || e->Format == RI_FMT_SF2PRESET;
 
     for (k = 0; k < 120 && !occupied; k++)
         if (dst->NoteSampleTable[k * 2 + 1])
             occupied = 1;
 
-    if (e->NumSamples > LibUnused) {    /* O1_OutOfSamplesList */
+    if (!sfi && e->NumSamples > LibUnused) {    /* O1_OutOfSamplesList */
         status("Out of sample space! (%d needed, %d available)",
                e->NumSamples, LibUnused);
         return 0;
@@ -12319,8 +12392,16 @@ static int lib_load_instrument_entry(const ilibent_t *e)
     }
     ed_unlock();
 
+    if (sfi && r == RI_ERR_SLOTS) {
+        status("Out of sample space! (%d needed, 0 available)",
+               e->NumSamples);
+        return 0;
+    }
     if (r != RI_OK) {
-        status("Unable to load instrument.");
+        if (sfi && RI_LastReport.why[0])
+            status("Unable to load instrument: %.50s", RI_LastReport.why);
+        else
+            status("Unable to load instrument.");
         return 0;
     }
     LibUnused = RI_UnusedSamples();
@@ -12331,8 +12412,16 @@ static int lib_load_instrument_entry(const ilibent_t *e)
         Song.Header.Flags |= ITF_INSTRUMENTS;
         ed_unlock();
     }
-    status("Instrument %d loaded (%d samples).", ListSel + 1,
-           e->NumSamples);
+    if (sfi && RI_LastReport.skipped)
+        status("Instrument %d loaded (%d samples, %d unreadable: %.40s)",
+               ListSel + 1, RI_LastReport.loaded, RI_LastReport.skipped,
+               RI_LastReport.why);
+    else if (sfi && RI_LastReport.loaded < RI_LastReport.needed)
+        status("Instrument %d loaded (reduced from %d to %d samples).",
+               ListSel + 1, RI_LastReport.needed, RI_LastReport.loaded);
+    else
+        status("Instrument %d loaded (%d samples).", ListSel + 1,
+               sfi ? RI_LastReport.loaded : e->NumSamples);
     return 1;
 }
 
@@ -13931,7 +14020,7 @@ static void li_delete_file(void)
     int i;
 
     if (LiN == 0 || LiInModule || LiEnt[LiCur].Format <= 1 ||
-        LiEnt[LiCur].Format >= 8)
+        RI_IsLibrary(LiEnt[LiCur].Format))
         return;
     if (!confirm_box("Delete file?"))
         return;
@@ -13994,7 +14083,9 @@ static void li_draw_list(void)
         }
         li_divider(44, y);
         if (e->Format >= 3) {
-            if (e->Format >= 8)
+            if (e->Format == RI_FMT_SF2)        /* it26, feature 020 */
+                drawf(45, y, a, "SoundFont2");
+            else if (RI_IsLibrary(e->Format))
                 drawf(45, y, a, "\x9A\x9A" "Module" "\x9A\x9A");
             else if (e->NumSamples == 0)
                 drawf(45, y, a, "No Samples");
@@ -14064,7 +14155,7 @@ static int li_enter(void)
         li_enter_dir(e);
         return 0;
     }
-    if (e->Format >= 8) {
+    if (RI_IsLibrary(e->Format)) {
         li_enter_module(e);
         return 0;
     }
@@ -14539,7 +14630,7 @@ static void act_dialog_load_slot(int instruments)
             return;
         }
         memcpy(DirInstr, dir, strlen(dir) + 1);     /* InstrumentDirectory */
-        if (f >= 8) {
+        if (RI_IsLibrary(f)) {
             load_instrument_screen_run(0, r.path);
         } else {
             LibUnused = RI_UnusedSamples();
@@ -17053,6 +17144,11 @@ int main(int argc, char **argv)
             batch = 1;                      /* feature 018 */
             startmod = argv[++i];
         }
+        else if (!strcmp(argv[i], "--sfi-test") && i + 1 < argc) {
+            /* feature 020: SFZ / SF2 conversion over whole folders */
+            return SFI_BatchTest(argc - i - 1,
+                                 (const char *const *)(argv + i + 1));
+        }
         else if (!strcmp(argv[i], "--dump-samples") && i + 1 < argc) {
             batch = 2;
             startmod = argv[++i];
@@ -17295,6 +17391,27 @@ int main(int argc, char **argv)
                     Load_StereoChoice = keep;
                 }
                 ls_draw();
+            } else if (scr == 18) {         /* Load Instrument (#27);
+                                               feature 020 captures */
+                const char *d = getenv("ITED_SHOT_DIR");
+                LiView = 0;
+                LiFocus = 5;
+                LibUnused = RI_UnusedSamples();
+                li_set_dir(d ? d : "testdata");
+                if (getenv("ITED_SHOT_MODULE")) {  /* enter a library row */
+                    int k;
+                    for (k = 0; k < LiN; k++)
+                        if (strstr(LiEnt[k].SrcFile,
+                                   getenv("ITED_SHOT_MODULE")) &&
+                            RI_IsLibrary(LiEnt[k].Format)) {
+                            li_enter_module(&LiEnt[k]);
+                            break;
+                        }
+                }
+                if (getenv("ITED_SHOT_ROW"))
+                    LiCur = atoi(getenv("ITED_SHOT_ROW"));
+                if (LiCur >= LiN) LiCur = LiN ? LiN - 1 : 0;
+                li_draw();
             } else if (scr == 10 || scr == 11) { /* library browser */
                 const char *src = getenv("ITED_SHOT_LIB");
                 if (!src)
@@ -20272,7 +20389,7 @@ int main(int argc, char **argv)
                     if (found < 0) { LFAIL(); continue; }
                     LiCur = found;
                     LiView = 1;                         /* library: view */
-                    if (LiEnt[found].Format >= 8) {
+                    if (RI_IsLibrary(LiEnt[found].Format)) {
                         li_enter();                     /* opens module */
                         if (!LiInModule || LiN < 2) { LFAIL(); continue; }
                         LiCur = 1;
@@ -21266,6 +21383,324 @@ int main(int argc, char **argv)
             fprintf(stderr, "ITED selftest: [%s]\n",
                     s_ok ? "STR OK" : "STR FAIL");
         }
+
+        /* ---- SFI (feature 020): SFZ / SoundFont 2 instruments over
+         * testdata/sfi_fixture (tools/gen_import_tests.py; expected
+         * values: specs/020-sfz-sf2-import/research.md R3/R7..R10) ---- */
+        {
+            int f_ok = 1, ffail_line = 0, i, k, r;
+#define FFAIL() do { if (f_ok) ffail_line = __LINE__; f_ok = 0; } while (0)
+            sample_t *ksm = (sample_t *)malloc(sizeof(Song.Smp));
+            instrument_t *kin = (instrument_t *)malloc(sizeof(Song.Ins));
+            char keepins[sizeof(DirInstr)];
+            ilibent_t sfz, pre[4];
+            int isfz = -1, isf2 = -1;
+
+#define SFI_CLEAR() do { int c_; for (c_ = 0; c_ < MAX_SAMPLES; c_++) { \
+                free(Song.Smp[c_].Data); } \
+                memset(Song.Smp, 0, sizeof(Song.Smp)); \
+                memset(Song.Ins, 0, sizeof(Song.Ins)); } while (0)
+#define SFI_NEAR(a, b) ((long)(a) - (long)floor((b) + 0.5) <= 1 && \
+                        (long)floor((b) + 0.5) - (long)(a) <= 1)
+
+            if (!ksm || !kin)
+                FFAIL();
+            else {
+                memcpy(ksm, Song.Smp, sizeof(Song.Smp));
+                memcpy(kin, Song.Ins, sizeof(Song.Ins));
+                memset(Song.Smp, 0, sizeof(Song.Smp));
+                memset(Song.Ins, 0, sizeof(Song.Ins));
+            }
+            memset(&sfz, 0, sizeof(sfz));
+
+            /* listing: .sfz = instrument row, .sf2 = library row */
+            memcpy(keepins, DirInstr, sizeof(keepins));
+            li_set_dir("testdata/sfi_fixture");
+            for (i = 0; i < LiN; i++) {
+                if (!strcmp(LiEnt[i].FileName, "test.sfz"))
+                    isfz = i;
+                if (!strcmp(LiEnt[i].FileName, "test.sf2"))
+                    isf2 = i;
+            }
+            if (isfz < 0 || isf2 < 0)
+                FFAIL();
+            if (isfz >= 0) {
+                sfz = LiEnt[isfz];
+                if (sfz.Format != RI_FMT_SFZ || sfz.NumSamples != 4 ||
+                    strcmp(sfz.Name, "test") || RI_IsLibrary(sfz.Format))
+                    FFAIL();
+            }
+            if (isf2 >= 0) {
+                if (LiEnt[isf2].Format != RI_FMT_SF2 ||
+                    !RI_IsLibrary(LiEnt[isf2].Format))
+                    FFAIL();
+                LiView = 0; LiFocus = 5; LiCur = isf2; LiTop = 0;
+                li_draw();
+                if (Screen_GetCell(45, 13 + isf2).ch != 'S' ||
+                    Screen_GetCell(54, 13 + isf2).ch != '2')  /* SoundFont2 */
+                    FFAIL();
+                /* Enter opens it in place: "." row + the presets */
+                li_enter_module(&LiEnt[isf2]);
+                if (!LiInModule || LiN != 3 ||
+                    strcmp(LiEnt[0].FileName, ".") ||
+                    LiEnt[1].Format != RI_FMT_SF2PRESET ||
+                    strcmp(LiEnt[1].Name, "000:005 Mono Preset") ||
+                    LiEnt[1].NumSamples != 2 ||
+                    strcmp(LiEnt[2].Name, "001:000 Stereo") ||
+                    LiEnt[2].NumSamples != 1 ||
+                    strcmp(LiEnt[1].FileName, "test.sf2"))
+                    FFAIL();
+                if (LiN == 3)
+                    memcpy(pre, LiEnt + 1, 2 * sizeof(ilibent_t));
+            }
+            li_set_dir(keepins[0] ? keepins : ".");
+
+            /* the SFZ into an empty song */
+            if (f_ok) {
+                int sA, sT, sS, sF;
+                const sample_t *s;
+                const instrument_t *in = &Song.Ins[0];
+
+                r = RI_LoadInstrument(&sfz, 0);
+                if (r != RI_OK || RI_LastReport.needed != 4 ||
+                    RI_LastReport.loaded != 4 || RI_LastReport.skipped)
+                    FFAIL();
+                sA = in->NoteSampleTable[36 * 2 + 1];
+                sT = in->NoteSampleTable[60 * 2 + 1];
+                sS = in->NoteSampleTable[72 * 2 + 1];
+                sF = in->NoteSampleTable[84 * 2 + 1];
+                if (!sA || !sT || !sS || !sF || sA == sT || sA == sS ||
+                    sA == sF || sT == sS || sT == sF || sS == sF)
+                    FFAIL();
+                for (k = 0; k < 120 && f_ok; k++) {
+                    int want = (k >= 36 && k <= 47) ? sA
+                             : (k >= 60 && k <= 71) ? sT
+                             : k == 72 ? sS
+                             : (k >= 84 && k <= 95) ? sF : 0;
+                    if (in->NoteSampleTable[k * 2] != k ||
+                        in->NoteSampleTable[k * 2 + 1] != want)
+                        FFAIL();
+                }
+                /* tone16.wav: root 60, smpl loop 200..799, -6 dB, pan 50 */
+                s = &Song.Smp[sT - 1];
+                if (s->Length != 1000 || s->Flags != (1 | 2 | 0x10) ||
+                    s->LoopBeg != 200 || s->LoopEnd != 800 ||
+                    s->C5Speed != 22050 || s->GvL != 32 || s->DfP != 0xB0 ||
+                    s->Vol != 64)
+                    FFAIL();
+                for (i = 0; i < 1000 && f_ok; i++)
+                    if (((int16_t *)smp_chan(s, 0))[i] !=
+                        (i * 37) % 20000 - 10000)
+                        FFAIL();
+                /* "st 24.wav": 24-bit stereo, key=72, tune 50 + 1 semi */
+                s = &Song.Smp[sS - 1];
+                if (s->Length != 500 || !(s->Flags & SMP_STEREO) ||
+                    !(s->Flags & 2) || (s->Flags & 0x30) ||
+                    !SFI_NEAR(s->C5Speed,
+                              44100.0 * pow(2.0, -1.0 + 150.0 / 1200.0)))
+                    FFAIL();
+                for (i = 0; i < 500 && f_ok; i++)
+                    if (((int16_t *)smp_chan(s, 0))[i] != i * 50 - 12000 ||
+                        ((int16_t *)smp_chan(s, 1))[i] != 12000 - i * 50)
+                        FFAIL();
+                /* loop.aif: MARK/INST loop as sustain loop, root 40 */
+                s = &Song.Smp[sA - 1];
+                if (s->Length != 600 || !(s->Flags & 0x20) ||
+                    (s->Flags & 0x10) || s->SusLoopBeg != 100 ||
+                    s->SusLoopEnd != 500 ||
+                    !SFI_NEAR(s->C5Speed, 8000.0 * pow(2.0, 20.0 / 12.0)))
+                    FFAIL();
+                for (i = 0; i < 600 && f_ok; i++)
+                    if (((int16_t *)smp_chan(s, 0))[i] != (i * 13) % 4000 - 2000)
+                        FFAIL();
+                /* tone.flac */
+                s = &Song.Smp[sF - 1];
+                if (s->Length != 300 || s->C5Speed != 32000)
+                    FFAIL();
+                for (i = 0; i < 300 && f_ok; i++)
+                    if (((int16_t *)smp_chan(s, 0))[i] !=
+                        (i * 101) % 30000 - 15000)
+                        FFAIL();
+                /* instrument: name, envelope (A .1 D 1 S 50% R .5), filter
+                 * 1 kHz / 6 dB, fadeout */
+                if (strcmp(in->InstrumentName, "test") || in->NoS != 4 ||
+                    in->VEnvelope.Flags != 5 || in->VEnvelope.Num != 10 ||
+                    in->VEnvelope.SLB != 5 || in->VEnvelope.SLE != 5 ||
+                    in->VEnvelope.NodePoints[0].Tick != 0 ||
+                    in->VEnvelope.NodePoints[0].Magnitude != 0 ||
+                    in->VEnvelope.NodePoints[1].Tick != 5 ||
+                    in->VEnvelope.NodePoints[1].Magnitude != 64 ||
+                    in->VEnvelope.NodePoints[2].Tick != 10 ||
+                    in->VEnvelope.NodePoints[2].Magnitude != 48 ||
+                    in->VEnvelope.NodePoints[5].Tick != 55 ||
+                    in->VEnvelope.NodePoints[5].Magnitude != 32 ||
+                    in->VEnvelope.NodePoints[6].Tick != 58 ||
+                    in->VEnvelope.NodePoints[9].Tick != 80 ||
+                    in->VEnvelope.NodePoints[9].Magnitude != 0 ||
+                    in->FadeOut != 41 || in->IFC != (0x80 | 70) ||
+                    in->IFR != (0x80 | 32))
+                    FFAIL();
+            }
+
+            /* the converted SFZ instrument through the engine: C-5 sounds
+             * (looping tone16), note-off runs the envelope's release to
+             * its 0 end and the voice stops although the sample loops */
+            if (f_ok) {
+                int16_t *buf = (int16_t *)malloc(8192 * 2 * sizeof(int16_t));
+                uint8_t nn[5] = { 60, 1, 0xFF, 0, 0 };
+                uint16_t keepf = Song.Header.Flags;
+                int pk = 0, pk2 = 0, t;
+
+                Song.Header.Flags |= ITF_INSTRUMENTS;
+                ed_lock();
+                Music_Stop();
+                WAVDriver_SetMixSpeed(44100);
+                WAVDriver_SetOutputFormat(0);
+                WAVDriver_SetOutputChannels(2);
+                WAVDriver_SetForceMono(0);
+                WAVDriver_SetSBFilter(0);
+                WAVDriver_SetSBFeedback(0);
+                Driver->InitSound();
+                Music_InitStereo();
+                Music_InitTempo();
+                Music_PlayNote(0, nn, 128);
+                ed_unlock();
+                if (!buf)
+                    FFAIL();
+                for (t = 0; buf && t < 4; t++) {        /* ~0.37 s */
+                    WAVDriver_RenderAny(buf, 4096);
+                    for (i = 0; i < 8192; i++)
+                        if (abs(buf[i]) > pk)
+                            pk = abs(buf[i]);
+                }
+                nn[0] = 0xFF;                           /* note off */
+                nn[1] = 0;
+                ed_lock();
+                Music_PlayNote(0, nn, 128);
+                ed_unlock();
+                for (t = 0; buf && t < 40; t++)         /* ~3.7 s */
+                    WAVDriver_RenderAny(buf, 4096);
+                for (t = 0; buf && t < 2; t++) {
+                    WAVDriver_RenderAny(buf, 4096);
+                    for (i = 0; i < 8192; i++)
+                        if (abs(buf[i]) > pk2)
+                            pk2 = abs(buf[i]);
+                }
+                ed_lock();
+                Music_Stop();
+                ed_unlock();
+                Song.Header.Flags = keepf;
+                free(buf);
+                if (pk < 500 || pk2 != 0)
+                    FFAIL();
+            }
+
+            /* SF2 "Mono Preset" into instrument 2: layering, ranges */
+            if (f_ok) {
+                const instrument_t *in = &Song.Ins[1];
+                const sample_t *s;
+                int a, c;
+
+                r = RI_LoadInstrument(&pre[0], 1);
+                if (r != RI_OK || RI_LastReport.loaded != 2)
+                    FFAIL();
+                a = in->NoteSampleTable[24 * 2 + 1];
+                c = in->NoteSampleTable[60 * 2 + 1];
+                if (!a || !c || a == c || in->NoteSampleTable[23 * 2 + 1] ||
+                    in->NoteSampleTable[97 * 2 + 1] ||
+                    in->NoteSampleTable[59 * 2 + 1] != a ||
+                    in->NoteSampleTable[96 * 2 + 1] != c ||
+                    strcmp(in->InstrumentName, "Mono Preset"))
+                    FFAIL();
+                s = &Song.Smp[(a ? a : 1) - 1];     /* root 48, +10 cents */
+                if (s->Length != 1000 || !(s->Flags & 0x10) ||
+                    s->LoopBeg != 100 || s->LoopEnd != 900 || s->GvL != 49 ||
+                    !SFI_NEAR(s->C5Speed, 22050.0 * pow(2.0, 1.0 + 10.0 / 1200.0)))
+                    FFAIL();
+                for (i = 0; i < 1000 && f_ok; i++)
+                    if (((int16_t *)smp_chan(s, 0))[i] !=
+                        (i * 29) % 16000 - 8000)
+                        FFAIL();
+                s = &Song.Smp[(c ? c : 1) - 1];     /* +1 semi -50 +10 */
+                if (!(s->Flags & 0x20) || (s->Flags & 0x10) ||
+                    s->SusLoopBeg != 100 || s->SusLoopEnd != 900 ||
+                    !SFI_NEAR(s->C5Speed, 22050.0 * pow(2.0, 60.0 / 1200.0)))
+                    FFAIL();
+                if (in->VEnvelope.Flags != 5 || in->VEnvelope.Num != 5 ||
+                    in->VEnvelope.SLB != 0 ||
+                    in->VEnvelope.NodePoints[0].Magnitude != 64 ||
+                    in->VEnvelope.NodePoints[4].Tick != 50 ||
+                    in->VEnvelope.NodePoints[4].Magnitude != 0 ||
+                    in->FadeOut != 21 || in->IFC != 0)
+                    FFAIL();
+            }
+
+            /* SF2 "Stereo": linked left/right zones -> one stereo sample */
+            if (f_ok) {
+                const sample_t *s;
+                int st;
+
+                r = RI_LoadInstrument(&pre[1], 2);
+                st = Song.Ins[2].NoteSampleTable[1];
+                if (r != RI_OK || !st)
+                    FFAIL();
+                for (k = 0; k < 120 && f_ok; k++)
+                    if (Song.Ins[2].NoteSampleTable[k * 2 + 1] != st)
+                        FFAIL();
+                s = &Song.Smp[(st ? st : 1) - 1];
+                if (!(s->Flags & SMP_STEREO) || s->Length != 400 ||
+                    s->C5Speed != 22050 || s->DfP != 0)
+                    FFAIL();
+                for (i = 0; i < 400 && f_ok; i++)
+                    if (((int16_t *)smp_chan(s, 0))[i] != i * 20 ||
+                        ((int16_t *)smp_chan(s, 1))[i] != -i * 20)
+                        FFAIL();
+            }
+
+            /* reduce to fit: one free slot -> the sample nearest C-5 for
+             * every key the instrument plays */
+            if (f_ok) {
+                SFI_CLEAR();
+                for (i = 1; i < MAX_SAMPLES; i++)
+                    Song.Smp[i].Flags = 1;          /* slots 2..99 taken */
+                r = RI_LoadInstrument(&sfz, 0);
+                if (r != RI_OK || RI_LastReport.needed != 4 ||
+                    RI_LastReport.loaded != 1 ||
+                    Song.Smp[0].C5Speed != 22050 || Song.Smp[0].Length != 1000)
+                    FFAIL();
+                for (k = 0; k < 120 && f_ok; k++) {
+                    int played = (k >= 36 && k <= 47) || (k >= 60 && k <= 72) ||
+                                 (k >= 84 && k <= 95);
+                    if (Song.Ins[0].NoteSampleTable[k * 2 + 1] != (played ? 1 : 0))
+                        FFAIL();
+                }
+                /* no free slot at all: refused, the song unchanged */
+                Song.Smp[0].Flags |= 1;
+                memset(&Song.Ins[1], 0, sizeof(Song.Ins[1]));
+                Song.Ins[1].NoteSampleTable[60 * 2 + 1] = 7;
+                Song.Ins[3].NoteSampleTable[60 * 2 + 1] = 7;   /* shared */
+                r = RI_LoadInstrument(&sfz, 1);
+                if (r != RI_ERR_SLOTS || Song.Ins[1].InstrumentName[0] ||
+                    Song.Ins[1].NoteSampleTable[60 * 2 + 1] != 7)
+                    FFAIL();
+            }
+
+            SFI_CLEAR();
+            if (ksm && kin) {
+                memcpy(Song.Smp, ksm, sizeof(Song.Smp));
+                memcpy(Song.Ins, kin, sizeof(Song.Ins));
+            }
+            free(ksm);
+            free(kin);
+            if (!f_ok)
+                fprintf(stderr, "ITED selftest: SFI first failure at line %d\n", ffail_line);
+#undef SFI_CLEAR
+#undef SFI_NEAR
+#undef FFAIL
+            fprintf(stderr, "ITED selftest: [%s]\n",
+                    f_ok ? "SFI OK" : "SFI FAIL");
+        }
+
 
 
         commit_current_pattern();

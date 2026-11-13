@@ -1,0 +1,7 @@
+// included by test.sfz; sample paths use test.sfz's default_path
+<group> lokey=36 hikey=47 pitch_keycenter=40 loop_mode=loop_sustain
+<region> sample=loop.aif
+<group> lokey=84 hikey=95 sw_last=24
+<region> sample=tone.flac locc1=0 hicc1=10
+<region> sample=rr2.wav sw_last=25
+<region> sample=soft.wav lokey=96 hikey=100 locc64=64

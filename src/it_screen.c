@@ -1508,7 +1508,7 @@ const char *Screen_DialogExts(int kind)
     case IT_DLG_SAVE_MODULE:     return "it;s3m";
     case IT_DLG_OPEN_SAMPLE:     return "wav;its;iff;8sv;16s;pat;krz;txw;w01;"
                                         "it;s3m;xm;mod;mtm;669;ptm;far";
-    case IT_DLG_OPEN_INSTRUMENT: return "iti;xi;it;xm";
+    case IT_DLG_OPEN_INSTRUMENT: return "iti;xi;it;xm;sfz;sf2";
     default:                     return "";
     }
 }

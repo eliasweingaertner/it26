@@ -15,8 +15,8 @@ Opcode counts (top): `<region>` 135006, `sample` 135005, `hikey`/`lokey`
 
 - **Decision**: support `#include`, `#define`, `<control>`/`<global>`/`<master>`/`<group>`/`<region>`, and the opcodes listed in data-model.md. Ignore the rest (EQ, LFOs, flex EGs, velocity curves, CC modulation, `group`/`off_by`, `delay*`).
 - **Decision**: CC conditions are *evaluated* (controller values default to 0, except `set_ccN`; CC 7 = 100? — sfizz defaults all to 0; we do the same), not skipped: skipping would empty many instruments (6120 conditions).
-- **Decision**: key switches: active switch = `sw_default` if any region/group sets it, else the lowest `sw_last` used. Regions with `sw_last` ≠ active are out; `sw_lokey`/`sw_hikey` only describe the switch range and are otherwise ignored; regions with `sw_down`/`sw_up`/`sw_previous` are out.
-- **Decision**: `seq_position` > 1 out; `lorand` > 0 out (the "first" random alternative is the one containing 0); `trigger` = `release`/`release_key`/`legato` out (`attack`/`first` in).
+- **Decision**: key switches: active switch = `sw_default` if any region/group sets it **and some region answers to it**, else the lowest `sw_last` used (field test: articulation files of a bigger set carry `sw_default=f0` but only regions on `sw_last=a1`). Regions with `sw_last` ≠ active are out; `sw_lokey`/`sw_hikey` only describe the switch range; regions with `sw_down`/`sw_up`/`sw_previous` are out.
+- **Decision (revised after the field test)**: round robins and random alternatives are *preferences*, not filters: per key the lowest `seq_position`, then the lowest `lorand` wins (some files start their round robins at 3). CC conditions and `trigger` = `release`/`release_key`/`legato` filter **per file with a fallback**: they apply only if some region survives them (files gated as a whole on CC23, release-noise-only files).
 
 ## R2. Velocity and layer choice
 
@@ -85,11 +85,12 @@ cents, `transpose` semitones, `cutoff` Hz, `resonance` dB, `fil_type`
 ## R6. Audio decoding
 
 - **Decision**: WAV and AIFF via `ma_dr_wav_init_file_with_metadata` + `ma_dr_wav_read_pcm_frames_s16` (all PCM widths, float, A-law/µ-law, AIFF/AIFC); FLAC via `ma_dr_flac_open_file` + `ma_dr_flac_read_pcm_frames_s16`. All data ends up 16-bit signed (8-bit WAVs grow to 16-bit; IT stores 16-bit fine). Mono → mono IT sample; ≥ 2 channels → stereo IT sample from the first two.
-- These decoders exist in miniaudio only without `MA_NO_DECODING`; it is dropped at the single implementation site (`it_editor.c`) and `MA_NO_MP3` added; `it_sfimport.c` includes the header with the same macros (declarations only). Vendored file untouched (constitution V).
+- These decoders exist in miniaudio only without `MA_NO_DECODING`; it is dropped at the single implementation site (`it_editor.c`) and `MA_NO_MP3` added. miniaudio declares `ma_dr_wav`/`ma_dr_flac` **only inside its implementation section**, so the decode call is a small wrapper `SFI_DecodeAudio` right after the implementation include in `it_editor.c`; `it_sfimport.c` calls it. Vendored file untouched (constitution V).
 - WAV loop: `smpl` metadata, first loop (forward/backward → loop, ping-pong → ping-pong loop); end is inclusive → `LoopEnd = last + 1`.
 - AIFF loop: dr_wav doesn't expose AIFF markers. **Decision**: a ~40-line `MARK` + `INST` chunk reader (sustainLoop: playMode 1 forward / 2 ping-pong, begin/end marker ids → positions).
-- Unsupported (Ogg, MP3, missing file) → region skipped, counted.
-- Path resolution: as written; if it fails on a case-sensitive file system, a case-insensitive per-component directory search (POSIX only; Windows is case-insensitive already).
+- Unsupported (Ogg, MP3) → voice skipped, counted, its keys go to the nearest loaded sample.
+- Path resolution: as written; then the same relative path from up to three parent folders of the root .sfz (ARIA banks keep programs in `Programs/` with paths relative to the bank root, cf. `$sample_dir=../Samples` in their `.bank.xml`); on POSIX additionally a case-insensitive per-component search.
+- **Missing files** are found *before* decoding: a region whose file is missing is excluded and the selection reruns, so a missing layer stacked on every key (Keppy's Steinway "with keypress": `keypress.wav` absent) does not hide the instrument below it. Each missing file counts once.
 
 ## R7. Deduplication and reduction
 
@@ -159,3 +160,23 @@ content (`RIFF....sfbk`), SFZ by the `.sfz` extension (no magic).
 new formats the converter itself reduces to fit, so the check becomes
 "at least one sample slot free after the release" and is done inside the
 loader (error code `RI_ERR_SLOTS` → IT's "Out of sample space!").
+
+## R13. Field test (2026-11-13, `ited --sfi-test`, the user's library)
+
+**SFZ** 1384 / 1387 files load (worst 1.7 s; 9 thinned to fit, 115
+with some unreadable sample files -- mostly include fragments whose paths
+only resolve from their program file). The 3 failures are genuine: two
+ARIA "Full" programs whose include folder is not in the library, and a
+macOS `__MACOSX/._*.sfz` resource fork. **SF2** 1190 files, 7790
+presets: 7437 load (worst 93 ms); the 353 others are 349 presets built on
+an EMU sound card's ROM samples (AWE32 GM sets, reported as such), 3
+empty "E-mu Systems" credit presets and one SFPack-compressed file. Field
+fixes from these runs: round robins / random alternatives as preferences
+(not filters), per-file fallbacks for CC gates, release-only files and a
+`sw_default` nobody answers to, the parent-folder sample lookup (ARIA
+banks), missing files re-selecting the next region (Keppy's Steinway
+"with keypress"), a truncated `pdta` read as far as it goes.
+
+SC-001 (≥ 95 % of SFZ with samples present) and SC-002 (≥ 98 % of
+loadable SF2 presets) hold; SC-004: SF2 listing/loading < 0.1 s, the
+slowest SFZ (a multi-sampled piano, 99 FLAC files) 1.7 s.

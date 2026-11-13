@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-13
 
-**Status**: Draft
+**Status**: Implemented (local, 2026-11-13)
 
 **Input**: User description: "The next thing I'd like to build is additional import of sfz and sf2 instruments." Follow-up: "Please continue the design and the implementation autonomously. No pushes, local commits are fine." Real material: `D:\CommonHome\sound\sfz` (1387 .sfz files, samples as FLAC / WAV / AIFF) and `D:\CommonHome\sound\sf2` (1189 .sf2 files, 2.4 GB).
 
