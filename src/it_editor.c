@@ -4144,7 +4144,7 @@ static void env_map(void)
             uint16_t envbit = (uint16_t)(SF_VOLENV_ON << (InsTab - 1));
             uint16_t pos;
 
-            if (!(sc->Flags & SF_CHAN_ON) || sc->Ins != ListSel)
+            if (!(sc->Flags & SF_CHAN_ON) || sc->Ins != ListSel + 1)
                 continue;
             pos = (InsTab == 1) ? sc->VEnv.Pos :
                   (InsTab == 2) ? sc->PEnv.Pos : sc->PtEnv.Pos;

@@ -171,7 +171,7 @@ typedef struct slavechn_t {
 
     uint16_t InsOffs;     /* +30  instrument offset -> index in this port   */
     uint8_t  Nte;         /* +32  note                                      */
-    uint8_t  Ins;         /* +33  instrument number (0-based, 0xFF none)    */
+    uint8_t  Ins;         /* +33  instrument number (1-based, 0xFF none)    */
     uint16_t SmpOffs;     /* +34  sample header offset -> index in port     */
     uint8_t  Smp;         /* +36  sample number (0-based)                   */
     uint8_t  FPP;         /* +37  final playing pan (after reverse)         */
