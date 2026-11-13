@@ -5,6 +5,40 @@ TL;DR AI-vibed conversion of Jeffrey Lim's fantastic Impulse Tracker to modern o
 ![ited on Windows, directly after launch ](docs/ited-launch.png)
 (The AI port banner disappears after 10 secs)
 
+## What it26 adds to Impulse Tracker
+
+The engine and the classic screens are IT 2.17, bugs included. On top
+of that, on keys and mouse buttons IT leaves unused:
+
+- **SFZ and SoundFont 2 instruments:** load `.sfz` files and `.sf2`
+  presets on the Load Instrument screen (F4). They become ordinary IT
+  instruments that play anywhere. See
+  [SFZ and SoundFont 2 instruments](#sfz-and-soundfont-2-instruments).
+- **Stereo samples:** play, edit and save in stereo. See [Stereo samples](#stereo-samples).
+- **Bigger samples and more WAV formats:** samples up to OpenMPT's and
+  Schism's length limit, and 24-bit, 32-bit and float WAVs. See
+  [Sample size and WAV formats](#sample-size-and-wav-formats).
+- **Rendering and export:** a pattern into a sample, a pattern, the song
+  or one WAV per channel to disk, plus a Quicksave folder (after Esa
+  Ruoho's IT 2.354 fork). See
+  [Rendering and exporting audio](#rendering-and-exporting-audio).
+- **Hot-swap samples while the song plays:** loading a sample into a
+  slot that already has one keeps the song running.
+- **Right-click block menu and scale-aware note interpolation (Ctrl-K)**
+  in the pattern editor.
+- **Mouse everywhere:** click and drag in the pattern editor, order list
+  and file screens.
+- **System file dialogs:** Ctrl-Shift-F9 / Ctrl-Shift-F10 / Ctrl-O (Cmd
+  on the Mac).
+- **Modern audio setup (Shift-F5):** any output device, rates up to
+  192 kHz, lo-fi rates and the SB16 filter. See [Audio](#audio-shift-f5).
+- **Waveform preview on the Load Sample screen**, and any keyboard
+  layout without configuration.
+
+The full list, including every place where it26 behaves differently
+from the DOS original, is in
+[Classic IT, with a twist](#classic-it-with-a-twist).
+
 ## Background
 About 30 years ago I was quite a nerdy teenager. My parents had just bought a 486 DX computer with a terrible Sound Blaster Pro clone. A little while later a modem, BBS access and AOL followed. Somewhere I first downloaded the legendary [Scream Tracker 3](https://en.wikipedia.org/wiki/Scream_Tracker) (S3M) by the also legendary Future Crew. A short time later I learned about [Impulse Tracker](https://en.wikipedia.org/wiki/Impulse_Tracker) (IT) by Jeffrey Lim. I started jamming with it and wrote quite some songs, which I gladly never released :-) Impulse Tracker is a fantastic piece of software, and arguably one of the best trackers ever written. It sounds fantastic. Its usability is outstanding. And its resource usage was already low back in the day. One of the reasons was that it was brilliantly designed and really heavily optimized. It is written in pure x86 assembly code. That is one of the reasons it never got directly ported to modern operating systems. Since then, there have been repeated efforts to bring the "feel" of IT to the more modern world. One great and famous example is [Schism Tracker](https://schismtracker.org/), which combines an Impulse-Tracker-aligned interface with the [Modplug playback](https://openmpt.org/legacy_software) engine.
 
@@ -33,8 +67,9 @@ It has two parts:
 
 On top of that classic core sit the **extensions**: things IT never had,
 such as a right-click block menu with scale-aware note interpolation,
-mouse block selection, hot-swapping samples while the song plays, the
-operating system's file dialogs and a modern audio setup screen. They
+mouse block selection, hot-swapping samples while the song plays,
+stereo samples, SFZ and SoundFont 2 instrument import, the operating
+system's file dialogs and a modern audio setup screen. They
 hang off keys and mouse buttons IT 2.14 leaves unused, so nothing you
 know from IT changes; they are listed under
 [Classic IT, with a twist](#classic-it-with-a-twist).
